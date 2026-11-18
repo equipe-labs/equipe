@@ -95,6 +95,10 @@ mod autopilot;
 mod design_qa;
 mod design_review;
 mod follow_ups;
+mod requests;
+mod stops;
+mod settled;
+mod person_gate;
 mod usage_digest;
 mod team;
 mod heartbeat;
@@ -873,6 +877,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
         review_nudged: HashMap::new(),
+        person_said: HashMap::new(),
+        decided_told: HashMap::new(),
         workspaces: Default::default(),
     };
     let mut memos = Vec::new();
@@ -1671,6 +1677,11 @@ struct Runtime {
     design_busy: std::collections::HashSet<String>,
     /// Handed-in work the PM was reminded of, by squad: when (`heartbeat`).
     review_nudged: HashMap<String, HashMap<TicketId, u64>>,
+    /// What the person last said in each conversation, for the request a
+    /// ticket made in answer serves ([`requests`]).
+    person_said: HashMap<SessionId, requests::Said>,
+    /// The digest each squad's screens last heard ([`person_gate`]).
+    decided_told: HashMap<String, Vec<(TicketId, u64)>>,
     /// Runs' workspaces being made off the loop ([`workspace`]).
     workspaces: workspace::Workspaces,
     /// Secrets members asked the person for (`ask_secret`), by squad — read
@@ -2238,6 +2249,14 @@ impl Runtime {
             Event::TicketChanged { squad, ticket } => Some((squad.clone(), ticket.id)),
             _ => None,
         };
+        let closed = match &event {
+            Event::TicketChanged { squad, ticket } if ticket.status.is_closed() => Some((squad.clone(), ticket.id)),
+            _ => None,
+        };
+        let asked = match &event {
+            Event::QuestionsAsked { squad, questions } => questions.ticket.map(|t| (squad.clone(), t)),
+            _ => None,
+        };
         // A permission put to the person: from now it waits on them.
         if let Event::ApprovalRequested { approval, .. } = &event {
             self.approvals_asked.insert(approval.id, now_secs());
@@ -2273,6 +2292,15 @@ impl Runtime {
         // A card to confirm about it may have nothing left to confirm.
         if let Some((squad, ticket)) = changed {
             self.settle_accepts(&squad, ticket);
+            // The person's request it serves moves with it.
+            self.request_ticket_changed(&squad, ticket);
+        }
+        // Settled: what was asked about it no longer waits on the person.
+        if let Some((squad, ticket)) = closed {
+            self.withdraw_settled_questions(&squad, ticket);
+        }
+        if let Some((squad, ticket)) = asked {
+            self.request_question_changed(&squad, ticket);
         }
     }
 
@@ -2722,8 +2750,15 @@ impl Runtime {
                 let session = self.route(session);
                 self.note_person_active(session);
                 self.note_screen(session);
+                // What they asked for here: a ticket made in answer serves it.
+                self.person_said(session, &text);
+                let busy = self.sessions.get(&session).is_some_and(Session::is_working);
                 self.submit(session, text.clone()).await;
                 self.person_first(session, &text).await;
+                // Asking after a request while its member is busy: answered from the board now.
+                if busy {
+                    self.answer_from_board(session, &text);
+                }
                 self.said_about = None;
             }
             Command::SubmitLater { session, text, about } => {
@@ -2731,8 +2766,12 @@ impl Runtime {
                 let session = self.route(session);
                 self.note_person_active(session);
                 self.note_screen(session);
+                self.person_said(session, &text);
                 match self.sessions.get(&session) {
-                    Some(s) if s.is_working() => self.leave_memo(session, text),
+                    Some(s) if s.is_working() => {
+                        self.leave_memo(session, text.clone());
+                        self.answer_from_board(session, &text);
+                    }
                     _ => self.submit(session, text).await,
                 }
                 self.said_about = None;
@@ -2753,6 +2792,8 @@ impl Runtime {
             }
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::CreateTicket { squad, draft } => self.person_creates(&squad, draft).await,
+            Command::StopWork { squad, request, ticket, words } => self.person_stops(&squad, request, ticket, &words).await,
+            Command::LiftStop { squad, stop } => self.lift_stop(&squad, stop),
             Command::EditTicket { squad, ticket, changes } => self.person_edits(&squad, ticket, changes).await,
             Command::EditTickets { squad, tickets, changes } => self.person_edits_many(&squad, tickets, changes).await,
             Command::MoveTicket { squad, ticket, status, before } => self.person_moves(&squad, ticket, status, before).await,
@@ -4980,6 +5021,10 @@ runbooks and reports live there, and work across the projects or on running them
         let waiting = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone()).and_then(|squad| self.waiting_note(&squad));
         // Its pages the person has open in a live preview: their servers stay up.
         let previewing = self.preview_note(id);
+        // What the person asked for in this conversation, and where each stands.
+        let requests = self.requests_context(id);
+        // The kinds of work the person stopped: nothing of them is filed.
+        let stops = self.sessions.get(&id).and_then(|s| s.squad.clone()).and_then(|squad| self.stops_context(&squad));
         // A design session on: each turn is a quick prototype round.
         let designing = self.design_note(id);
         // Its cards still open: a message that settles one has it withdrawn, not answered for the person.
@@ -5003,6 +5048,12 @@ runbooks and reports live there, and work across the projects or on running them
         }
         if let Some(previewing) = previewing {
             prompt = format!("[equipe: {previewing}]\n\n{prompt}");
+        }
+        if let Some(requests) = requests {
+            prompt = format!("{requests}\n\n{prompt}");
+        }
+        if let Some(stops) = stops {
+            prompt = format!("{stops}\n\n{prompt}");
         }
         if let Some(designing) = designing {
             prompt = format!("[equipe: {designing}]\n\n{prompt}");
@@ -6855,8 +6906,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         let candidates: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, false)).collect();
         // With a reserve held, the little room goes to the most urgent tickets first.
         let urgent = if paced { crate::pacing::urgent_first(&tickets) } else { Vec::new() };
-        let merged: Vec<TicketId> = [urgent.as_slice(), first].concat();
-        let first: &[TicketId] = if urgent.is_empty() { first } else { &merged };
+        // What the person asked for goes before the squad's own follow-ups and checks (`requests`).
+        let requested = self.journals.get(squad).map(|j| j.requests().serving()).unwrap_or_default();
+        let merged: Vec<TicketId> = [urgent.as_slice(), first, requested.as_slice()].concat();
+        let first: &[TicketId] = if urgent.is_empty() && requested.is_empty() { first } else { &merged };
         let assigned = crate::lanes::assign_guarded(&tickets, &candidates, single_project, first, &room, &guarded);
         // What a hold keeps from starting: what members would take but for it.
         if members.iter().any(|m| m.held) {
@@ -7161,6 +7214,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         if designer && branding {
             prompt.push_str(&crate::design::brand::note(board_tools));
         }
+        // The kinds of work the person stopped: nothing of them is filed from this work either.
+        if let Some(stops) = self.stops_context(&squad) {
+            prompt.push_str(&format!("\n\n{stops}\n"));
+        }
         // A project that inherits a brand: its system is the brand's, changed only on a brand ticket.
         let member = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role != crate::roles::PM);
         if member && let Some(note) = crate::design::inherit::prompt_note(&self.config.home.join(crate::design::inherit::DIR), &sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project)).join(crate::design::DIR), branding) {
@@ -7422,6 +7479,14 @@ todo); or drop it if it's no longer wanted.]"
         self.close_run(id);
     }
 
+    /// A ticket's pictures saved in a worktree or a temp folder, copied where
+    /// they outlast it (`crate::visuals::keep`).
+    fn keep_pictures(&self, squad: &str, ticket: &Ticket) {
+        if !ticket.images.is_empty() {
+            crate::visuals::keep::ticket(&self.config.home, squad, ticket.id, &ticket.images);
+        }
+    }
+
     fn put_down(&mut self, id: SessionId, how: WorkEnd) {
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
@@ -7441,6 +7506,8 @@ todo); or drop it if it's no longer wanted.]"
         let mut kept_worktree = None;
         // A task or action accepted goes into the squad's folder now; `Err` when the folder changed under it.
         let mut landed: Option<Result<(), String>> = None;
+        // What it showed so far, kept before its worktree may go below.
+        self.keep_pictures(&squad, &ticket);
         if let Some(sandbox) = &work.sandbox {
             let body = summary.clone().unwrap_or_else(|| ticket.body.clone());
             let message =
@@ -7596,6 +7663,10 @@ todo); or drop it if it's no longer wanted.]"
             }
         };
         let by = by.to_owned();
+        // Its pictures saved in its worktree or a temp folder outlast them:
+        // the worktree goes once the work lands, and they were never committed.
+        watchdog::mark("work's end: keep pictures");
+        self.keep_pictures(&squad, &ticket);
         if let Some(journal) = self.journal(&squad) {
             let _ = journal.save_ticket(&ticket);
             let mut saved = journal.ticket_work(ticket.id).unwrap_or_default();
@@ -8465,6 +8536,12 @@ It starts when {owner} is free."
         }
         if call.name == crate::controls::CHANGE_SETTING {
             return self.change_setting(call, reply).await;
+        }
+        if call.name == crate::stops::STOP_WORK {
+            return self.stop_work_tool(call, reply).await;
+        }
+        if call.name == board::UNBLOCK {
+            return self.unblock_tool(call, reply).await;
         }
         if call.name == crate::signals::PROPOSE_SIGNAL {
             return self.propose_signal(call, reply);
@@ -9918,6 +9995,25 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
                 let idea = args.get("idea").and_then(Value::as_bool).unwrap_or(false);
+                // The person's request it serves, when the member names one.
+                let named_request = self.request_arg(&squad, &args)?;
+                // A kind of work the person stopped is turned away — unless they asked for it again since.
+                if !idea {
+                    let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+                    let mut lineage: Vec<TicketId> = working.into_iter().collect();
+                    let of_work = working.and_then(|w| self.journal(&squad).and_then(|j| j.follow_up(w)));
+                    lineage.extend(of_work.iter().flat_map(|f| [f.parent, f.root]));
+                    let serves = named_request.or_else(|| working.and_then(|w| self.journal(&squad).and_then(|j| j.requests().of_ticket(w))));
+                    let stops = self.stops_in_force(&squad);
+                    if let Some(stop) = crate::stops::stopping(&stops, title, body, &lineage, serves).cloned()
+                        && (working.is_some() || !self.asked_again(id, &stop))
+                    {
+                        self.stop_refused(&squad, &stop, title);
+                        return Err(crate::stops::refusal(&stop));
+                    }
+                }
+                // A request's ticket isn't chained behind other work without a reason (`requests`).
+                let depends_note = if idea { String::new() } else { self.check_depends(&squad, id, None, named_request, title, body, &depends_on, &args)? };
                 // Where the PM runs the work, a member's proposal is simply done:
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
@@ -9971,6 +10067,8 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 let by = if is_pm { crate::telemetry::Maker::Pm } else { crate::telemetry::Maker::Member };
                 self.tell(&squad, crate::telemetry::Happened::TicketCreated { kind, by });
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: Ticket { id: new_id, ..ticket } });
+                // The person's request it serves: theirs to follow without asking.
+                let serves = if idea { None } else { self.ticket_made(&squad, id, new_id, named_request) };
                 let mut reply = format!("Created T-{new_id}.");
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
@@ -10005,6 +10103,10 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                         reply.push_str(&format!(" Nobody on the squad is {owner} yet — the PM can propose adding one."));
                     }
                 }
+                if let Some(serves) = serves {
+                    reply.push_str(&serves);
+                }
+                reply.push_str(&depends_note);
                 Ok(reply)
             }
             board::UPDATE_TICKET => {
@@ -10012,6 +10114,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     return Err("Only the PM changes tickets; propose a new one, or comment.".into());
                 }
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
+                // Put with one of the person's requests: whatever its status.
+                if let Some(request) = self.request_arg(&squad, &args)? {
+                    self.link_to_request(&squad, ticket_id, request)?;
+                    let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "request"));
+                    if !other {
+                        return Ok(format!("T-{ticket_id} now serves the person's request R-{request}."));
+                    }
+                }
                 let lang = self.squad_language(&squad);
                 let present: Vec<String> = self
                     .sessions
@@ -10053,9 +10163,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     }
                     ticket.kind = kind;
                 }
+                let mut depends_note = String::new();
                 if let Some(ids) = board::arg_ids(&args, "depends_on") {
+                    let added: Vec<TicketId> = ids.iter().copied().filter(|d| !ticket.depends_on.contains(d)).collect();
+                    let text = format!("{} {}", ticket.title, ticket.body);
+                    depends_note = self.check_depends(&squad, id, Some(ticket_id), None, &ticket.title, &text, &added, &args)?;
                     ticket.depends_on = ids;
                 }
+                let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let waiting = ticket.status == TicketStatus::Waiting;
                 let was_idea = ticket.status == TicketStatus::Idea;
                 match board::arg_str(&args, "status") {
@@ -10090,7 +10205,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if pitched {
                     return Ok(format!("Put idea T-{ticket_id} to the person: its card asks whether to start it now. Tell them in a line or two why now; their click starts it."));
                 }
-                Ok(format!("Updated T-{ticket_id}."))
+                Ok(format!("Updated T-{ticket_id}.{depends_note}"))
             }
             board::COMMENT => {
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
@@ -10484,6 +10599,9 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             design_reviewer: self.journals.get(squad).map(Journal::design_reviewer).unwrap_or_default(),
             team_changes,
             accepts,
+            requests: self.requests_listed(squad),
+            stops: self.stops_in_force(squad),
+            decided: self.decided_for_person(squad),
             squad: squad.to_owned(),
             projects,
             hq,
@@ -11018,8 +11136,34 @@ activity, so equipe moved you here."
         // Each squad's design QA pictures (`<squad>/design-qa`), with the tickets they may still serve.
         let design_qa: Vec<(PathBuf, Vec<TicketId>)> =
             open.iter().map(|(squad, tickets)| (crate::journal::squad_dir(&home, squad).join("design-qa"), tickets.clone())).collect();
+        // Each squad's pictures kept past their worktrees (`visuals::keep`): those
+        // of the tickets that keep them and of the waiting decisions, kept now
+        // where they weren't yet (a hand-in from before equipe kept them).
+        let days = crate::visuals::keep::days();
+        let now = now_secs();
+        // By squad: its tickets' pictures, by ticket, and its waiting decisions'.
+        type Pictures = (String, Vec<(TicketId, Vec<String>)>, Vec<String>);
+        let pictures: Vec<Pictures> = self
+            .journals
+            .iter()
+            .map(|(squad, j)| {
+                let tickets = j.tickets().unwrap_or_default().into_iter().filter(|t| crate::visuals::keep::stays(t.status.is_closed(), t.updated_at, now, days)).map(|t| (t.id, t.images)).collect();
+                let waiting = j.questions().iter().flat_map(|q| q.images().map(str::to_owned).collect::<Vec<_>>()).collect();
+                (squad.clone(), tickets, waiting)
+            })
+            .collect();
         let internal = self.internal.clone();
         std::thread::spawn(move || {
+            for (squad, tickets, waiting) in &pictures {
+                let kept: usize = tickets.iter().map(|(id, images)| crate::visuals::keep::ticket(&home, squad, *id, images)).sum::<usize>() + crate::visuals::keep::decision(&home, squad, waiting);
+                if kept > 0 {
+                    crate::daemon_log!("equipe: {squad}: kept {kept} pictures saved in worktrees or temp folders");
+                }
+                let ids: Vec<TicketId> = tickets.iter().map(|(id, _)| *id).collect();
+                for line in crate::visuals::keep::sweep(&home, squad, &ids, waiting, days) {
+                    crate::daemon_log!("equipe: {line}");
+                }
+            }
             for line in crate::disk::tidy_lane_tmp(&home, &open, &keep) {
                 crate::daemon_log!("equipe: {line}");
             }

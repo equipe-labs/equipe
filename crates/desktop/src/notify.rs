@@ -58,6 +58,9 @@ pub enum Alert {
     Reply { session: SessionId, member: String, line: String },
     /// An accepted ticket's work is on the main branch now.
     Merged { ticket: TicketId, title: String, project: Option<String> },
+    /// A request of the person's reached a milestone (`equipe_core::requests`):
+    /// `line`, where all of it stands — told in its conversation too.
+    Request { request: u64, title: String, session: Option<SessionId>, member: Option<String>, line: String },
     /// Merging an accepted ticket's work failed — `conflict` with main, or
     /// otherwise; nothing was merged.
     MergeFailed { ticket: TicketId, conflict: bool, project: Option<String> },
@@ -79,7 +82,7 @@ impl Alert {
     /// News rather than something waiting: told one by one, never folded into
     /// "n things wait for you".
     fn is_news(&self) -> bool {
-        matches!(self, Alert::Reply { .. } | Alert::Merged { .. } | Alert::Escalated { .. } | Alert::UpdateFound { .. } | Alert::Update { .. })
+        matches!(self, Alert::Reply { .. } | Alert::Merged { .. } | Alert::Request { .. } | Alert::Escalated { .. } | Alert::UpdateFound { .. } | Alert::Update { .. })
     }
 }
 
@@ -98,6 +101,8 @@ impl Pings {
             Alert::Failed { .. } | Alert::MergeFailed { .. } => self.failed,
             Alert::Reply { .. } => self.replies,
             Alert::Merged { .. } => self.merged,
+            // News of what they asked for: as a reply to them is.
+            Alert::Request { .. } => self.replies,
             Alert::UpdateFound { .. } | Alert::Update { .. } => self.update,
         }
     }
@@ -257,7 +262,8 @@ pub fn thread(alert: &Alert, squad: &str) -> String {
         Alert::Approval { approval, squad } => member_thread(squad, &approval.member),
         Alert::Review { by, .. } | Alert::Waiting { by, .. } => by.as_deref().map_or_else(|| squad_thread(squad), |b| member_thread(squad, b)),
         Alert::Failed { member, .. } | Alert::Decision { member, .. } | Alert::Browser { member, .. } | Alert::Reply { member, .. } => member_thread(squad, member),
-        Alert::Merged { .. } | Alert::MergeFailed { .. } | Alert::Escalated { .. } => squad_thread(squad),
+        Alert::Request { member: Some(member), .. } => member_thread(squad, member),
+        Alert::Merged { .. } | Alert::MergeFailed { .. } | Alert::Request { .. } | Alert::Escalated { .. } => squad_thread(squad),
         Alert::UpdateFound { .. } | Alert::Update { .. } => "equipe/update".into(),
     }
 }
@@ -323,6 +329,8 @@ fn toast(alert: &Alert, squad: &str, titles: bool) -> Toast {
             let body = [what, project.clone().unwrap_or_default(), squad.to_owned()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
             (t!("notify.merged_title", ticket = ticket), body, Go::Ticket(*ticket))
         }
+        // What they asked for, and where all of it stands: a click opens its conversation.
+        Alert::Request { title, session, line, .. } => (t!("notify.request_title", title = title), line.clone(), session.map_or(Go::Board, Go::Member)),
         Alert::MergeFailed { ticket, conflict, project } => {
             let why = if *conflict { t!("notify.merge_conflict") } else { t!("notify.merge_failed") };
             let project = project.as_deref().map(|p| format!(" · {p}")).unwrap_or_default();

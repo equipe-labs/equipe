@@ -149,6 +149,16 @@ once it is — by the path relative to the worktree the ticket recorded, never a
 screen names. The same checks hold on the blob: an image by name and by its first bytes, at
 most 30 MB.
 
+A picture never committed (saved in the worktree outside the design folder, or in a temp
+folder) has no blob. So when a ticket is handed in or put down, and when a decision is asked,
+the daemon copies each picture it names that lives in a worktree or a temp folder (links
+resolved) to `squads/<squad>/visuals/kept/` (`tickets/T-<n>/` or `decisions/`), named by a
+hash of the recorded path — the recorded paths never change. A gone file is read from that copy
+first. Copies of a ticket stay while it is open and for 30 days after it closed
+(`EQUIPE_KEEP_PICTURES_DAYS`), at most 200 MB per ticket; the daemon's hourly tidy keeps what
+an older daemon didn't and sweeps the rest. A picture with no copy and no blob answers
+`no such file on its branch`.
+
 **Pictures in the conversation.** A reply, a note or the person's own message may embed
 pictures with Markdown — `![Floor plan](/…/images/plan.png)`, a title after the path, a path
 relative to where its member works, spaces in it as members write them — and may name a folder

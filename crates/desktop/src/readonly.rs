@@ -123,6 +123,8 @@ pub fn reads(command: &Command) -> bool {
         | C::Requeue { .. }
         | C::Cancel { .. }
         | C::CreateTicket { .. }
+        | C::StopWork { .. }
+        | C::LiftStop { .. }
         | C::EditTicket { .. }
         | C::EditTickets { .. }
         | C::MoveTicket { .. }
@@ -571,6 +573,8 @@ mod tests {
             Command::Requeue { squad: s(), ticket: 1, operation: "o".into(), how: equipe_core::protocol::Recovery::Resume },
             Command::Cancel { squad: s(), ticket: 1 },
             Command::CreateTicket { squad: s(), draft: TicketDraft::default() },
+            Command::StopWork { squad: s(), request: Some(1), ticket: None, words: String::new() },
+            Command::LiftStop { squad: s(), stop: 1 },
             Command::EditTicket { squad: s(), ticket: 1, changes: TicketEdit::default() },
             Command::EditTickets { squad: s(), tickets: vec![1], changes: TicketEdit::default() },
             Command::MoveTicket { squad: s(), ticket: 1, status: None, before: None },
