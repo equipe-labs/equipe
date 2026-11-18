@@ -489,6 +489,8 @@ async fn a_requeue_after_a_review_send_back_leads_with_the_latest_reason_and_blo
     let (handle, mut events) = runtime::start(config(&engine.bin, &home));
     add(&handle, &mut events, 1, member(&repo, "pm", None)).await;
     add(&handle, &mut events, 2, member(&repo, "frontend", Some(Engine::Claude))).await;
+    // The PM's review is what this looks at: the member doesn't land its own.
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "Build the hero.", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done and complete.", "changes_screens": false })).await;

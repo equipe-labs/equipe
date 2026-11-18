@@ -153,6 +153,8 @@ async fn handed_in(persist: bool) -> (Handle, UnboundedReceiver<Event>, PathBuf,
     let (handle, mut events) = runtime::start(config(&bin, &home, persist));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    // The PM's or the person's acceptance is what these look at: members don't land their own here.
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;

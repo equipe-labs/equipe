@@ -3219,6 +3219,8 @@ async fn a_visual_hand_in_shows_the_images_its_branch_made_and_they_follow_it_in
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 2, member(&site, "designer")).await;
+    // The PM's or the person's acceptance is what these look at: members don't land their own here.
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
     tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Logo", "body": "Two marks.", "owner": "designer", "kind": "task" })).await;
     let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
     let Some(Event::WorkStarted { workspace: Some(ws), .. }) = started.last() else { panic!("{started:#?}") };
@@ -3403,6 +3405,8 @@ async fn a_task_with_no_project_runs_in_the_squads_folder_and_goes_in_when_accep
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     // A role that doesn't edit code writes in its worktree of the squad's folder all the same.
     add(&handle, &mut events, 2, member(&site, "data")).await;
+    // The PM's or the person's acceptance is what these look at: members don't land their own here.
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
 
     // Two projects, none named: a task, and it is handed out.
     let made = tool(&handle, "pm", "create_ticket", serde_json::json!({
@@ -7419,14 +7423,15 @@ async fn a_designers_findings_keep_their_lineage_go_together_and_stop_at_the_bac
     // On design QA T-2 of T-1: what the designer files is a finding, with its severity.
     let unsaid = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Gap rhythm", "body": "24 → 32 between sections.", "owner": "frontend" })).await;
     assert!(unsaid.is_error && unsaid.text.contains("`severity`") && unsaid.text.contains("design QA of T-1"), "{unsaid:?}");
+    // Polish is never a ticket to run (the meta-work budget): it is kept in T-1's design backlog, an idea.
     let polish = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Gap rhythm", "body": "24 → 32 between sections.", "owner": "frontend", "severity": "S3" })).await;
-    assert!(!polish.is_error && polish.text.contains("T-3"), "{polish:?}");
-    assert_eq!(journal.follow_up(3), Some(FollowUp { ticket: 3, parent: 1, root: 1, generation: 1, kind: Kind::Polish, severity: Some(Severity::S3) }));
+    assert!(!polish.is_error && polish.text.contains("design backlog of T-1"), "{polish:?}");
     let made = journal.ticket(3).unwrap().unwrap();
-    assert_eq!(made.priority, Priority::Low);
-    assert!(made.body.starts_with("Polish follow-up of T-1 (S3): re-check only the widths and states named here"), "{}", made.body);
+    assert_eq!((made.status, made.title.as_str()), (TicketStatus::Idea, "Design backlog of T-1"));
+    assert_eq!(journal.follow_up(3).map(|f| (f.kind, f.parent, f.root, f.severity)), Some((Kind::Backlog, 1, 1, Some(Severity::S3))));
+    assert!(made.body.contains("### Gap rhythm (S3, T-1)"), "{}", made.body);
 
-    // A second polish point about the same work goes into its open follow-up.
+    // A second polish point about the same work goes into that backlog.
     let more = tool(&handle, "designer", "create_ticket", serde_json::json!({ "title": "Label wraps", "body": "At 390, text 200%.", "owner": "frontend", "severity": "s4" })).await;
     assert!(!more.is_error && more.text.contains("Added to T-3"), "{more:?}");
     assert!(journal.ticket(4).unwrap().is_none(), "no new ticket");

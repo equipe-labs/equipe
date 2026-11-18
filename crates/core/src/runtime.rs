@@ -274,7 +274,8 @@ pub struct Config {
     /// Look at the free space of the disk now and then, and on a short disk
     /// hold code work back and trim build caches (the daemon). Off, the disk's
     /// room is only what a write that failed or a screen's look says: a test's
-    /// runtime doesn't stall on the Mac's real disk running short.
+    /// runtime doesn't stall on the Mac's real disk running short. On, the
+    /// machine's load also eases off each member's lanes (`crate::flow::machine_cap`).
     pub watch_disk: bool,
 }
 
@@ -6945,8 +6946,9 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         let mut members: Vec<Seat> = Vec::new();
         let mut at_work: HashMap<Engine, usize> = HashMap::new();
-        // How loaded the machine is: a member's lanes ease off with it (`flow::machine_cap`).
-        let (load, cpus) = (crate::flow::load_average(), crate::flow::cpus());
+        // How loaded the machine is: a member's lanes ease off with it (`flow::machine_cap`) —
+        // where equipe watches the machine it runs on (`watch_disk`), never in a test's runtime.
+        let (load, cpus) = (self.config.watch_disk.then(crate::flow::load_average).flatten(), crate::flow::cpus());
         // The places each member's running tickets name: its next lane never overlaps them.
         let mut fit = crate::lanes::Fit::default();
         for s in self.sessions.values().filter(|s| s.squad.as_deref() == Some(squad)) {

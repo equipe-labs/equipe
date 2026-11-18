@@ -159,6 +159,8 @@ async fn handed_in_at(home: &Path, repo: &Path, task: bool) -> (Handle, Unbounde
     let (handle, mut events) = runtime::start(config(&claude(), home));
     add(&handle, &mut events, 1, member(repo, "pm")).await;
     add(&handle, &mut events, 2, member(repo, "frontend")).await;
+    // The PM's or the person's acceptance is what these look at: members don't land their own here.
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
     let kind = if task { "task" } else { "code" };
     tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend", "kind": kind })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
