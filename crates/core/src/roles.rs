@@ -950,6 +950,7 @@ with your engine's own wait or monitor tool."
     };
     format!(
         "You are {name}, the {title} on a squad that equipe runs for one person, who leads it. \
+Whoever writes to you is that person: address them directly, never by a name you found in files, notes or accounts. \
 Your teammates: {mates}.{projects}{reporting}\n\n{}\n\n{tools}{skills}{home}{browser}{others}{desktop}{phone_tools}{pictures}{visuals}{phone_reply}{reports}{ideas}{memory}\n\nYou run inside equipe, without a screen of your own: the person can't type into \
 your session or change your permission mode, so never ask them to — nor to edit settings files for you. Never change this Mac's system-wide settings while you work or test: \
 no VoiceOver, Zoom, display, keyboard or other accessibility switch, by shortcut, command or System Settings; check screen-reader \
@@ -2279,13 +2280,16 @@ invent one."), "{id}: true numbers");
         let session = skill("designer", &c, "design-session");
         for part in [
             "rounds of minutes",
-            "3–6 references",
+            "3–5 references",
+            "`show_references`",
+            "No heavy checks in a round",
+            "--variant A",
+            "\"Use this\"",
             "one rough take",
             "something visible and one focused question",
             "Never go quiet",
             "`equipe design session show",
             "only `design/` is yours to change",
-            "goes once to `equipe design critique",
             "Never grade your own work",
             "Taste calls are the person's",
             "`equipe design session done <n>",

@@ -278,6 +278,10 @@
   "news.cannot_start": "✗ T-{id} couldn't start for {name}: {reason}",
   "news.changes_declined": "You didn't send {tickets} back — it stays in review",
   "news.commented": "You commented on T-{id}: {text}",
+  "news.card_withdrawn": "{name} withdrew its card: {question}",
+  "news.card_withdrawn_on": "{name} withdrew its card on T-{id}: {question}",
+  "news.member_revised": "{name} updated T-{id} · {title}",
+  "news.member_dropped": "{name} dropped T-{id} · {title}",
   "news.decision.one": "{name} asks you to decide · {question}",
   "news.decision.other": "{name} asks you to decide {count} things · {question}",
   "news.desk_saved": "✎ {name} {what} in the squad's folder · /home undo takes it back",
@@ -830,5 +834,8 @@
   "design_session.go_ahead": "Let the designer go ahead",
   "design_session.kickoff": "Let's work on {page} together, in short rounds.",
   "design_session.no_designer": "There's no designer on the team for a design session yet. Ask the PM to bring one in.",
-  "design_session.no_page": "Name the page or screen the design session is on."
+  "design_session.no_page": "Name the page or screen the design session is on.",
+  "design_session.use_title": "Build {page} from the picked prototype",
+  "design_session.use_title_variant": "Build {page} from prototype {variant}",
+  "design_session.use_intro": "Picked in a design session with \"Use this\": build this prototype in the product."
 }

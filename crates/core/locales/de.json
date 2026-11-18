@@ -278,6 +278,10 @@
   "news.cannot_start": "✗ T-{id} konnte für {name} nicht starten: {reason}",
   "news.changes_declined": "{tickets} nicht zurückgeschickt — bleibt in der Prüfung",
   "news.commented": "Du hast T-{id} kommentiert: {text}",
+  "news.card_withdrawn": "{name} hat seine Karte zurückgezogen: {question}",
+  "news.card_withdrawn_on": "{name} hat seine Karte zu T-{id} zurückgezogen: {question}",
+  "news.member_revised": "{name} hat T-{id} angepasst · {title}",
+  "news.member_dropped": "{name} hat T-{id} fallen gelassen · {title}",
   "news.decision.one": "{name} bittet dich um eine Entscheidung · {question}",
   "news.decision.other": "{name} bittet dich um {count} Entscheidungen · {question}",
   "news.desk_saved": "✎ {name} {what} im Ordner des Squads · /home undo nimmt es zurück",
@@ -830,5 +834,8 @@
   "design_session.go_ahead": "Den Designer einfach machen lassen",
   "design_session.kickoff": "Lass uns {page} gemeinsam in kurzen Runden gestalten.",
   "design_session.no_designer": "Im Team gibt es noch keinen Designer für eine Design-Session. Bitte den PM, einen dazuzuholen.",
-  "design_session.no_page": "Nenne die Seite oder den Screen der Design-Session."
+  "design_session.no_page": "Nenne die Seite oder den Screen der Design-Session.",
+  "design_session.use_title": "{page} nach dem gewählten Prototyp bauen",
+  "design_session.use_title_variant": "{page} nach Prototyp {variant} bauen",
+  "design_session.use_intro": "In einer Design-Session mit „Das nehmen“ gewählt: Diesen Prototyp im Produkt bauen."
 }

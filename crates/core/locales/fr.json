@@ -278,6 +278,10 @@
   "news.cannot_start": "✗ T-{id} n'a pas pu démarrer pour {name} : {reason}",
   "news.changes_declined": "Vous n’avez pas renvoyé {tickets} : reste en revue",
   "news.commented": "Vous avez commenté T-{id} : {text}",
+  "news.card_withdrawn": "{name} a retiré sa carte : {question}",
+  "news.card_withdrawn_on": "{name} a retiré sa carte sur T-{id} : {question}",
+  "news.member_revised": "{name} a mis à jour T-{id} · {title}",
+  "news.member_dropped": "{name} a abandonné T-{id} · {title}",
   "news.decision.one": "{name} vous demande de décider · {question}",
   "news.decision.other": "{name} vous demande de décider {count} choses · {question}",
   "news.desk_saved": "✎ {name} {what} dans le dossier de l'équipe · /home undo l'annule",
@@ -830,5 +834,8 @@
   "design_session.go_ahead": "Laisser le designer avancer",
   "design_session.kickoff": "Travaillons ensemble sur {page}, par courtes étapes.",
   "design_session.no_designer": "Il n'y a pas encore de designer dans l'équipe pour une session. Demandez au PM d'en ajouter un.",
-  "design_session.no_page": "Indiquez la page ou l'écran de la session de design."
+  "design_session.no_page": "Indiquez la page ou l'écran de la session de design.",
+  "design_session.use_title": "Construire {page} d'après le prototype choisi",
+  "design_session.use_title_variant": "Construire {page} d'après le prototype {variant}",
+  "design_session.use_intro": "Choisi dans une session de design avec « Prendre celui-ci » : construire ce prototype dans le produit."
 }

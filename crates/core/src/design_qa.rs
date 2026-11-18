@@ -306,6 +306,41 @@ pub fn gate(report: Option<&Report>) -> GateCall {
     designer(None, format!("{} state(s) changed: {}.", changed.len(), changed.join(", ")))
 }
 
+/// What the gate makes of the precheck of a ticket built from a live
+/// prototype the person picked with "Use this"
+/// (`crate::design::session::APPROVED_PROTOTYPE`): they saw, touched and
+/// chose the design already, so a designer doesn't look again — the
+/// precheck alone passes it when the built screens rendered at the widths it
+/// checks and brought no S1/S2 finding. Pictures differing from the base are
+/// expected here (the screen is new). Only a precheck that failed, saw too
+/// little, or found S1/S2 problems hands it to the designer, with the report.
+pub fn gate_prototype(report: Option<&Report>) -> GateCall {
+    let designer = |judgment: Option<Judgment>, reason: String| GateCall { decision: Decision::Designer, judgment, reasons: vec![reason] };
+    let Some(r) = report else {
+        return designer(Some(Judgment::PrecheckFailed), "The precheck gave no report.".into());
+    };
+    let blockers = r.new_blockers();
+    if !blockers.is_empty() {
+        let mut rules: Vec<&str> = blockers.iter().map(|f| f.rule.as_str()).collect();
+        rules.sort_unstable();
+        rules.dedup();
+        return designer(None, format!("{} S1/S2 finding(s) on the screens built from the picked prototype: {}.", blockers.len(), rules.join(", ")));
+    }
+    let taken = r.shots.len() - r.failed();
+    if taken == 0 {
+        return designer(Some(if r.errors.is_empty() { Judgment::NotRendered } else { Judgment::PrecheckFailed }), "The precheck rendered none of the built screens.".into());
+    }
+    if r.failed() * 2 >= r.shots.len() {
+        return designer(Some(Judgment::NotRendered), format!("{} of {} picture(s) of the built screens failed.", r.failed(), r.shots.len()));
+    }
+    let conditions = if r.conditions.is_empty() { String::new() } else { format!(" at {}", r.conditions.join(", ")) };
+    GateCall {
+        decision: Decision::AutoPass,
+        judgment: None,
+        reasons: vec![format!("Built from the prototype the person picked: {taken} picture(s) of the built screens rendered{conditions}, and nothing new at S1/S2.")],
+    }
+}
+
 // ── the designer's tier ──
 
 /// Which model tier design QA runs on: `cheap` for the usual check, `top`
@@ -422,6 +457,25 @@ mod tests {
         let polish = Finding::bare("overlap", Severity::Polish, "auth/login/default", "390.light.normal", true);
         let call = gate(Some(&report(vec![shot("auth/login/default", true, false)], vec![polish])));
         assert_eq!((call.decision, call.judgment), (Decision::Designer, None));
+    }
+
+    #[test]
+    fn a_screen_built_from_the_picked_prototype_passes_on_its_precheck_and_only_failures_reach_a_designer() {
+        // New screens, every picture changed, nothing new at S1/S2: passed, no designer turn.
+        let built = report(vec![shot("pricing/page/default", true, false), shot("pricing/page/annual", true, false)], vec![]);
+        let call = gate_prototype(Some(&built));
+        assert_eq!((call.decision, call.judgment), (Decision::AutoPass, None));
+        assert!(call.reasons[0].contains("prototype the person picked") && call.reasons[0].contains("390.light.normal"), "{:?}", call.reasons);
+        assert_eq!(gate(Some(&built)).decision, Decision::Designer, "the usual gate would have called the designer");
+        // A new S1/S2 finding: the designer, with the report — not straight back to the engineer.
+        let new = Finding::bare("reflow", Severity::Blocker, "pricing/page/default", "390.light.normal", true);
+        let call = gate_prototype(Some(&report(vec![shot("pricing/page/default", true, false)], vec![new])));
+        assert_eq!(call.decision, Decision::Designer);
+        assert!(call.reasons[0].contains("reflow"));
+        // The precheck failed or saw too little: the designer.
+        assert_eq!(gate_prototype(None).decision, Decision::Designer);
+        let half = report(vec![shot("pricing/page/default", true, false), shot("pricing/page/annual", false, true)], vec![]);
+        assert_eq!((gate_prototype(Some(&half)).decision, gate_prototype(Some(&half)).judgment), (Decision::Designer, Some(Judgment::NotRendered)));
     }
 
     #[test]
