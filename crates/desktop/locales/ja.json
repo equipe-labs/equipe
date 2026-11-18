@@ -2873,6 +2873,7 @@
   "sidebar.day_yesterday": "昨日",
   "sidebar.day_week": "過去7日間",
   "sidebar.day_older": "それ以前",
+  "sidebar.pinned": "ピン留め",
   "sidebar.find_conversation": "会話を探す",
   "sidebar.no_conversation_match": "一致する会話はありません",
   "sidebar.pin": "ピン留め",

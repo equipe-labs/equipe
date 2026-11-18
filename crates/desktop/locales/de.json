@@ -2946,6 +2946,7 @@
   "sidebar.day_yesterday": "Gestern",
   "sidebar.day_week": "Letzte 7 Tage",
   "sidebar.day_older": "Älter",
+  "sidebar.pinned": "Angeheftet",
   "sidebar.find_conversation": "Unterhaltung suchen",
   "sidebar.no_conversation_match": "Keine passende Unterhaltung",
   "sidebar.pin": "Anheften",

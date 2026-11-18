@@ -795,7 +795,7 @@ fn talk_sessions(now: u64) -> Vec<SessionInfo> {
         let active = if ago == 0 { midnight + (now - midnight) * (4 - i as u64) / 5 } else { midnight - (ago - 1) * 86_400 - 3_600 * (2 + (i as u64 * 3) % 18) };
         let mut s = info(100 + i as u64, "pm", vec![Entry::User { text: TALK_TITLES[i].into(), kept: Vec::new() }, Entry::Reply { text: "Sure.".into() }]);
         s.title = (i != 24).then(|| TALK_TITLES[i].to_owned());
-        s.lane = Some(equipe_core::protocol::Lane { of: 1, project: [None, Some("web".to_owned()), Some("api".to_owned())][i % 3].clone(), kept: true, active, pinned: i == 5 });
+        s.lane = Some(equipe_core::protocol::Lane { of: 1, project: [None, Some("web".to_owned()), Some("api".to_owned())][i % 3].clone(), kept: true, active, pinned: i == 5 || i == 9 || i == 12, pinned_at: [0, 0, 0, 0, 0, 1000, 0, 0, 0, 2000, 0, 0, 3000][i.min(12)] });
         s.recent_at = vec![Some(active), Some(active)];
         s
     }).collect()

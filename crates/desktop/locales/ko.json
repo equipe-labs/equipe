@@ -2873,6 +2873,7 @@
   "sidebar.day_yesterday": "어제",
   "sidebar.day_week": "지난 7일",
   "sidebar.day_older": "이전",
+  "sidebar.pinned": "고정됨",
   "sidebar.find_conversation": "대화 찾기",
   "sidebar.no_conversation_match": "일치하는 대화가 없어요",
   "sidebar.pin": "고정",

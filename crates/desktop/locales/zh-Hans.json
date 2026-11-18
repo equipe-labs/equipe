@@ -2873,6 +2873,7 @@
   "sidebar.day_yesterday": "昨天",
   "sidebar.day_week": "过去 7 天",
   "sidebar.day_older": "更早",
+  "sidebar.pinned": "已置顶",
   "sidebar.find_conversation": "查找对话",
   "sidebar.no_conversation_match": "没有匹配的对话",
   "sidebar.pin": "置顶",

@@ -2072,6 +2072,7 @@ mod tests {
             title: None,
             active,
             pinned: false,
+            pinned_at: 0,
         };
         use crate::state::Presence;
         m.lanes = vec![lane(10, Some("web"), Presence::Ready, 5), lane(11, Some("web"), Presence::Working, 9), lane(12, Some("web"), Presence::Ready, 7), lane(13, Some("api"), Presence::Ready, 8), lane(14, None, Presence::Ready, 9)];
