@@ -445,3 +445,171 @@ fn a_keychain_that_never_answers_fails_the_fetch_and_holds_up_nothing() {
     assert_eq!(heard.recv_timeout(wait).expect(froze), format!("{:?}", Some(KEYCHAIN)), "connecting again waits its turn, then says why");
     drop(release);
 }
+
+// ---- Ad-hoc queries (`metrics.hogql`) ----
+
+const POSTHOG_KEY: &str = "phx_secret_key_1234567";
+
+/// A PostHog connection of `acme`'s `project`, its key in memory, asking `url`.
+fn posthog(metrics: &Metrics, url: &str, project: &str) -> String {
+    let settings = BTreeMap::from([
+        ("api_key".to_owned(), POSTHOG_KEY.to_owned()),
+        ("project_id".to_owned(), "700951".to_owned()),
+        ("host".to_owned(), url.to_owned()),
+    ]);
+    let p = ConnectParams { squad: "acme".into(), project: Some(project.into()), kind: Some(SourceKind::Posthog), id: None, settings };
+    metrics.connect(p, 1).unwrap_or_else(|e| panic!("{}", e.message)).id
+}
+
+fn hogql_params(query: &str) -> HogqlParams {
+    HogqlParams { squad: "acme".into(), query: query.into(), ..HogqlParams::default() }
+}
+
+/// PostHog's answer to a query: two columns, `n` rows.
+fn rows_answer(n: usize) -> adapters::stand_in::Reply {
+    let rows: Vec<serde_json::Value> = (0..n).map(|i| json!([format!("event_{i}"), i])).collect();
+    adapters::stand_in::Reply::ok(json!({ "columns": ["event", "n"], "results": rows, "hasMore": false }).to_string())
+}
+
+#[tokio::test]
+async fn an_ad_hoc_select_goes_through_the_connection_and_comes_back_capped() {
+    let home = scratch("hogql-ok");
+    let (url, seen) = adapters::stand_in::serve(|_| rows_answer(5)).await;
+    let metrics = Arc::new(metrics(&home));
+    let id = posthog(&metrics, &url, "site");
+    let p = HogqlParams { limit: Some(3), ..hogql_params("SELECT event, count() AS n FROM events GROUP BY event;") };
+    let answered = metrics.call(m::HOGQL, serde_json::to_value(&p).unwrap(), 1_000).await.unwrap();
+    let r: HogqlResult = serde_json::from_value(answered.clone()).unwrap();
+    assert_eq!(r.connection, id);
+    assert_eq!(r.columns, ["event", "n"]);
+    assert_eq!(r.rows.len(), 3, "capped at the limit asked");
+    assert!(r.truncated, "PostHog had more than 3");
+    assert_eq!(r.limit, 3);
+    assert_eq!(r.query, "SELECT event, count() AS n FROM events GROUP BY event\nLIMIT 4", "a LIMIT of one more row, the `;` dropped");
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].path, "/api/projects/700951/query/");
+    assert_eq!(seen[0].headers.get("authorization").map(String::as_str), Some(format!("Bearer {POSTHOG_KEY}").as_str()), "the daemon sends the key it keeps");
+    let body: serde_json::Value = serde_json::from_str(&seen[0].body).unwrap();
+    assert_eq!(body["query"]["kind"], "HogQLQuery");
+    assert_eq!(body["query"]["query"], r.query);
+    assert!(!answered.to_string().contains(POSTHOG_KEY), "the answer never holds the key");
+}
+
+#[tokio::test]
+async fn anything_but_a_select_is_refused_before_anything_is_sent() {
+    let home = scratch("hogql-refused");
+    let (url, seen) = adapters::stand_in::serve(|_| rows_answer(1)).await;
+    let metrics = Arc::new(metrics(&home));
+    posthog(&metrics, &url, "site");
+    for q in ["DELETE FROM events", "SELECT 1; DROP TABLE events", "ALTER TABLE events DELETE WHERE 1", "SELECT 1 -- x", "INSERT INTO t SELECT 1", ""] {
+        let e = metrics.hogql(&hogql_params(q), 1_000).await.unwrap_err();
+        assert_eq!(e.code, BAD_PARAMS, "{q}: {}", e.message);
+    }
+    assert!(seen.lock().unwrap().is_empty(), "nothing reached PostHog");
+}
+
+#[tokio::test]
+async fn an_ad_hoc_querys_errors_never_hold_the_key() {
+    let home = scratch("hogql-errors");
+    let echo = format!("{{\"detail\": \"Invalid query near Bearer {POSTHOG_KEY}\"}}");
+    let (url, _) = adapters::stand_in::serve(move |_| adapters::stand_in::Reply::status(400, echo.clone())).await;
+    let metrics = Arc::new(metrics(&home));
+    posthog(&metrics, &url, "site");
+    let e = metrics.hogql(&hogql_params("SELECT nope FROM events"), 1_000).await.unwrap_err();
+    assert_eq!(e.code, SERVICE_FAILED);
+    assert!(e.message.contains("PostHog said 400"), "{}", e.message);
+    assert!(!e.message.contains(POSTHOG_KEY), "{}", e.message);
+    assert!(e.message.contains("•••"));
+
+    // A key PostHog refuses: its words, no key.
+    let (url, _) = adapters::stand_in::serve(|_| adapters::stand_in::Reply::status(403, br#"{"detail": "API key missing required scope 'query:read'"}"#.to_vec())).await;
+    let home = scratch("hogql-auth");
+    let metrics = Arc::new(super::tests::metrics(&home));
+    posthog(&metrics, &url, "site");
+    let e = metrics.hogql(&hogql_params("SELECT 1"), 1_000).await.unwrap_err();
+    assert!(e.message.contains("query:read") && !e.message.contains(POSTHOG_KEY), "{}", e.message);
+}
+
+#[tokio::test]
+async fn an_ad_hoc_query_is_timed_and_budgeted() {
+    // A PostHog that takes the request and never answers: the ask gives up in time.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move {
+        let mut held = Vec::new();
+        while let Ok((s, _)) = listener.accept().await {
+            held.push(s);
+        }
+    });
+    let home = scratch("hogql-slow");
+    let metrics = Arc::new(metrics(&home));
+    posthog(&metrics, &url, "site");
+    let started = std::time::Instant::now();
+    let e = metrics.hogql(&hogql_params("SELECT 1"), 1_000).await.unwrap_err();
+    assert_eq!(e.code, SERVICE_FAILED);
+    assert!(e.message.contains("didn't finish"), "{}", e.message);
+    assert!(started.elapsed() < hogql::WAIT + Duration::from_secs(2));
+
+    // Each connection's hour has its budget.
+    let (url, seen) = adapters::stand_in::serve(|_| rows_answer(1)).await;
+    let home = scratch("hogql-budget");
+    let metrics = Arc::new(super::tests::metrics(&home));
+    posthog(&metrics, &url, "site");
+    for _ in 0..hogql::PER_HOUR {
+        metrics.hogql(&hogql_params("SELECT 1"), 5_000).await.unwrap_or_else(|e| panic!("{}", e.message));
+    }
+    let e = metrics.hogql(&hogql_params("SELECT 1"), 5_100).await.unwrap_err();
+    assert_eq!(e.code, OVER_BUDGET, "{}", e.message);
+    assert_eq!(seen.lock().unwrap().len(), hogql::PER_HOUR, "the one over budget isn't sent");
+    assert!(metrics.hogql(&hogql_params("SELECT 1"), 5_000 + 3600).await.is_ok(), "an hour later, room again");
+}
+
+#[tokio::test]
+async fn an_ad_hoc_query_asks_the_connection_named_or_the_only_one() {
+    let home = scratch("hogql-which");
+    let (url, seen) = adapters::stand_in::serve(|_| rows_answer(1)).await;
+    let metrics = Arc::new(metrics(&home));
+    assert_eq!(metrics.hogql(&hogql_params("SELECT 1"), 1).await.unwrap_err().code, NOT_FOUND, "no PostHog connection");
+    let fake_id = metrics.connect(fake(&[]), 1).unwrap().id;
+    let e = metrics.hogql(&HogqlParams { connection: Some(fake_id), ..hogql_params("SELECT 1") }, 1).await.unwrap_err();
+    assert_eq!(e.code, BAD_PARAMS, "only PostHog answers queries: {}", e.message);
+    let site = posthog(&metrics, &url, "site");
+    assert_eq!(metrics.hogql(&hogql_params("SELECT 1"), 1).await.unwrap().connection, site, "the only PostHog one");
+    let app = posthog(&metrics, &url, "app");
+    let e = metrics.hogql(&hogql_params("SELECT 1"), 1).await.unwrap_err();
+    assert!(e.code == BAD_PARAMS && e.message.contains(&site) && e.message.contains(&app), "several: name one ({})", e.message);
+    assert_eq!(metrics.hogql(&HogqlParams { connection: Some(app.clone()), ..hogql_params("SELECT 1") }, 1).await.unwrap().connection, app);
+    assert_eq!(metrics.hogql(&HogqlParams { project: Some("site".into()), ..hogql_params("SELECT 1") }, 1).await.unwrap().connection, site);
+    let other = HogqlParams { squad: "other".into(), connection: Some(site), ..hogql_params("SELECT 1") };
+    assert_eq!(metrics.hogql(&other, 1).await.unwrap_err().code, NOT_FOUND, "never another squad's connection");
+    assert_eq!(seen.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn a_members_query_is_its_roles_and_reads_as_a_table() {
+    let names = |role: &str| crate::board::tools_for(role).into_iter().filter_map(|t| t["name"].as_str().map(str::to_owned)).collect::<Vec<_>>();
+    for role in ["pm", "data", "marketing"] {
+        assert!(names(role).contains(&tool::QUERY.to_owned()), "{role} asks queries");
+    }
+    for role in ["frontend", "backend", "designer", "qa", "security"] {
+        assert!(!names(role).contains(&tool::QUERY.to_owned()), "{role} doesn't");
+    }
+    assert!(crate::lanes::reads_only(tool::QUERY));
+    let p = tool::query_params("acme", &json!({ "hogql": " SELECT 1 ", "limit": 100_000 })).unwrap();
+    assert_eq!((p.query.as_str(), p.limit), ("SELECT 1", Some(500)));
+    assert_eq!(tool::query_params("acme", &json!({})).unwrap_err(), "Give the query as `hogql`: one SELECT.");
+    let r = HogqlResult {
+        connection: "m1".into(),
+        kind: SourceKind::Posthog,
+        query: "SELECT 1".into(),
+        columns: vec!["event".into(), "n".into()],
+        rows: vec![vec![json!("a|b"), json!(2)]],
+        truncated: true,
+        limit: 1,
+        took_ms: 7,
+    };
+    let text = tool::query_answer(&r);
+    assert!(text.starts_with("1 rows from m1 in 7 ms (more rows were there: only the first 1)."), "{text}");
+    assert!(text.contains("| event | n |") && text.contains("| a\\|b | 2 |"), "{text}");
+}

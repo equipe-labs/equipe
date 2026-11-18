@@ -4359,6 +4359,32 @@ runbooks and reports live there, and work across the projects or on running them
     /// Who a tool call comes from: the run it names, while that run still
     /// holds its ticket's current generation; the member itself when it
     /// names none. `Err` for a run that holds it no longer — a stale call.
+    /// `metrics_query`: a PM, data or marketing member's ad-hoc read-only
+    /// query, asked through the daemon's metrics (which hold the key) off the
+    /// runtime's loop.
+    fn metrics_query(&mut self, call: &ToolCall, reply: oneshot::Sender<ToolResult>) {
+        let role = self.member_id(&call.squad, &call.member).and_then(|id| self.sessions.get(&id)).and_then(|s| s.member.as_ref()).map(|m| m.role.clone());
+        if !role.as_deref().is_some_and(crate::metrics::tool::may_query) {
+            let _ = reply.send(ToolResult::error("Only the PM and the data and marketing members ask ad-hoc queries; ask the PM, or read the kept numbers with `metrics`."));
+            return;
+        }
+        let params = match crate::metrics::tool::query_params(&call.squad, &call.arguments) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = reply.send(ToolResult::error(e));
+                return;
+            }
+        };
+        let metrics = crate::metrics::shared(&self.config.home);
+        tokio::spawn(async move {
+            let result = match metrics.hogql(&params, now_secs()).await {
+                Ok(r) => ToolResult { text: crate::metrics::tool::query_answer(&r), is_error: false, image: None },
+                Err(e) => ToolResult::error(e.message),
+            };
+            let _ = reply.send(result);
+        });
+    }
+
     fn caller(&self, call: &ToolCall) -> Result<SessionId, String> {
         let Some(member) = self.member_id(&call.squad, &call.member) else {
             return Err(format!("{} isn't on the squad {}.", call.member, call.squad));
@@ -8992,6 +9018,9 @@ It starts when {owner} is free."
         }
         if call.name == crate::plan_use::TOOL {
             return self.plan_use_answer(&call, reply);
+        }
+        if call.name == crate::metrics::tool::QUERY {
+            return self.metrics_query(&call, reply);
         }
         if call.name == crate::helpers::HELPER_RESULT {
             return self.helper_result(call, reply);

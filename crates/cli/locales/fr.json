@@ -1615,5 +1615,8 @@
   "autonomy.picks": "Choix faits par les membres eux-mêmes :",
   "autonomy.no_allowance": "Aucune autorisation permanente #{id} en cours.",
   "autonomy.done": "C'est fait.",
-  "autonomy.no_answer": "Le démon n'a pas répondu. Est-il à jour ? Lancez equipe update."
+  "autonomy.no_answer": "Le démon n'a pas répondu. Est-il à jour ? Lancez equipe update.",
+  "metrics_query.no_daemon": "Aucun démon ne répond sur cette machine : lancez-le avec `equipe daemon start`, puis redemandez.",
+  "metrics_query.rows": "{rows} lignes de {connection} en {ms} ms",
+  "metrics_query.truncated": "Il y avait plus de lignes : seules les {limit} premières sont affichées. Demandez-en plus avec --limit (jusqu'à {most}) ou agrégez dans la requête."
 }

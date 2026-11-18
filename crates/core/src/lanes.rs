@@ -206,6 +206,7 @@ pub fn reads_only(tool: &str) -> bool {
         crate::signals::SIGNALS,
         crate::controls::SETTINGS,
         crate::metrics::tool::METRICS,
+        crate::metrics::tool::QUERY,
         crate::plan_use::TOOL,
         crate::squad_secrets::LIST,
     ]

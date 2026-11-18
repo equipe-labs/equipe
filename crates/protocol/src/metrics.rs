@@ -18,6 +18,9 @@ pub const DISCONNECT: &str = "metrics.disconnect";
 pub const QUERY: &str = "metrics.query";
 pub const REFRESH: &str = "metrics.refresh";
 pub const SUMMARY: &str = "metrics.summary";
+/// An ad-hoc read-only query through a connection (PostHog's HogQL): the
+/// person's own clients only; a member asks through its `metrics_query` tool.
+pub const HOGQL: &str = "metrics.hogql";
 
 /// What snapshots on disk are written as; read back from this one down.
 pub const SCHEMA: u32 = 1;
@@ -274,6 +277,42 @@ pub enum Bucket {
     Day,
     /// Monday to Sunday.
     Week,
+}
+
+/// `metrics.hogql` → [`HogqlResult`]: one read-only `SELECT` sent through a
+/// squad's connection by the daemon, with the key it keeps. Anything but a
+/// single `SELECT` is refused before anything is sent.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct HogqlParams {
+    pub squad: String,
+    /// The connection to ask; `None`: the squad's only one that answers queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connection: Option<String>,
+    /// Only a connection of this project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+    /// The `SELECT`.
+    pub query: String,
+    /// Rows answered at most; the daemon's default and cap apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HogqlResult {
+    /// The connection that was asked.
+    pub connection: String,
+    pub kind: SourceKind,
+    /// The query as sent: the `SELECT`, with a `LIMIT` when it had none.
+    pub query: String,
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    /// More rows were there than `limit`: only the first are answered.
+    #[serde(default)]
+    pub truncated: bool,
+    pub limit: u32,
+    /// How long it took, in milliseconds.
+    pub took_ms: u64,
 }
 
 /// `metrics.query` → [`QueryResult`]: a period of `days` ending `to`, beside

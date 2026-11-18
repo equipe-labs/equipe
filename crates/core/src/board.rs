@@ -756,6 +756,10 @@ pub fn tools_for(role: &str) -> Vec<Value> {
     if !crate::references::offered(role) {
         tools.retain(|t| t["name"] != crate::references::TOOL);
     }
+    // Ad-hoc queries of the product's analytics: the PM's and the data-minded roles'.
+    if crate::metrics::tool::may_query(role) {
+        tools.push(crate::metrics::tool::query_tool());
+    }
     tools
 }
 

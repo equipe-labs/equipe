@@ -140,6 +140,8 @@ async fn serve_until(
     let home = config.home.clone();
     // Each connection's numbers, once a day.
     let daily = tokio::spawn(metrics.clone().daily());
+    // A member's `metrics_query` asks through this one: its keys, pacing and budget.
+    crate::metrics::share(&metrics);
     let (core, own_events) = runtime::start(config);
     // Screens subscribe for themselves; an unread receiver would only pile up events.
     drop(own_events);
@@ -857,6 +859,12 @@ async fn serve_client(
                 break;
             }
             // The product's numbers (docs/METRICS.md): each on its own task, a refresh takes seconds.
+            // An ad-hoc query is the person's own clients' (a member asks
+            // through `metrics_query`, which checks its role).
+            (Some(equipe_protocol::metrics::HOGQL), Some(id)) if !origin.person_may() => {
+                crate::daemon_log!("equipe: refused metrics.hogql from a member's process");
+                let _ = out_tx.send(Message::failure(id, -32000, "ad-hoc metrics queries are the person's; a member uses its metrics_query tool"));
+            }
             (Some(method), Some(id)) if method.starts_with("metrics.") => {
                 let (metrics, out, method) = (metrics.clone(), out_tx.clone(), method.to_owned());
                 let params = message.params.clone().unwrap_or(serde_json::Value::Null);
@@ -1400,6 +1408,12 @@ pub async fn disk_report(socket: &Path) -> io::Result<Option<crate::disk::DiskRe
 /// Have the daemon at `socket` give back these items of its look.
 pub async fn disk_clean(socket: &Path, ids: Vec<String>) -> io::Result<Option<crate::disk::DiskCleaned>> {
     ask_once(socket, rpc::DISK_CLEAN, rpc::DiskClean { ids }).await
+}
+
+/// One ad-hoc read-only query through a squad's connection, asked of the
+/// daemon at `socket` (`metrics.hogql`); `None` when none answers.
+pub async fn metrics_hogql(socket: &Path, p: &equipe_protocol::metrics::HogqlParams) -> io::Result<Option<equipe_protocol::metrics::HogqlResult>> {
+    ask_once(socket, equipe_protocol::metrics::HOGQL, p).await
 }
 
 /// One request to the daemon at `socket`, and its answer.
