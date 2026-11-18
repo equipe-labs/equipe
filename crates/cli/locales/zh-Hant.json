@@ -1557,5 +1557,21 @@
   "open.bad_link": "「{text}」不是 equipe 連結。連結的樣子是 equipe://open/<小隊>/ticket/T-12 或 https://equipe.im/o/#<小隊>/ticket/T-12",
   "open.no_app": "沒有應用程式開啟 {link}。請安裝 equipe 桌面應用程式(equipe.app),啟動一次後再試。",
   "open.opening": "正在 equipe 中開啟 {link}",
-  "open.unsupported": "equipe open 目前支援 macOS 和 Linux。連結是 {link}"
+  "open.unsupported": "equipe open 目前支援 macOS 和 Linux。連結是 {link}",
+  "autonomy.usage": "equipe squad autonomy [show | set <類別> <ask|decide_and_tell|just_do> | window <分鐘> | revoke <編號>] — 類別：design、merge、internal、production_data",
+  "autonomy.floor": "{kind}一律先問你——任何策略都無法改變。",
+  "autonomy.title": "{squad} 的成員不問你能做到哪一步：",
+  "autonomy.window": "「決定後告訴我」等你回答 {minutes} 分鐘（0：立即）。",
+  "autonomy.always_asks": "一律先問你：{kinds}。",
+  "autonomy.allowances": "長期許可：",
+  "autonomy.none": "無",
+  "autonomy.revoked": "已撤銷",
+  "autonomy.expired": "已過期",
+  "autonomy.days_left": "剩 {days} 天",
+  "autonomy.used": "已用 {uses} 次",
+  "autonomy.latest_uses": "最近使用：",
+  "autonomy.picks": "成員自行做出的選擇：",
+  "autonomy.no_allowance": "沒有有效的長期許可 #{id}。",
+  "autonomy.done": "已完成。",
+  "autonomy.no_answer": "常駐程式沒有回應。它是最新版本嗎？請執行 equipe update。"
 }

@@ -994,15 +994,46 @@ keep its server running until they are done. Never run `equipe browser` yourself
         "name": ASK_PERSON,
         "description": "Ask the person's yes before something done in their name that they can't take back \
 easily: creating an account or signing up, accepting terms, starting a trial or a paid plan, inviting someone, \
-deleting or transferring something, changing security or billing settings. The person sees exactly what you \
-wrote and answers yes or no; wait for the answer and do only what they said yes to.",
+deleting or transferring something, changing security or billing settings, writing to a live system's data. Lead \
+with `summary`, three short lines in the person's language — what will change, who sees it, how it is undone — that \
+anyone can judge at a glance; the exact technical detail goes in `action`, folded under it. Say its `kind`. You don't \
+wait on the card: the call returns at once, you carry on with other work that doesn't depend on it, and the answer \
+comes to you as a message — do only what they said yes to, once they have. The squad's autonomy policy may let it \
+through at once (a standing allowance the person granted, or the policy for live data): then the call says so, and you \
+go ahead exactly as you described. For a write to a live system you will repeat (test records, say), offer a \
+`standing` scope the person can grant once: the system, a marker every such record carries in its title, the ops, \
+and how many days you may delete what you made — never anything broader.",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": { "type": "string", "description": "Exactly what you will do, where — in the person's language." },
                 "why": { "type": "string", "description": "Why the work needs it, in one line." },
+                "summary": {
+                    "type": "object",
+                    "description": "What the card leads with, in the person's language, a short line each.",
+                    "properties": {
+                        "changes": { "type": "string", "description": "What will change, in plain words." },
+                        "who_sees": { "type": "string", "description": "Who sees it or is affected." },
+                        "undo": { "type": "string", "description": "How it is undone, or that it can't be." },
+                    },
+                    "required": ["changes"],
+                },
+                "kind": { "type": "string", "enum": ["production_data", "sign_in", "money", "deletion", "outside", "security", "legal", "other"], "description": "What it is: writing to live data, sign-ins and credentials, money, permanent deletion, sending or publishing outside, security settings, legal matters, or other. Sign-ins, money, deletion, outside, security and legal always ask the person." },
+                "system": { "type": "string", "description": "The live system it writes to, by the name people use for it (\"ERP\", \"CRM\"), for production_data." },
+                "op": { "type": "string", "enum": ["create", "update", "delete"], "description": "For production_data: what it does to the data." },
+                "standing": {
+                    "type": "object",
+                    "description": "For production_data you will repeat: the scope the person may grant once, so later requests inside it go ahead without asking.",
+                    "properties": {
+                        "words": { "type": "string", "description": "The scope in one plain sentence, in the person's language: \"Test records titled [test] in the ERP: create them, and delete the ones you made within 7 days\"." },
+                        "marker": { "type": "string", "description": "The label every such record carries in its title, exactly: \"[test]\"." },
+                        "ops": { "type": "array", "items": { "type": "string", "enum": ["create", "update", "delete"] } },
+                        "undo_days": { "type": "integer", "description": "With delete: the days within which a member may delete what it made under the scope." },
+                    },
+                    "required": ["words", "marker", "ops"],
+                },
             },
-            "required": ["action", "why"],
+            "required": ["action", "why", "summary", "kind"],
         },
     }));
     tools.push(json!({
@@ -1091,6 +1122,7 @@ and answers with the family plus the tiles they liked.",
                                 "maxItems": crate::visuals::PER_QUESTION,
                                 "description": "Pictures of the question as a whole — what is there now, say — shown above its options.",
                             },
+                            "kind": { "type": "string", "enum": ["design", "internal", "product"], "description": "What it is about: design (a choice between options you made — layouts, directions, looks), internal (the squad's own process: how to file or title a ticket, a duplicate, a follow-up — invisible in the product), or product (scope, behaviour, cost, anything else). Under the squad's autonomy policy, internal questions may be yours to settle, and a design choice may be taken on your recommended option if the person doesn't answer in time." },
                             "lesson": { "type": "string", "description": "Only in the weekly retro: the lesson behind this change, one line in the person's language. equipe keeps it in the squad's memory when the person takes any option but the last; otherwise it is let go." },
                         },
                         "required": ["question"],

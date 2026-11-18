@@ -1580,5 +1580,21 @@
   "open.bad_link": "«{text}» no es un enlace de equipe. Uno se ve así: equipe://open/<equipo>/ticket/T-12 o https://equipe.im/o/#<equipo>/ticket/T-12",
   "open.no_app": "Ninguna app abrió {link}. Instala la app de escritorio de equipe (equipe.app), ábrela una vez e inténtalo de nuevo.",
   "open.opening": "Abriendo {link} en equipe",
-  "open.unsupported": "equipe open funciona por ahora en macOS y Linux. El enlace es {link}"
+  "open.unsupported": "equipe open funciona por ahora en macOS y Linux. El enlace es {link}",
+  "autonomy.usage": "equipe squad autonomy [show | set <tipo> <ask|decide_and_tell|just_do> | window <minutos> | revoke <n.º>] — tipos: design, merge, internal, production_data",
+  "autonomy.floor": "{kind} siempre te lo pregunta: ninguna política lo cambia.",
+  "autonomy.title": "Hasta dónde llegan los miembros de {squad} sin ti:",
+  "autonomy.window": "«Decidir y avisarme» espera tu respuesta {minutes} min (0: enseguida).",
+  "autonomy.always_asks": "Siempre te pregunta: {kinds}.",
+  "autonomy.allowances": "Permisos permanentes:",
+  "autonomy.none": "ninguno",
+  "autonomy.revoked": "revocado",
+  "autonomy.expired": "caducado",
+  "autonomy.days_left": "quedan {days} días",
+  "autonomy.used": "usado {uses} veces",
+  "autonomy.latest_uses": "Últimos usos:",
+  "autonomy.picks": "Decisiones que tomaron los miembros:",
+  "autonomy.no_allowance": "No hay ningún permiso permanente #{id} vigente.",
+  "autonomy.done": "Hecho.",
+  "autonomy.no_answer": "El daemon no respondió. ¿Está actualizado? Ejecuta equipe update."
 }

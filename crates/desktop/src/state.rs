@@ -413,6 +413,11 @@ pub struct Model {
     /// The PM accepts the team's handed-in work itself: the person's inbox
     /// keeps only what is theirs.
     pub pm_accepts: bool,
+    /// The squad's autonomy policy, standing allowances and the choices
+    /// members took on their own; `None` from a daemon that predates it.
+    pub autonomy: Option<equipe_core::protocol::autonomy::State>,
+    /// Automatic picks the person has looked at here ("OK"), by set id: off the dock.
+    pub picks_seen: std::collections::HashSet<u64>,
     /// What new members of a role start with, where the person set it.
     pub role_models: Vec<equipe_core::protocol::RoleModel>,
     /// The models each engine offers on the daemon's machine, as last listed
@@ -662,6 +667,8 @@ impl Model {
             login_insights: None,
             squad_secrets: Vec::new(),
             pm_accepts: false,
+            autonomy: None,
+            picks_seen: Default::default(),
             role_models: Vec::new(),
             catalogs: HashMap::new(),
             idle_wake_hours: equipe_core::protocol::routines::IDLE_WAKE_HOURS,
@@ -1369,6 +1376,7 @@ impl Model {
         self.projects = snapshot.projects.clone();
         self.hq = snapshot.hq.clone();
         self.pm_accepts = snapshot.pm_accepts;
+        self.autonomy = snapshot.autonomy.clone();
         self.role_models = snapshot.role_models.clone();
         // An older daemon says nothing: it wakes nobody, but the setting shows its default.
         self.idle_wake_hours = snapshot.idle_wake_hours.unwrap_or(equipe_core::protocol::routines::IDLE_WAKE_HOURS);
@@ -1583,6 +1591,10 @@ impl Model {
             }
             Event::PmAcceptsChanged { squad, on } if *squad == self.squad => {
                 self.pm_accepts = *on;
+                self.revision += 1;
+            }
+            Event::AutonomyChanged { squad, state } if *squad == self.squad => {
+                self.autonomy = Some(state.clone());
                 self.revision += 1;
             }
             Event::RoleModelsChanged { squad, defaults } if *squad == self.squad => {

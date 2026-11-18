@@ -5501,6 +5501,7 @@ mod tests {
             action: "npm install".into(),
             reason: None,
             preview: None,
+            ask: None,
         }
     }
 
