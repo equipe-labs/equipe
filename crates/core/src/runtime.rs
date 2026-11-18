@@ -5539,6 +5539,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             session.memo_threads.push(None);
             return;
         }
+        // On a lighter model since its own reached its limit: back on its own once that started over.
+        self.back_from_lighter(id);
         // On an engine that is out of its limit nothing would run: kept for later.
         if self.hold_for_limit(id, &prompt) {
             return;

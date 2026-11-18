@@ -16,7 +16,12 @@
 //!   completed. The run is paused for that engine, its ticket kept exactly as
 //!   it is, and goes on by itself: on the other engine when its member moves
 //!   there (the switching rules in `runtime/engines.rs`), or on this one once
-//!   it has room again.
+//!   it has room again. A limit the plan doesn't show (it has room as read)
+//!   is the model's own — Claude's Opus weekly cap, Codex's top model: in
+//!   `auto` the run carries on at once on the engine's lighter model, the
+//!   person told in a line, and goes back to its own model at its first turn
+//!   after the plan's week starts over; in `suggest` a card offers it, one
+//!   tap; in `off` it waits, as before.
 //! - **The turn ended with no end to the work** — no hand-in, wait, question,
 //!   hand-back or design QA verdict, nothing waiting on the person. equipe
 //!   resumes the same conversation once with a short reminder of the ways to
@@ -34,6 +39,7 @@
 
 use std::collections::HashSet;
 
+use equipe_protocol::engines::Switching;
 use equipe_protocol::{PauseWhy, RunPause};
 
 use super::*;
@@ -177,6 +183,9 @@ pub(super) struct RunEnd {
     pub(super) with_person: Option<WithPerson>,
     /// What it last wrote on its ticket's record.
     pub(super) last_comment: Option<String>,
+    /// On a lighter model since its own reached its limit: the model it goes
+    /// back to, and from when (unix seconds) — at a turn's start, never mid-turn.
+    pub(super) lighter: Option<(String, u64)>,
 }
 
 /// What a run put in the person's hands, and since when it waits on them.
@@ -204,6 +213,15 @@ pub(super) struct Park {
     due: Option<u64>,
     /// What it is asked when it goes on.
     prompt: String,
+}
+
+/// What a run that went lighter mid-ticket is asked to go on with.
+fn lighter_carry_on(ticket: TicketId, model: &str, lighter: &str) -> String {
+    let (model, lighter) = (super::engines::model_word(model), super::engines::model_word(lighter));
+    format!(
+        "[equipe] {model} reached its own usage limit during your last turn on T-{ticket}; you carry on on {lighter} until it resets. \
+Carry on where you left off — look at what is already done in your worktree first, and don't redo it."
+    )
 }
 
 /// Whether a turn's end is the engine's limit: it said so, or the engine is out
@@ -805,6 +823,9 @@ don't requeue or reassign the paused tickets."
     /// once there is room.
     fn park_for_limit(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId, engine: Engine, ending: &Ending) {
         self.count_ending(squad, turn_ending::LIMITED, Some(ticket), name);
+        if self.carry_on_lighter(id, squad, name, ticket, engine, ending) {
+            return;
+        }
         let now = now_secs();
         let resets = self.engine_out(squad, engine).map(|at| at.max(0) as u64).filter(|at| *at > now);
         let due = resets.unwrap_or(now + LIMIT_RECHECK);
@@ -831,6 +852,136 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
         self.read_engine_usage(engine);
         self.consider_engines(squad);
         self.show_pause(id);
+    }
+
+    /// Run `id`'s turn hit a limit its engine's plan doesn't show — no reading
+    /// says the plan is out, and a fresh one says it has room, or the engine
+    /// named the model — so the cap was its model's own (Claude's Opus weekly
+    /// cap, Codex's top model). With a lighter model on the same engine to go
+    /// to: in `auto` the run carries on on it now, the person told in a line;
+    /// in `suggest` a card offers it and the run waits; in `off` it waits.
+    /// Whether it carried on.
+    fn carry_on_lighter(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId, engine: Engine, ending: &Ending) -> bool {
+        // Limited on the lighter model too: the plan's limit after all — back
+        // on its own model, to wait for the plan (or move) as any limit does.
+        if self.sessions.get(&id).and_then(|s| s.work.as_ref()).is_some_and(|w| w.end.lighter.is_some()) {
+            self.back_from_lighter_at(id, u64::MAX);
+            return false;
+        }
+        let Some(model) = self.sessions.get(&id).and_then(|s| s.model.clone()) else { return false };
+        let Some(lighter) = crate::switching::lighter_model(engine, Some(&model)) else { return false };
+        if self.engine_out(squad, engine).is_some() {
+            return false;
+        }
+        let family = if model.contains("opus") { "opus" } else { "astra" };
+        let said = |t: &str| t.to_ascii_lowercase().contains(family);
+        let named = said(&ending.text) || ending.error.as_ref().is_some_and(|(m, _)| said(m));
+        // A plan nearly out as read says the limit is likely the plan's: every model shares it.
+        match self.engine_clear(squad, engine) {
+            Some(false) => return false,
+            None if !named => return false,
+            _ => {}
+        }
+        let now = now_secs();
+        // Back on its own model once the plan's week starts over (its model's cap with it), else in five hours.
+        let until = self.week_window(engine).map(|(w, _)| w.resets_at.max(0) as u64).filter(|at| *at > now).unwrap_or(now + 5 * 3600);
+        match self.switching_mode(squad) {
+            Switching::Off => false,
+            Switching::Suggest => {
+                self.offer_lighter(squad, name, engine, (&model, lighter), ticket, until as i64);
+                false
+            }
+            Switching::Auto => {
+                self.lighten_run(squad, id, lighter, until);
+                let prompt = self.lighter_prompt(id, ticket, &model, lighter, ending);
+                self.park(id, Park { why: ParkWhy::Limit { engine }, at: now, due: None, prompt });
+                self.go_on(id);
+                true
+            }
+        }
+    }
+
+    /// What a run that just went lighter is asked: what it was asked, when
+    /// its turn did nothing, else to carry on where it left off.
+    fn lighter_prompt(&self, _id: SessionId, ticket: TicketId, model: &str, lighter: &str, ending: &Ending) -> String {
+        match ending.prompt.as_deref().filter(|_| ending.did_nothing()) {
+            Some(asked) => {
+                let (model, lighter) = (super::engines::model_word(model), super::engines::model_word(lighter));
+                format!("{asked}\n\n[equipe: {model} was out of its own usage limit when this was first asked; you are on {lighter} now. Go on as asked above.]")
+            }
+            None => lighter_carry_on(ticket, model, lighter),
+        }
+    }
+
+    /// Run `id` on `lighter` from its next turn, back on the model it had at
+    /// its first turn from `until`: logged, and told in one line.
+    fn lighten_run(&mut self, squad: &str, id: SessionId, lighter: &str, until: u64) {
+        let Some(s) = self.sessions.get_mut(&id) else { return };
+        let Some(was) = s.model.clone() else { return };
+        s.model = Some(lighter.to_owned());
+        s.ran = None;
+        let name = s.name().unwrap_or("agent").to_owned();
+        let ticket = s.work.as_ref().map(|w| w.ticket);
+        if let Some(work) = s.work.as_mut() {
+            work.end.lighter.get_or_insert((was.clone(), until));
+        }
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.set_model(id, lighter);
+        }
+        self.publish(Event::ModelKnown { session: id, model: lighter.to_owned(), asked: Some(lighter.to_owned()) });
+        let (shown, lighter_shown) = (super::engines::model_word(&was), super::engines::model_word(lighter));
+        let at = ticket.map(|t| format!(" for T-{t}")).unwrap_or_default();
+        self.log_engines(squad, format!("{name} moved to {lighter_shown}{at} ({shown}'s own limit reached; back after the reset)"));
+        let text = say!(self, "news.model_limit_lighter", name = name, lighter = lighter_shown, model = shown, id = ticket.unwrap_or_default());
+        self.brief_pm(squad, format!("equipe: {text}"), Some(text.clone()));
+        self.publish(Event::Notice { undo: None, session: id, text });
+    }
+
+    /// The person's yes to a lighter model for member `member`: each of its
+    /// runs paused for `engine`'s limit carries on on `lighter` now.
+    pub(super) fn lighten_parked(&mut self, squad: &str, member: SessionId, engine: Engine, lighter: &str) {
+        let now = now_secs();
+        let until = self.week_window(engine).map(|(w, _)| w.resets_at.max(0) as u64).filter(|at| *at > now).unwrap_or(now + 5 * 3600);
+        let mut runs = self.runs_of(member);
+        runs.push(member);
+        for run in runs {
+            let Some(s) = self.sessions.get(&run) else { continue };
+            let limited = s.work.as_ref().and_then(|w| w.end.parked.as_ref()).is_some_and(|p| matches!(p.why, ParkWhy::Limit { engine: e } if e == engine));
+            if !limited || crate::switching::lighter_model(engine, s.model.as_deref()) != Some(lighter) {
+                continue;
+            }
+            let (was, ticket) = (s.model.clone().unwrap_or_default(), s.work.as_ref().map(|w| w.ticket).unwrap_or_default());
+            self.lighten_run(squad, run, lighter, until);
+            // What it is asked when it goes on: on the lighter model now, not "room again".
+            if let Some(park) = self.sessions.get_mut(&run).and_then(|s| s.work.as_mut()).and_then(|w| w.end.parked.as_mut())
+                && park.prompt.starts_with("[equipe] Your engine reached")
+            {
+                park.prompt = lighter_carry_on(ticket, &was, lighter);
+            }
+            self.go_on(run);
+        }
+    }
+
+    /// At a turn's start: a run on a lighter model since its own reached its
+    /// limit goes back to its own once that limit has started over.
+    pub(super) fn back_from_lighter(&mut self, id: SessionId) {
+        self.back_from_lighter_at(id, now_secs());
+    }
+
+    /// Run `id` back on its own model if it went lighter until `now` or before.
+    fn back_from_lighter_at(&mut self, id: SessionId, now: u64) {
+        let Some(s) = self.sessions.get_mut(&id) else { return };
+        let Some((was, _)) = s.work.as_mut().and_then(|w| w.end.lighter.take_if(|(_, until)| *until <= now)) else { return };
+        let ticket = s.work.as_ref().map(|w| w.ticket).unwrap_or_default();
+        s.model = Some(was.clone());
+        s.ran = None;
+        let (name, squad) = (s.name().unwrap_or("agent").to_owned(), s.squad.clone());
+        let Some(squad) = squad else { return };
+        if let Some(journal) = self.journal(&squad) {
+            let _ = journal.set_model(id, &was);
+        }
+        self.publish(Event::ModelKnown { session: id, model: was.clone(), asked: Some(was.clone()) });
+        self.log_engines(&squad, format!("{name} back on {} for T-{ticket}", super::engines::model_word(&was)));
     }
 
     /// `engine`'s plan read again (no more often than each reader allows).
@@ -951,8 +1102,9 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
             match park.why {
                 ParkWhy::Failed { .. } if due && !self.turn_ends.paused(&squad) => self.go_on(id),
                 ParkWhy::Limit { engine } => {
-                    // Moving to the other engine: the move takes the ticket there.
-                    if self.moving_to(&squad, &name).is_some() {
+                    // Moving to the other engine: the move takes the ticket there;
+                    // a lighter model offered: the person's answer does.
+                    if self.moving_to(&squad, &name).is_some() || self.lighter_offered(&squad, &name) {
                         self.show_pause(id);
                         continue;
                     }

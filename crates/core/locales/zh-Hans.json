@@ -772,6 +772,8 @@
   "news.squad_resumed": "引擎恢复正常，暂停的工单会自动继续。",
   "news.ticket_failing": "T-{id} 的引擎一直失败（{cause}）；equipe 会逐渐拉长间隔继续重试 · {title}。",
   "news.limit_paused": "T-{id} 进行中 {engine} 达到了用量上限：被中断的工作原地暂停，并会自动继续——成员换到另一个引擎就在那里继续，否则等 {engine} 有余量时继续。",
+  "news.model_limit_lighter": "{name} 改用 {lighter} 继续 T-{id}（{model} 已达上限；重置后切回）",
+  "news.model_limit_ask": "{name} 在 T-{id} 上达到了 {model} 本身的上限——在重置前改用 {lighter} 继续吗？在卡片上回答之前 T-{id} 会等待。",
   "error.autopilot": "登录自动驾驶：{why}",
   "error.autopilot_totp": "未能保存该验证器密钥：{why}",
   "error.autopilot_no_qr": "equipe 没有找到验证器二维码：请在 equipe 的浏览器中打开该网站的两步验证设置页（你自己在该网站上的标签页），然后重试——或者直接粘贴网站显示的密钥。",

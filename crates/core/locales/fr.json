@@ -777,6 +777,8 @@
   "news.squad_resumed": "Les moteurs fonctionnent de nouveau : les tickets en pause reprennent tout seuls.",
   "news.ticket_failing": "Le moteur de T-{id} échoue sans cesse ({cause}) ; equipe continue d'essayer, en attendant plus longtemps à chaque fois · {title}.",
   "news.limit_paused": "{engine} a atteint sa limite d'utilisation pendant T-{id} : ce qui a été interrompu est en pause sur place et reprendra tout seul — sur l'autre moteur si des membres y passent, ou dès que {engine} aura de la marge.",
+  "news.model_limit_lighter": "{name} passe à {lighter} pour T-{id} (limite de {model} atteinte ; retour après la réinitialisation)",
+  "news.model_limit_ask": "{name} a atteint la limite propre de {model} sur T-{id} — continuer avec {lighter} jusqu'à la réinitialisation ? T-{id} attend ta réponse sur la carte.",
   "error.autopilot": "Pilote automatique de connexion : {why}",
   "error.autopilot_totp": "Cette clé d’authentification n’a pas été gardée : {why}",
   "error.autopilot_no_qr": "equipe n’a trouvé aucun QR code d’authentification : ouvrez la page de configuration de la double authentification du site dans le navigateur d’equipe (votre propre onglet sur ce site), puis réessayez — ou collez plutôt le secret que le site affiche.",

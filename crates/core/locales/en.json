@@ -777,6 +777,8 @@
   "news.squad_resumed": "The engines work again: the paused tickets go on by themselves.",
   "news.ticket_failing": "T-{id}'s engine keeps failing ({cause}); equipe keeps trying, waiting longer each time · {title}.",
   "news.limit_paused": "{engine} reached its usage limit during T-{id}: what it cut short is paused where it was and goes on by itself — on the other engine if members move there, or once {engine} has room.",
+  "news.model_limit_lighter": "{name} moved to {lighter} for T-{id} ({model} limit reached; back after the reset)",
+  "news.model_limit_ask": "{name} reached {model}'s own limit on T-{id} — carry on on {lighter} until it resets? T-{id} waits for your answer on the card.",
   "error.autopilot": "Login autopilot: {why}",
   "error.autopilot_totp": "That authenticator seed wasn't kept: {why}",
   "error.autopilot_no_qr": "equipe found no authenticator QR code: open the site's two-factor setup page in equipe's browser (your own tab on that site), then try again — or paste the secret the site shows instead.",

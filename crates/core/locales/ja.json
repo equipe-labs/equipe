@@ -772,6 +772,8 @@
   "news.squad_resumed": "エンジンが再び動いています。止まっていたチケットは自動で再開します。",
   "news.ticket_failing": "T-{id} のエンジンが失敗し続けています（{cause}）。equipe は間隔を延ばしながら再試行を続けます · {title}。",
   "news.limit_paused": "T-{id} の途中で {engine} が使用上限に達しました。中断された作業はその場で止まり、自動で再開します。メンバーが別のエンジンに移ればそこで、そうでなければ {engine} に余裕ができたときに再開します。",
+  "news.model_limit_lighter": "{name} は T-{id} を {lighter} で続けます（{model} の上限に到達。リセット後に元に戻ります）",
+  "news.model_limit_ask": "{name} が T-{id} の途中で {model} 自体の上限に達しました。リセットまで {lighter} で続けますか？カードで答えるまで T-{id} は待機します。",
   "error.autopilot": "ログインオートパイロット：{why}",
   "error.autopilot_totp": "認証アプリのシードを保存できませんでした：{why}",
   "error.autopilot_no_qr": "equipe は認証アプリの QR コードを見つけられませんでした。equipe のブラウザでそのサイトの二段階認証の設定ページを開き（そのサイト用のあなた自身のタブです）、もう一度お試しください。または、サイトに表示されるシークレットキーを貼り付けてください。",
