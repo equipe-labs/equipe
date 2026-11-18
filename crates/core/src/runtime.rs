@@ -852,6 +852,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         model_refused_turns: HashSet::new(),
         engine_pages: HashMap::new(),
         tool_repeats: HashMap::new(),
+        qa_budgets: HashMap::new(),
         codex_listing: false,
         providers: HashMap::new(),
         questions: HashMap::new(),
@@ -1383,7 +1384,8 @@ enum Internal {
     DesignRestore { squad: String, project: Option<String>, commit: String, version: Option<equipe_protocol::design::DesignVersion> },
     /// A design QA precheck ended off the loop: its report is in the
     /// ticket's design QA folder, or why there is none.
-    Prechecked { squad: String, qa: TicketId, result: Result<(), String>, secs: u64 },
+    /// `loaded`: the machine was overloaded at some time while it ran.
+    Prechecked { squad: String, qa: TicketId, result: Result<(), String>, secs: u64, loaded: bool },
     /// Main's precheck for a daily design review ended off the loop: main's
     /// commit per project, or why there is none.
     ReviewPrechecked { squad: String, review: TicketId, heads: Vec<(PathBuf, Result<String, String>)>, secs: u64 },
@@ -1557,6 +1559,9 @@ struct Runtime {
     /// For each run, its latest tool call and how many times in a row it
     /// came: a loop raises its ticket's next lane (`runtime::tiers`).
     tool_repeats: HashMap<SessionId, (String, u32)>,
+    /// For each design QA, review or audit turn: its tool calls so far, and
+    /// whether it was told its budget ran out (`runtime::design_qa`).
+    qa_budgets: HashMap<SessionId, design_qa::Budget>,
     /// A listing for the screens is under way.
     codex_listing: bool,
     /// What each model provider connected here listed, by its id.
@@ -2244,7 +2249,7 @@ impl Runtime {
                 Internal::DesignRefs(event) => self.publish(*event),
                 Internal::DesignRestore { squad, project, commit, version } => self.on_design_restore(squad, project, commit, version).await,
                 Internal::Reviewed { squad, ticket, member, result } => self.on_reviewed(&squad, ticket, member, result),
-                Internal::Prechecked { squad, qa, result, secs } => Box::pin(self.on_prechecked(&squad, qa, result, secs)).await,
+                Internal::Prechecked { squad, qa, result, secs, loaded } => Box::pin(self.on_prechecked(&squad, qa, result, secs, loaded)).await,
                 Internal::ReviewPrechecked { squad, review, heads, secs } => Box::pin(self.on_review_prechecked(&squad, review, heads, secs)).await,
                 Internal::SubagentHeard { session, id } => {
                     self.engine_heard(session);
@@ -2321,6 +2326,9 @@ impl Runtime {
         // A decision whose window passed is taken on time, whatever the load.
         pulse.step("minute tick: decide-and-tell");
         self.autonomy_due(now_secs()).await;
+        // Prechecks a restart cut short start again (each waits for calm by itself).
+        pulse.step("minute tick: prechecks");
+        self.resume_prechecks();
         if !overloaded {
             pulse.step("minute tick: design reviews");
             self.design_qa_tick(now_secs()).await;
@@ -2475,8 +2483,13 @@ impl Runtime {
         if let Event::ToolUse { session, tool, target: Some(target), .. } = &event {
             self.watch_loop(*session, tool, target);
         }
+        // A design QA turn past its budget is told to finish with what it has.
+        if let Event::ToolUse { session, .. } = &event {
+            self.watch_qa_budget(*session);
+        }
         if let Event::TurnEnded { session, .. } = &event {
             self.tool_repeats.remove(session);
+            self.qa_budgets.remove(session);
         }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
@@ -6992,10 +7005,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         }
         watchdog::mark("dispatch: board");
         // Closed tickets light: what starts next reads only their status and links.
+        // Design QA whose precheck is under way, by the journal too: never a designer's before its result.
+        let prechecking = self.prechecks_pending(squad);
         let board = self.tickets(squad);
         let mut tickets: Vec<Ticket> = board
             .iter()
-            .filter(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id) && !self.prechecking(squad, ticket.id))
+            .filter(|ticket| !self.held_for_room(ticket.kind) && !self.workspaces.busy(squad, ticket.id) && !prechecking.contains(&ticket.id))
             .map(board::light_copy)
             .collect();
         drop(board);
@@ -7849,6 +7864,11 @@ todo); or drop it if it's no longer wanted.]"
                 ticket.note = handed_in;
                 ticket.images = images;
                 match work.screens.then(|| self.ask_design_qa(&squad, &mut ticket, &name, work.waive.as_deref())).flatten() {
+                    // Held on itself while its screens are prechecked: no design QA ticket yet.
+                    Some(qa) if qa == ticket.id => {
+                        let line = format!("{name} handed in T-{}; equipe prechecks its screens first — a designer checks it only if the precheck finds it needs one, else it goes into the daily design review", ticket.id);
+                        (name.as_str(), "handed in", line, "news.design_qa_prechecking")
+                    }
                     Some(qa) => {
                         to = Some(design_qa::DESIGNER.to_owned());
                         let line = format!("{name} handed in T-{}; the designer checks its screens on T-{qa} before the person reviews it", ticket.id);

@@ -27,8 +27,25 @@ A squad runs design QA in one of two modes (`equipe design qa-config --mode risk
 | Route | When |
 |---|---|
 | **refused** | the report has new S1/S2 findings (content lost, AA failures, sideways scroll, text over text) and the engineer didn't waive them. The hand-in goes straight back with the findings, no designer turn and no model escalation; the engineer fixes them, or hands in again with `waive_findings` and a reason. |
-| **per ticket** | high risk: findings the engineer **waived**; **new screens or states** (rendered states the map had no picture of at the base); **6 or more changed screens**; a designer's **spec attached** to a change of more than one screen — a spec'd tweak of one screen with nothing new is a small change and goes to the batch — (its plan is a design file, or its body names a mockup under `design/` or a written spec in a `specs/`, `mockups/`, `screens/` or `redesign/` folder there — not the map, design QA's reports, the checks or the system's own `guidelines.md` / `tokens.json`, which every ticket names; who wrote the ticket says nothing by itself); a **re-check** after a designer's send-back; or the precheck **couldn't see it** (no report, nothing or half the pictures rendered); or 10+ unmapped UI files. |
-| **batch** | everything else: on to the person's (or PM's) review now, and into the next daily design review. |
+| **per ticket** | a designer is really needed now: findings the engineer **waived**; **new screens or states** (rendered states the map had no picture of at the base); a design look **the person asked for** (they filed the ticket themselves, labelled `design` or `check`); or the precheck **couldn't see it** (no report, nothing or half the pictures rendered — after its retries, see below). |
+| **batch** | everything else, including the other risks — **6 or more changed screens**; a designer's **spec attached** to a change of more than one screen (its plan is a design file, or its body names a mockup under `design/` or a written spec in a `specs/`, `mockups/`, `screens/` or `redesign/` folder there — not the map, design QA's reports, the checks or the system's own `guidelines.md` / `tokens.json`); a **re-check** after a designer's send-back; 10+ unmapped UI files — which are recorded on the run for the review. On to the person's (or PM's) review now, and into the next daily design review. While audits keep the routing **tightened**, any risk sends the change to a designer now, as before. |
+
+In `risk_batch` no design QA ticket is made at hand-in: the change **holds itself** while its screens are prechecked
+(its `design_qa` names its own id, so it isn't ready for review yet), the precheck's result is recorded on the change,
+and only a **per ticket** route makes a design QA ticket — its run and report move to it. A batched change never gets
+one; each is counted (`design_qa_runs.route = batch`, and a daemon log line with the last seven days' count) so the
+quality of skipping can be weighed later.
+
+A designer never starts a design QA turn while its precheck runs — the journal holds it off the board, so a daemon
+restart doesn't release it; the minute tick starts a precheck a restart cut short again. A precheck that couldn't
+render (no report, or nothing / half rendered) because the **machine was overloaded** while it ran — or that hit its
+time limit — runs again later, after 5, then 10 minutes and once the machine is calm; only after 3 such tries does a
+designer look, **narrowed** to the main width (light) and the states the change touched.
+
+Design QA turns have a **budget**: about 30 tool calls or 15 minutes (a daily review or audit: 60 calls or 30 minutes).
+Past it, the designer is told — once, mid-turn — to finish with what it has. The brief names the precheck's pictures of
+the flagged and changed states to reuse instead of shooting them again; the daily review judges from the precheck's
+pictures alone.
 
 The engineer can run the self-check itself before handing in: `equipe design precheck --worktree .`.
 
@@ -192,7 +209,7 @@ Run it by hand on any worktree: `equipe design precheck --worktree . --base main
   | `unmapped_large` | `unmappedLarge` (10) or more unmapped UI files | top |
   | `broad` | 6 or more screens changed (screens, so a raised state cap doesn't make one screen look broad) | top |
 
-  When several apply, the strongest decides and all are said. A redesign or a second round is top whatever the reason.
+  When several apply, the strongest decides and all are said. A redesign or a third round is top whatever the reason.
   The designer on the cheap tier gets the report, which names the states it left out; those are the ones it renders.
 - **Auto-pass** — every touched state rendered, none left out, nothing unmapped (UI), no picture changed against the
   base, nothing new found: passed without a designer turn. The ticket's note says `Design QA by equipe (T-…): passed.`
@@ -232,10 +249,11 @@ Design QA tickets run on the squad's tier policy (`crate::design_qa::tier_for`),
 every ticket (`crate::tiers`):
 
 - `economy` (default): **standard** (Claude: Sonnet · medium; Codex: Sol · low) — **deep** (Opus · high / Sol · high)
-  for a redesign (the checked ticket says redesign, restyle, …), a second round or more, or a precheck whose judgment
-  reason needs the top tier (table above; no report at all included, so with the gate `off` design QA stays on the
-  top tier — except for a small change, as its title says: copy, a label, a tweak, a chore, which stays on the cheap
-  tier even without a report). `capped`, `partial` and `unmapped` stay on the cheap tier: the designer is handed what wasn't seen.
+  for a redesign (the checked ticket says redesign, restyle, …), a third round or more, or — where a precheck ran —
+  only when its report has **S1/S2 findings left to the designer's judgment** (a waiver, a send-back the gate didn't
+  act on). What the precheck couldn't render is a narrowed look on the cheap tier, not a harder one. With no precheck
+  at all (gate `off`) design QA stays on the top tier — except for a small change, as its title says: copy, a label,
+  a tweak, a chore, which stays on the cheap tier.
 - `quality`: deep always, as before.
 - `<cheap>/<top>`, e.g. `strong/max`.
 
