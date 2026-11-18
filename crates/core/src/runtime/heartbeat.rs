@@ -127,6 +127,8 @@ don't ask them in words meanwhile."
         for squad in squads {
             self.remind_of_reviews(&squad).await;
             self.tell_escalations(&squad).await;
+            self.tell_request_news(&squad);
+            self.tell_decided(&squad);
             self.ask_about_stale_waits(&squad).await;
             if !self.wake_if_idle(&squad).await {
                 self.ask_about_ideas(&squad).await;

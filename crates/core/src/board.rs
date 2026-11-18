@@ -725,8 +725,26 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "plan": { "type": "string", "description": "The plan it is cut from: its path, as `write_plan` gave it, or its slug. The ticket links to it, and is listed in its `tickets`." },
                     "tests": { "type": "array", "items": { "type": "string" }, "description": "With `plan`: the test plan's cases this ticket must pass (`TP-1`, `TP-3`). They are copied into its body, word for word, for its owner and QA." },
                     "idea": { "type": "boolean", "description": "The person's idea, kept for later rather than done now: it waits on the board as an idea, which nothing starts and nothing asks about, until the PM puts it to them when its time comes. Use it whenever they float something for someday — 'later', 'an idea', 'not now but' — and keep their own words in the body, with what led to it." },
+                    "request": { "type": "integer", "description": "The person's request it serves (3 for R-3), when equipe wouldn't link it by itself. Left out, a ticket made in answer to the person, or while working on a request's ticket, joins that request." },
                 },
                 "required": ["title", "body"],
+            },
+        }),
+        json!({
+            "name": crate::stops::STOP_WORK,
+            "description": "Only when the person tells you to stop a kind of work (\"stop polishing the gallery\", \"no more of these\"): \
+equipe cancels the open tickets of it and turns away new ones — yours, anyone's, design follow-ups — until the person lifts \
+the stop. Say what it covers: `terms` its tickets' titles have, `paths`, a `ticket` of its chain or its `request`.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "words": { "type": "string", "description": "What the person said to stop, in their words." },
+                    "terms": { "type": "array", "items": { "type": "string" }, "description": "Each a word or words a title of that work has (all of them): \"component gallery\"." },
+                    "paths": { "type": "array", "items": { "type": "string" }, "description": "Files or folders that work is in." },
+                    "ticket": { "type": "integer", "description": "A ticket of it: its chain is cancelled." },
+                    "request": { "type": "integer", "description": "The person's request it is (3 for R-3): all of it is cancelled." },
+                },
+                "required": ["words"],
             },
         }),
         json!({
@@ -1106,6 +1124,7 @@ they say it isn't for now.",
                     "depends_on": { "type": "array", "items": { "type": "integer" } },
                     "status": { "type": "string", "enum": ["todo", "cancelled", "proposed", "idea"] },
                     "why": { "type": "string", "description": "With status proposed, for an idea: why now, in one or two lines in the person's language — what in the business or on the board makes it timely. Shown on its card." },
+                    "request": { "type": "integer", "description": "Put it with the person's request R-n (give n), at any status: its progress is then told with that request's." },
                 },
                 "required": ["id"],
             },

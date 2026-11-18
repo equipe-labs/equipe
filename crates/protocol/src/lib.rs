@@ -34,6 +34,7 @@ pub mod routines;
 pub mod cli_signin;
 pub mod mcp_servers;
 pub mod references;
+pub mod requests;
 pub mod secrets;
 pub mod side_chat;
 pub mod signals;
@@ -973,6 +974,22 @@ pub enum Command {
     /// The person puts a ticket of their own on the board, ready (`todo`).
     /// Answered by [`Event::TicketChanged`]; the PM and its owner are told.
     CreateTicket { squad: SquadName, draft: TicketDraft },
+    /// The person stops a kind of work ([`requests::Stop`]): the open tickets
+    /// of request `request` — or of ticket `ticket`'s chain — are cancelled,
+    /// and new tickets of it are turned away until they lift it. `words`:
+    /// what it is, in their words (empty: the request's or ticket's title).
+    /// Answered by [`Event::StopsChanged`].
+    StopWork {
+        squad: SquadName,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request: Option<requests::RequestId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<TicketId>,
+        #[serde(default)]
+        words: String,
+    },
+    /// The person lifts a stop: that work may be put on the board again.
+    LiftStop { squad: SquadName, stop: requests::StopId },
     /// The person changes a ticket's fields. Refused (an [`Event::Error`]) when
     /// a change doesn't make sense: a dependency loop, a member nobody is,
     /// a project the squad hasn't, work under way moved to another project.
@@ -2680,6 +2697,30 @@ pub enum Event {
     },
     /// A ticket was created or changed. Carries the whole ticket.
     TicketChanged { squad: SquadName, ticket: Ticket },
+    /// A request of the person's (`requests`) was made, or where it stands
+    /// changed: a ticket joined it, or one of its tickets moved.
+    RequestChanged { squad: SquadName, request: requests::Request },
+    /// A request reached a milestone ([`requests::Milestone`]) and its
+    /// conversation was told, once, in `line` — where it all stands now, in
+    /// the person's language. For a notification; the line itself is in the
+    /// conversation already, as an [`Event::Notice`].
+    /// The kinds of work the person stopped ([`requests::Stop`]), all of
+    /// those still in force: one was made, or lifted, or turned a ticket away.
+    StopsChanged { squad: SquadName, stops: Vec<requests::Stop> },
+    /// What the PM decided for the person in the last day without a card
+    /// ([`requests::Decided`]), the latest first: their daily digest.
+    DecidedChanged { squad: SquadName, decided: Vec<requests::Decided> },
+    RequestNews {
+        squad: SquadName,
+        request: requests::RequestId,
+        title: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<SessionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        member: Option<String>,
+        milestone: requests::Milestone,
+        line: String,
+    },
     /// An NVIDIA Nemotron model on Nebius Token Factory read a handed-in
     /// ticket's diff ([`review::CodeReview`]): what to look at before accepting.
     CodeReviewed { squad: SquadName, review: review::CodeReview },
@@ -3429,6 +3470,10 @@ impl Event {
     pub fn squad(&self) -> Option<&str> {
         match self {
             Event::TicketChanged { squad, .. }
+            | Event::RequestChanged { squad, .. }
+            | Event::StopsChanged { squad, .. }
+            | Event::DecidedChanged { squad, .. }
+            | Event::RequestNews { squad, .. }
             | Event::CodeReviewed { squad, .. }
             | Event::TicketHistory { squad, .. }
             | Event::ModeChanged { squad, .. }
@@ -3542,6 +3587,10 @@ impl Event {
             | Event::Output { session, .. } => Some(*session),
             Event::Error { session, .. } => *session,
             Event::TicketChanged { .. }
+            | Event::RequestChanged { .. }
+            | Event::StopsChanged { .. }
+            | Event::DecidedChanged { .. }
+            | Event::RequestNews { .. }
             | Event::CodeReviewed { .. }
             | Event::TicketHistory { .. }
             | Event::ModeChanged { .. }
@@ -3975,6 +4024,16 @@ pub struct Snapshot {
     /// Open tickets and the latest closed ones.
     #[serde(default)]
     pub tickets: Vec<Ticket>,
+    /// The person's requests still under way, and those finished lately
+    /// ([`requests`]), the latest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub requests: Vec<requests::Request>,
+    /// The kinds of work the person stopped, in force ([`requests::Stop`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stops: Vec<requests::Stop>,
+    /// What the PM decided for the person in the last day without a card.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decided: Vec<requests::Decided>,
     /// How much members may do on their own, unless one has its own mode.
     #[serde(default)]
     pub mode: Mode,
@@ -4580,6 +4639,9 @@ mod tests {
             projects: vec!["/repo".into()],
             hq: Some("/repo".into()),
             hand_overs: Vec::new(),
+            requests: Vec::new(),
+            stops: Vec::new(),
+            decided: Vec::new(),
             resting: vec!["qa".into()],
             put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000, auto: false }],
             words: None,

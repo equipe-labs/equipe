@@ -189,6 +189,8 @@ impl Runtime {
         let ticket = journal.ticket(id).ok().flatten().unwrap_or(Ticket { id, ..ticket });
         self.tell(squad, crate::telemetry::Happened::TicketCreated { kind, by: crate::telemetry::Maker::Person });
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
+        // What the person put on the board is a request of theirs, followed for them.
+        self.person_put_on_board(squad, id, &title, owner.as_deref());
         let urgency = if draft.priority.is_normal() { String::new() } else { format!(", {} priority", draft.priority.label()) };
         let (line, shown) = match &owner {
             Some(owner) => (

@@ -94,6 +94,10 @@ mod autopilot;
 mod design_qa;
 mod design_review;
 mod follow_ups;
+mod requests;
+mod stops;
+mod settled;
+mod person_gate;
 mod usage_digest;
 mod team;
 mod heartbeat;
@@ -869,6 +873,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         design_watch: HashMap::new(),
         design_busy: std::collections::HashSet::new(),
         review_nudged: HashMap::new(),
+        person_said: HashMap::new(),
+        decided_told: HashMap::new(),
         workspaces: Default::default(),
     };
     let mut memos = Vec::new();
@@ -1658,6 +1664,11 @@ struct Runtime {
     design_busy: std::collections::HashSet<String>,
     /// Handed-in work the PM was reminded of, by squad: when (`heartbeat`).
     review_nudged: HashMap<String, HashMap<TicketId, u64>>,
+    /// What the person last said in each conversation, for the request a
+    /// ticket made in answer serves ([`requests`]).
+    person_said: HashMap<SessionId, requests::Said>,
+    /// The digest each squad's screens last heard ([`person_gate`]).
+    decided_told: HashMap<String, Vec<(TicketId, u64)>>,
     /// Runs' workspaces being made off the loop ([`workspace`]).
     workspaces: workspace::Workspaces,
     /// Secrets members asked the person for (`ask_secret`), by squad — read
@@ -2221,6 +2232,14 @@ impl Runtime {
             Event::TicketChanged { squad, ticket } => Some((squad.clone(), ticket.id)),
             _ => None,
         };
+        let closed = match &event {
+            Event::TicketChanged { squad, ticket } if ticket.status.is_closed() => Some((squad.clone(), ticket.id)),
+            _ => None,
+        };
+        let asked = match &event {
+            Event::QuestionsAsked { squad, questions } => questions.ticket.map(|t| (squad.clone(), t)),
+            _ => None,
+        };
         // A permission put to the person: from now it waits on them.
         if let Event::ApprovalRequested { approval, .. } = &event {
             self.approvals_asked.insert(approval.id, now_secs());
@@ -2256,6 +2275,15 @@ impl Runtime {
         // A card to confirm about it may have nothing left to confirm.
         if let Some((squad, ticket)) = changed {
             self.settle_accepts(&squad, ticket);
+            // The person's request it serves moves with it.
+            self.request_ticket_changed(&squad, ticket);
+        }
+        // Settled: what was asked about it no longer waits on the person.
+        if let Some((squad, ticket)) = closed {
+            self.withdraw_settled_questions(&squad, ticket);
+        }
+        if let Some((squad, ticket)) = asked {
+            self.request_question_changed(&squad, ticket);
         }
     }
 
@@ -2705,7 +2733,14 @@ impl Runtime {
                 let session = self.route(session);
                 self.note_person_active(session);
                 self.note_screen(session);
-                self.submit(session, text).await;
+                // What they asked for here: a ticket made in answer serves it.
+                self.person_said(session, &text);
+                let busy = self.sessions.get(&session).is_some_and(Session::is_working);
+                self.submit(session, text.clone()).await;
+                // Asking after a request while its member is busy: answered from the board now.
+                if busy {
+                    self.answer_from_board(session, &text);
+                }
                 self.said_about = None;
             }
             Command::SubmitLater { session, text, about } => {
@@ -2713,8 +2748,12 @@ impl Runtime {
                 let session = self.route(session);
                 self.note_person_active(session);
                 self.note_screen(session);
+                self.person_said(session, &text);
                 match self.sessions.get(&session) {
-                    Some(s) if s.is_working() => self.leave_memo(session, text),
+                    Some(s) if s.is_working() => {
+                        self.leave_memo(session, text.clone());
+                        self.answer_from_board(session, &text);
+                    }
                     _ => self.submit(session, text).await,
                 }
                 self.said_about = None;
@@ -2735,6 +2774,8 @@ impl Runtime {
             }
             Command::Cancel { squad, ticket } => self.cancel(&squad, ticket).await,
             Command::CreateTicket { squad, draft } => self.person_creates(&squad, draft).await,
+            Command::StopWork { squad, request, ticket, words } => self.person_stops(&squad, request, ticket, &words).await,
+            Command::LiftStop { squad, stop } => self.lift_stop(&squad, stop),
             Command::EditTicket { squad, ticket, changes } => self.person_edits(&squad, ticket, changes).await,
             Command::EditTickets { squad, tickets, changes } => self.person_edits_many(&squad, tickets, changes).await,
             Command::MoveTicket { squad, ticket, status, before } => self.person_moves(&squad, ticket, status, before).await,
@@ -4947,6 +4988,10 @@ runbooks and reports live there, and work across the projects or on running them
         let waiting = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone()).and_then(|squad| self.waiting_note(&squad));
         // Its pages the person has open in a live preview: their servers stay up.
         let previewing = self.preview_note(id);
+        // What the person asked for in this conversation, and where each stands.
+        let requests = self.requests_context(id);
+        // The kinds of work the person stopped: nothing of them is filed.
+        let stops = self.sessions.get(&id).and_then(|s| s.squad.clone()).and_then(|squad| self.stops_context(&squad));
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -4966,6 +5011,12 @@ runbooks and reports live there, and work across the projects or on running them
         }
         if let Some(previewing) = previewing {
             prompt = format!("[equipe: {previewing}]\n\n{prompt}");
+        }
+        if let Some(requests) = requests {
+            prompt = format!("{requests}\n\n{prompt}");
+        }
+        if let Some(stops) = stops {
+            prompt = format!("{stops}\n\n{prompt}");
         }
         // Read on the phone: the member answers for its screen. Before the
         // project's word, which opens the message as the conversation reads it.
@@ -7118,6 +7169,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         if designer && branding {
             prompt.push_str(&crate::design::brand::note(board_tools));
         }
+        // The kinds of work the person stopped: nothing of them is filed from this work either.
+        if let Some(stops) = self.stops_context(&squad) {
+            prompt.push_str(&format!("\n\n{stops}\n"));
+        }
         // A project that inherits a brand: its system is the brand's, changed only on a brand ticket.
         let member = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role != crate::roles::PM);
         if member && let Some(note) = crate::design::inherit::prompt_note(&self.config.home.join(crate::design::inherit::DIR), &sandbox.as_ref().map_or_else(|| project.clone(), |s| within(s, &project)).join(crate::design::DIR), branding) {
@@ -8406,6 +8461,9 @@ It starts when {owner} is free."
         }
         if call.name == crate::controls::CHANGE_SETTING {
             return self.change_setting(call, reply).await;
+        }
+        if call.name == crate::stops::STOP_WORK {
+            return self.stop_work_tool(call, reply).await;
         }
         if call.name == crate::signals::PROPOSE_SIGNAL {
             return self.propose_signal(call, reply);
@@ -9855,6 +9913,23 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
                 let idea = args.get("idea").and_then(Value::as_bool).unwrap_or(false);
+                // The person's request it serves, when the member names one.
+                let named_request = self.request_arg(&squad, &args)?;
+                // A kind of work the person stopped is turned away — unless they asked for it again since.
+                if !idea {
+                    let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+                    let mut lineage: Vec<TicketId> = working.into_iter().collect();
+                    let of_work = working.and_then(|w| self.journal(&squad).and_then(|j| j.follow_up(w)));
+                    lineage.extend(of_work.iter().flat_map(|f| [f.parent, f.root]));
+                    let serves = named_request.or_else(|| working.and_then(|w| self.journal(&squad).and_then(|j| j.requests().of_ticket(w))));
+                    let stops = self.stops_in_force(&squad);
+                    if let Some(stop) = crate::stops::stopping(&stops, title, body, &lineage, serves).cloned()
+                        && (working.is_some() || !self.asked_again(id, &stop))
+                    {
+                        self.stop_refused(&squad, &stop, title);
+                        return Err(crate::stops::refusal(&stop));
+                    }
+                }
                 // Where the PM runs the work, a member's proposal is simply done:
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
@@ -9908,6 +9983,8 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 let by = if is_pm { crate::telemetry::Maker::Pm } else { crate::telemetry::Maker::Member };
                 self.tell(&squad, crate::telemetry::Happened::TicketCreated { kind, by });
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: Ticket { id: new_id, ..ticket } });
+                // The person's request it serves: theirs to follow without asking.
+                let serves = if idea { None } else { self.ticket_made(&squad, id, new_id, named_request) };
                 let mut reply = format!("Created T-{new_id}.");
                 if kind.in_home() {
                     reply = format!("Created T-{new_id} ({}).", kind.label());
@@ -9942,6 +10019,9 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                         reply.push_str(&format!(" Nobody on the squad is {owner} yet — the PM can propose adding one."));
                     }
                 }
+                if let Some(serves) = serves {
+                    reply.push_str(&serves);
+                }
                 Ok(reply)
             }
             board::UPDATE_TICKET => {
@@ -9949,6 +10029,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     return Err("Only the PM changes tickets; propose a new one, or comment.".into());
                 }
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
+                // Put with one of the person's requests: whatever its status.
+                if let Some(request) = self.request_arg(&squad, &args)? {
+                    self.link_to_request(&squad, ticket_id, request)?;
+                    let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "request"));
+                    if !other {
+                        return Ok(format!("T-{ticket_id} now serves the person's request R-{request}."));
+                    }
+                }
                 let lang = self.squad_language(&squad);
                 let present: Vec<String> = self
                     .sessions
@@ -10417,6 +10505,9 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             design_reviewer: self.journals.get(squad).map(Journal::design_reviewer).unwrap_or_default(),
             team_changes,
             accepts,
+            requests: self.requests_listed(squad),
+            stops: self.stops_in_force(squad),
+            decided: self.decided_for_person(squad),
             squad: squad.to_owned(),
             projects,
             hq,

@@ -173,6 +173,14 @@ pub struct BoardUi {
     _undo_timer: Option<Task<()>>,
     /// Tickets' own: menus, the board's drag, the new ticket sheet, the page's edits.
     pub tk: super::tickets::TicketsUi,
+    /// "Your requests" opened to their timelines, by request (`views/requests.rs`).
+    pub requests_open: BTreeSet<u64>,
+    /// Every request listed, not only the latest few.
+    pub requests_all: bool,
+    /// The request whose "Stop this" was pressed once: the next press stops it.
+    pub stop_asked: Option<u64>,
+    /// "Decided for you" opened to its list.
+    pub decided_open: bool,
 }
 
 impl BoardUi {
@@ -251,6 +259,10 @@ impl BoardUi {
             peek_drag: None,
             _undo_timer: None,
             tk: super::tickets::TicketsUi::new(window, cx),
+            requests_open: BTreeSet::new(),
+            requests_all: false,
+            stop_asked: None,
+            decided_open: false,
         }
     }
 
@@ -1803,6 +1815,8 @@ fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>
     // Needs you by importance: each item that holds work up says what, at its right.
     let impacts: Option<std::collections::HashMap<Need, equipe_core::protocol::importance::Impact>> =
         (shell.board.view.menu == Menu::Inbox && !shell.board.view.by_kind && !shell.board.view.triage).then(|| shell.model.needs_ranked().into_iter().map(|r| (r.need, r.impact)).collect());
+    // Needs you opens with what the person asked for, and where each stands.
+    let requests = (shell.board.view.menu == Menu::Inbox && !shell.board.view.triage).then(|| super::requests::section(shell, cx)).flatten();
     v_flex()
         .id("board-list")
         .flex_1()
@@ -1814,6 +1828,7 @@ fn list(shell: &Shell, rows: &[Row], pick: Option<Need>, cx: &mut Context<Shell>
         .pt_1()
         .pb_6()
         .children(super::tickets::triage_banner(shell, cx))
+        .children(requests)
         .children(rows.iter().enumerate().map(|(ix, row)| list_row(shell, ix, row, pick, impacts.as_ref(), cx)))
         .when(empty, |l| l.child(empty_note(shell, p, cx)))
 }

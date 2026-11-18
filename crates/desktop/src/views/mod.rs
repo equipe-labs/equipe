@@ -55,6 +55,7 @@ pub mod project;
 pub mod quote;
 pub mod refcards;
 pub mod rename;
+pub mod requests;
 pub mod settings;
 pub mod metrics;
 pub mod model_picker;

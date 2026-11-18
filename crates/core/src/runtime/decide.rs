@@ -26,11 +26,15 @@ impl Runtime {
     pub(super) fn question_sets(&mut self, squad: &str) -> &mut Vec<QuestionSet> {
         if !self.questions.contains_key(squad) {
             let kept = self.journal(squad).map(Journal::questions).unwrap_or_default();
+            // Cards about work already settled aren't asked again (`settled`).
+            let read = kept.len();
+            let kept = self.without_settled(squad, kept);
+            let swept = kept.len() != read;
             let count = kept.len();
             let once = decide::collapse(kept);
             let collapsed = once.len() != count;
             self.questions.insert(squad.to_owned(), once);
-            if collapsed {
+            if collapsed || swept {
                 self.save_questions(squad);
             }
         }

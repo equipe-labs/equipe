@@ -71,6 +71,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::MoveEngine { .. } => true,
         // The board the person owns: tickets they make, change, move, comment on.
         C::CreateTicket { .. }
+        | C::StopWork { .. }
+        | C::LiftStop { .. }
         | C::EditTicket { .. }
         | C::EditTickets { .. }
         | C::MoveTicket { .. }
@@ -901,6 +903,9 @@ mod tests {
             Command::StartSideChat { session: 1, side: 2, passage: "a".into() },
             Command::SideChatSubmit { session: 1, side: 2, passage: "a".into(), text: "why?".into() },
             Command::CloseSideChat { side: 2 },
+            // Stopping a kind of work cancels tickets; lifting it lets it back: the person's.
+            Command::StopWork { squad: "a".into(), request: Some(1), ticket: None, words: String::new() },
+            Command::LiftStop { squad: "a".into(), stop: 1 },
         ];
         for command in &person_only {
             assert!(person_only_fn(command), "person-only: {command:?}");

@@ -1954,6 +1954,10 @@ impl App {
                 | Event::WorkStarted { .. }
                 | Event::WorkEnded { .. }
                 | Event::TicketChanged { .. }
+                | Event::RequestChanged { .. }
+                | Event::StopsChanged { .. }
+                | Event::DecidedChanged { .. }
+                | Event::RequestNews { .. }
                 | Event::CodeReviewed { .. }
                 | Event::TicketHistory { .. }
                 | Event::ModeChanged { .. }

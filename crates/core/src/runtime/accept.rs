@@ -51,8 +51,16 @@ them, and note what they said on the ticket with `comment`, for the PM."
                 crate::by_words::list(&checked.tickets)
             )),
             Outcome::Propose(checked) => {
+                // Small work is the PM's to decide; only what is weighty goes up, with why (`person_gate`).
+                let why = match self.gate_card(squad, &checked.tickets, args)? {
+                    super::person_gate::Gate::Pm(reply) => return Ok(reply),
+                    super::person_gate::Gate::Card(why) => why,
+                };
                 let reply = rules::proposed_reply(&checked, &tickets);
-                let proposal = checked.into_proposal(equipe_protocol::new_session_id(), member, id, now_secs());
+                let mut proposal = checked.into_proposal(equipe_protocol::new_session_id(), member, id, now_secs());
+                if !why.is_empty() {
+                    proposal.summary = [proposal.summary.trim(), why.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+                }
                 self.put_up(squad, proposal);
                 Ok(reply)
             }
