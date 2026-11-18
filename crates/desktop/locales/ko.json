@@ -4739,5 +4739,12 @@
   "autonomy.allowances_foot": "사용할 때마다 기록되고 한 줄로 알려 드려요. 취소하면 그 종류는 다시 물어봐요.",
   "autonomy.picks": "멤버가 스스로 정한 선택",
   "autonomy.dock_line": "{name}이(가) «{picked}»을(를) 골랐어요{why}",
-  "autonomy.dock_title": "정한 시간 안에 답이 없어 멤버가 추천안으로 정했어요({n}). 다르게 고르고 싶으면 바꿔 주세요."
+  "autonomy.dock_title": "정한 시간 안에 답이 없어 멤버가 추천안으로 정했어요({n}). 다르게 고르고 싶으면 바꿔 주세요.",
+  "keys.group_members": "멤버가 보관한 것",
+  "keys.group_connections": "연결",
+  "keys.metrics_connection": "지표 연결",
+  "keys.use_daily_fetch": "매일 지표 가져오기",
+  "keys.last_fetched": "마지막으로 가져온 때: {when}",
+  "keys.never_fetched": "아직 가져오지 않음",
+  "keys.manage_connection": "교체 또는 삭제"
 }
