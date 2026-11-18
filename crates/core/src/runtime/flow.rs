@@ -190,7 +190,10 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
         let Some(session) = self.member_id(squad, &by).or_else(|| self.pm_of(squad)) else { return };
         let checked = "Landed by its member: equipe found nothing in it that needs a person, and its gates passed — a clean merge with main, \
 the project's checks on that merge where it declares them, the design precheck where screens changed.";
-        let args = json!({ "tickets": [ticket], "checked": checked });
+        // Landed work goes live: main is pushed, as the PM's acceptance did.
+        // Without it a member's landing stayed on this Mac's main and never
+        // reached origin, where the project deploys from.
+        let args = json!({ "tickets": [ticket], "checked": checked, "push": true });
         let (reply, answer) = oneshot::channel::<ToolResult>();
         let squad_name = squad.to_owned();
         tokio::spawn(async move {
