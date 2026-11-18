@@ -127,7 +127,9 @@ don't ask them in words meanwhile."
         for squad in squads {
             self.remind_of_reviews(&squad).await;
             self.tell_escalations(&squad).await;
+            self.tell_waiting_on_person(&squad).await;
             self.tell_request_news(&squad);
+            self.surface_uncovered(&squad).await;
             self.tell_decided(&squad);
             self.digest_landed(&squad);
             self.ask_about_stale_waits(&squad).await;

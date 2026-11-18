@@ -109,6 +109,7 @@ mod team;
 mod heartbeat;
 mod signals;
 mod deploys;
+mod go_live;
 mod tickets;
 mod compact;
 mod hygiene;
@@ -873,6 +874,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         tidied_at: None,
         signals_running: std::collections::HashSet::new(),
         deploys_looking: HashSet::new(),
+        go_live: HashMap::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
@@ -903,6 +905,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         status_cache: Default::default(),
         status_told: HashMap::new(),
         escalation: HashMap::new(),
+        waiting_told: HashMap::new(),
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
@@ -1343,6 +1346,13 @@ enum Internal {
     /// A squad's projects were looked at off the loop for what went live:
     /// each project's watch now, and what the look found.
     DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)> },
+    /// What a project goes live with, read off the loop after a landing
+    /// pushed main (`go_live`); whether GitHub confirmed a deploy channel.
+    GoLiveRead { squad: String, project: PathBuf, found: crate::go_live::Found, channel_known: bool },
+    /// A project's landings may be due to go live now (`go_live`).
+    GoLiveDue { squad: String, project: PathBuf },
+    /// One go at deploying a project ended, off the loop (`go_live`).
+    GoLiveRan { squad: String, project: PathBuf, tickets: Vec<TicketId>, outcome: crate::go_live::Outcome },
     /// Where the engines stand, as just looked at off the loop.
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
@@ -1614,6 +1624,9 @@ struct Runtime {
     signals_running: std::collections::HashSet<(String, String)>,
     /// Squads whose projects are being looked at for what went live (`deploys`).
     deploys_looking: HashSet<String>,
+    /// How each squad's projects go live after their landings, by project
+    /// path (`go_live`): read from the journal when first needed.
+    go_live: HashMap<String, std::collections::BTreeMap<String, crate::go_live::Lane>>,
     /// Decisions in the person's words waiting on them (`words`).
     words: words::Words,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
@@ -1687,6 +1700,8 @@ struct Runtime {
     status_told: HashMap<String, std::time::Instant>,
     /// Each squad's escalation of what stays a bottleneck ([`crate::escalation`]).
     escalation: HashMap<String, crate::escalation::Planner>,
+    /// What the person and the PM were told waits on the person, per squad (`runtime/status.rs`).
+    waiting_told: HashMap<String, status::WaitingTold>,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
     /// Pacing to the plans' budgets, per squad and engine ([`pacing`]).
@@ -1895,6 +1910,9 @@ impl Wake {
             Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
             Wake::Internal(Internal::DeploysLooked { .. }) => Borrowed("a look at what went live"),
+            Wake::Internal(Internal::GoLiveRead { .. }) => Borrowed("how a project goes live"),
+            Wake::Internal(Internal::GoLiveDue { .. }) => Borrowed("a project's deploy coming due"),
+            Wake::Internal(Internal::GoLiveRan { .. }) => Borrowed("a project's deploy's end"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
@@ -2198,6 +2216,9 @@ impl Runtime {
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::DeploysLooked { squad, looks } => self.deploys_looked(&squad, looks),
+                Internal::GoLiveRead { squad, project, found, channel_known } => self.go_live_read(&squad, project, found, channel_known),
+                Internal::GoLiveDue { squad, project } => self.go_live_due(&squad, project),
+                Internal::GoLiveRan { squad, project, tickets, outcome } => self.go_live_ran(&squad, project, tickets, outcome),
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::LaneTmpLooked(look) => self.lane_tmp_looked(*look),
                 Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
@@ -2362,6 +2383,7 @@ impl Runtime {
         }
         pulse.step("minute tick: deploys");
         self.deploys_tick();
+        self.go_live_tick();
         pulse.step("minute tick: engines");
         self.engines_tick().await;
         pulse.step("minute tick: calls");
@@ -3947,6 +3969,7 @@ impl Runtime {
         self.design_watch.remove(squad);
         self.signals_running.retain(|(q, _)| q != squad);
         self.deploys_looking.remove(squad);
+        self.go_live.remove(squad);
         // Its checks waiting in line: none will run. One running ends on its own.
         for queue in self.gates.values_mut() {
             let mut at = 0;
@@ -8541,10 +8564,12 @@ with what else waits.]"
         };
         let mut line = format!("You merged T-{ticket} · {} into {main}", found.title);
         let mut news = "news.merged";
+        let mut went_out = false;
         match pushed {
             Some(Ok(())) => {
                 line.push_str(" and pushed it");
                 news = "news.merged_pushed";
+                went_out = true;
             }
             // A project kept on this machine only: merged is all there is to do.
             Some(Err(err)) if err == worktree::NO_ORIGIN => {
@@ -8567,6 +8592,7 @@ with what else waits.]"
             None => {}
         }
         let shown = self.said(news, &[("id", ticket.to_string()), ("title", found.title.clone()), ("branch", main.clone())]);
+        let project = found.project.as_deref().map(PathBuf::from);
         found.merged = Some(true);
         found.off_main = None;
         if let Some(journal) = self.journal(squad) {
@@ -8578,6 +8604,10 @@ with what else waits.]"
         // Work it was built on came along with it.
         self.settle_all_merged();
         self.brief_pm(squad, format!("{line}."), Some(shown));
+        // Pushed is on main, not live: the project's go-live command, if it has one, runs next.
+        if went_out && let Some(project) = project {
+            self.go_live_landed(squad, project, Some(ticket));
+        }
     }
 
     /// A merge failed for another reason than a conflict: the ticket is
@@ -8962,6 +8992,9 @@ It starts when {owner} is free."
         }
         if call.name == board::UNBLOCK {
             return self.unblock_tool(call, reply).await;
+        }
+        if call.name == board::CLOSE_REQUEST {
+            return self.close_request_tool(call, reply);
         }
         if call.name == crate::signals::PROPOSE_SIGNAL {
             return self.propose_signal(call, reply);
@@ -10501,8 +10534,11 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
                 let idea = args.get("idea").and_then(Value::as_bool).unwrap_or(false);
-                // The person's request it serves, when the member names one.
+                // The person's request it serves, when the member names one — and which it serves:
+                // whenever more than one of theirs could be it, the member is asked to name it.
                 let named_request = self.request_arg(&squad, &args)?;
+                let serving = if idea { None } else { self.serving(&squad, id, named_request)? };
+                let named_request = named_request.filter(|r| *r != crate::requests::NO_REQUEST);
                 // A kind of work the person stopped is turned away — unless they asked for it again since.
                 if !idea {
                     let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
@@ -10550,7 +10586,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     }
                 }
                 // A request's ticket isn't chained behind other work without a reason (`requests`).
-                let depends_note = if idea { String::new() } else { self.check_depends(&squad, id, None, named_request, title, body, &depends_on, &args)? };
+                let depends_note = if idea { String::new() } else { self.check_depends(&squad, None, serving.map(|(r, _, _)| Some(r)), title, body, &depends_on, &args)? };
                 // Where the PM runs the work, a member's proposal is simply done:
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
@@ -10607,7 +10643,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 let made = Ticket { id: new_id, ..ticket };
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: made.clone() });
                 // The person's request it serves: theirs to follow without asking.
-                let serves = if idea { None } else { self.ticket_made(&squad, id, new_id, named_request) };
+                let serves = if idea { None } else { self.ticket_made(&squad, new_id, serving) };
                 // The ticket answering the person drives their request: its driver and checklist (`flow`).
                 let flowing = if idea { None } else { self.start_flow(&squad, id, &made, steps) };
                 let mut reply = format!("Created T-{new_id}.");
@@ -10720,7 +10756,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if let Some(ids) = board::arg_ids(&args, "depends_on") {
                     let added: Vec<TicketId> = ids.iter().copied().filter(|d| !ticket.depends_on.contains(d)).collect();
                     let text = format!("{} {}", ticket.title, ticket.body);
-                    depends_note = self.check_depends(&squad, id, Some(ticket_id), None, &ticket.title, &text, &added, &args)?;
+                    depends_note = self.check_depends(&squad, Some(ticket_id), None, &ticket.title, &text, &added, &args)?;
                     ticket.depends_on = ids;
                 }
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
@@ -10952,6 +10988,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                 crate::metrics::tool::answer(&self.config.home, &squad, &args, today)
             }
             crate::accept::PROPOSE_ACCEPT => self.propose_accept(&squad, &member, id, &args),
+            crate::go_live::SET_DEPLOY if is_pm => self.set_deploy(&squad, id, &args),
+            crate::go_live::SET_DEPLOY => Err("Only the PM says how a project goes live; tell the PM.".into()),
             board::ESTIMATE => {
                 let minutes = |key: &str| args.get(key).and_then(Value::as_f64).map(|m| m.max(0.0));
                 let (done, live) = (minutes("done_in_minutes"), minutes("live_in_minutes"));

@@ -159,6 +159,10 @@ flowchart LR
    the project declares its checks in `.equipe/checks.json`, equipe runs them on the work
    merged with main before the PM's acceptance lands, and sends failing work back to its
    member ([docs/USAGE.md](docs/USAGE.md#project-checks)).
+6. **The work goes live.** Pushed to main is "on main", not live. A project that deploys
+   from a push is watched until its deploy succeeds; one that deploys by a command declares
+   it in `.equipe/deploy.json`, and equipe runs it after work lands
+   ([docs/USAGE.md](docs/USAGE.md#going-live)).
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 

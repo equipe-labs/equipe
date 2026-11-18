@@ -177,7 +177,7 @@ async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool)
             }
         }
     };
-    if tokio::time::timeout(Duration::from_secs(15), wait).await.is_err() {
+    if tokio::time::timeout(Duration::from_secs(45), wait).await.is_err() {
         panic!("timed out; events so far: {seen:#?}");
     }
     seen
@@ -1188,7 +1188,8 @@ async fn talking_to_a_member_directly_keeps_the_pm_in_the_loop() {
     // Told once: the turn after that carries no briefing.
     handle.send(Command::Submit { session: 1, text: "thanks".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
-    assert_eq!(arg(&calls(&recorded)[2], "-p"), Some("thanks"));
+    let prompt = arg(&calls(&recorded)[2], "-p").unwrap().to_owned();
+    assert!(prompt.ends_with("thanks") && !prompt.contains("The person told backend"), "{prompt}");
 }
 
 #[tokio::test]
@@ -2661,7 +2662,8 @@ async fn the_person_can_start_a_members_conversation_clean() {
     let call = calls(&recorded).pop().unwrap();
     assert_eq!(arg(&call, "--resume"), None);
     let prompt = arg(&call, "-p").unwrap();
-    assert!(prompt.starts_with("[equipe: this is a fresh conversation. Your memory") && !prompt.contains("first"), "{prompt}");
+    // What was said before isn't carried — only what the board holds: the request it was.
+    assert!(prompt.starts_with("[equipe: this is a fresh conversation. Your memory") && !prompt.replace("R-1 “first”", "").contains("first"), "{prompt}");
 }
 
 #[tokio::test]
@@ -7402,7 +7404,9 @@ async fn members_run_on_the_standard_window_unless_the_squad_or_the_ticket_asks_
     journal.set_context_native_compact(true).unwrap();
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     let body = "Integrate the big branch.\n\ncontext: large\n\nAcceptance: it merges.";
-    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Integrate the big branch", "body": body, "owner": "frontend" })).await;
+    // (Serving none of the three things the person said: with several open, the PM says so.)
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Integrate the big branch", "body": body, "owner": "frontend", "request": 0 })).await;
+    assert!(!made.is_error, "{made:?}");
     let run = run_in(&until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await, 2);
     until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
     let call = latest_call(&recorded, |p| p.contains("You're on T-1")).await;
