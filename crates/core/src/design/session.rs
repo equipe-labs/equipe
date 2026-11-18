@@ -452,8 +452,10 @@ pub fn is_page_address(url: &str) -> bool {
 }
 
 /// What `equipe design session show <target>` makes of its target: a web
-/// address or `localhost:port` as it is, an HTML file as its `file://`
-/// address, a picture as a render. `cwd` resolves a relative path.
+/// address or `localhost:port` as it is, an HTML file (or a folder with an
+/// `index.html`) as its `file://` address — which the daemon serves to the
+/// person's screen, wherever it is ([`file_path`], `crate::prototype`) — a
+/// picture as a render. `cwd` resolves a relative path.
 pub fn target(raw: &str, cwd: &Path) -> Result<Marker, String> {
     let raw = raw.trim();
     if raw.is_empty() {
@@ -468,6 +470,7 @@ pub fn target(raw: &str, cwd: &Path) -> Result<Marker, String> {
     }
     let path = if Path::new(raw).is_absolute() { Path::new(raw).to_path_buf() } else { cwd.join(raw) };
     let path = std::fs::canonicalize(&path).map_err(|_| format!("{} isn't there", path.display()))?;
+    let path = if path.is_dir() && path.join("index.html").is_file() { path.join("index.html") } else { path };
     if !path.is_file() {
         return Err(format!("{} isn't a file", path.display()));
     }
@@ -480,6 +483,48 @@ pub fn target(raw: &str, cwd: &Path) -> Result<Marker, String> {
         return Ok(Marker::Show(format!("file://{}", shown.replace(' ', "%20"))));
     }
     Err(format!("{shown} is neither a page (.html) nor a picture"))
+}
+
+/// The file a `file://` page address names, `%XX` read back; `None` for
+/// any other address.
+pub fn file_path(url: &str) -> Option<std::path::PathBuf> {
+    let rest = url.strip_prefix("file://")?;
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = (bytes[i] == b'%' && i + 2 < bytes.len()).then(|| std::str::from_utf8(&bytes[i + 1..i + 3]).ok().and_then(|h| u8::from_str_radix(h, 16).ok())).flatten();
+        match hex {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    let path = std::path::PathBuf::from(String::from_utf8(out).ok()?);
+    path.is_absolute().then_some(path)
+}
+
+/// The folder a session page `page` (under `root`, where its member works)
+/// is served from: the nearest `design` folder it is in, inside `root`, so
+/// it may reach `../tokens.css` there; else its own folder.
+pub fn page_scope(page: &Path, root: &Path) -> std::path::PathBuf {
+    let own = page.parent().unwrap_or(page);
+    own.ancestors().take_while(|a| a.starts_with(root)).find(|a| a.file_name().is_some_and(|n| n == "design")).unwrap_or(own).to_path_buf()
+}
+
+/// What a member hears when what it showed (`urls`) reached no screen.
+pub fn nobody_line(urls: &str) -> String {
+    format!(
+        "No screen of the person's follows the squad in equipe's app right now, so what you just showed ({urls}) reached \
+nobody. Don't tell them it's on their screen or beside the session: say in words what changed and where it is; it shows \
+there once their app is back."
+    )
 }
 
 // ── the PM's proposals ──
@@ -782,7 +827,23 @@ mod tests {
         assert_eq!(target("localhost:5173/pricing", &dir), Ok(Marker::Show("http://localhost:5173/pricing".into())));
         assert_eq!(target("https://example.com/a", &dir), Ok(Marker::Show("https://example.com/a".into())));
         assert!(target("notes.md", &dir).is_err() && target("missing.html", &dir).is_err() && target(" ", &dir).is_err());
+        // A folder: its index.
+        std::fs::create_dir_all(dir.join("proto b")).unwrap();
+        std::fs::write(dir.join("proto b/index.html"), "<h1>b</h1>").unwrap();
+        let Ok(Marker::Show(url)) = target("proto b", &dir) else { panic!("a folder with an index is a page") };
+        assert_eq!(url, format!("file://{}/proto%20b/index.html", real.display()));
+        assert_eq!(file_path(&url), Some(real.join("proto b/index.html")), "its file, read back");
+        assert_eq!(file_path("http://localhost:5173/"), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_session_page_is_served_from_its_design_folder_inside_where_the_member_works() {
+        let root = Path::new("/w/t12");
+        assert_eq!(page_scope(Path::new("/w/t12/design/sessions/pricing/a.html"), root), Path::new("/w/t12/design"));
+        assert_eq!(page_scope(Path::new("/w/t12/site/a.html"), root), Path::new("/w/t12/site"));
+        assert_eq!(page_scope(Path::new("/design/t12/x/a.html"), Path::new("/design/t12")), Path::new("/design/t12/x"), "never above where it works");
+        assert!(nobody_line("http://127.0.0.1:1/a").contains("Don't tell them it's on their screen"));
     }
 
     #[test]

@@ -433,6 +433,7 @@
   "notice.profile_separation": "🔐 Tu Google Workspace exige un perfil de Chrome distinto para cada cuenta de trabajo, así que el navegador de equipe guarda uno por cada cuenta con la que iniciaste sesión. Los miembros trabajan como {account} y los inicios de sesión de los demás sitios se guardan ahí. Para que trabajen con otra cuenta: `equipe browser profile`. Opcional (equipe funciona de las dos formas): el administrador de tu Workspace puede elegir \"Suggest profile separation\" / \"Disable profile separation\" en Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation, y Chrome dejará de crear un perfil por cuenta (https://support.google.com/chrome/a/answer/11198768).",
   "notice.view_didnt_carry": "🖥 El inicio de sesión hecho en la vista no se mantuvo en el navegador de {name} ({site} lo sigue pidiendo), así que el propio navegador de {name} está ahora en tus manos en el panel: inicia sesión ahí una vez. A partir de ahora {site} se abre directamente ahí.",
   "notice.browser_on_screen": "🖥 El navegador de {name} aparece en la pantalla de este Mac: {why}",
+  "notice.on_squad_mac": "Estás en otro ordenador: esto aparece en la pantalla de {host}. Ábrelo allí con Compartir pantalla.",
   "notice.browser_view": "🖥 El inicio de sesión de {name} se abre en una vista de inicio de sesión de tu panel de navegador: {why}",
   "notice.browser_window": "🖥 El inicio de sesión de {name} se abre en una ventana normal de Chrome en {host}: {why}",
   "notice.browser_window_no_chrome": "🖥 Google Chrome no está instalado donde equipe lo busca, así que el navegador de {name} se abre en tu panel de navegador. Es un navegador automatizado: la comprobación «verifica que eres humano» de un sitio puede no dejar pasar a nadie ahí. {why}",
@@ -873,5 +874,17 @@
   "design_session.no_page": "Indica la página o pantalla de la sesión de diseño.",
   "design_session.use_title": "Construir {page} a partir del prototipo elegido",
   "design_session.use_title_variant": "Construir {page} a partir del prototipo {variant}",
-  "design_session.use_intro": "Elegido en una sesión de diseño con «Usar este»: construir este prototipo en el producto."
+  "design_session.use_intro": "Elegido en una sesión de diseño con «Usar este»: construir este prototipo en el producto.",
+  "deploy.live_on": "Ya en línea en {host}:",
+  "deploy.live": "Ya en línea en {project}:",
+  "deploy.on_main": "En main en {project} (sin despliegue visto):",
+  "deploy.yours_live_on": "Lo que pediste ya está en línea en {host}:",
+  "deploy.yours_live": "Lo que pediste ya está en línea en {project}:",
+  "deploy.yours_on_main": "Lo que pediste ya está en main en {project}:",
+  "deploy.more.one": "+{count} más",
+  "deploy.more.other": "+{count} más",
+  "deploy.internal.one": "· +{count} cambio interno",
+  "deploy.internal.other": "· +{count} cambios internos",
+  "deploy.only_internal.one": "solo cambios internos ({count}).",
+  "deploy.only_internal.other": "solo cambios internos ({count})."
 }

@@ -319,6 +319,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
     if !folded {
         for (ix, g) in shown_groups.iter().map(|&i| projects[i]).enumerate() {
             list.push(project_head(shell, g, if ix == 0 { 2. } else { 1. }, cx));
+            list.extend(live_line(shell, g, cx));
         }
         if hidden > 0 || shell.board.side_projects_all {
             list.push(projects_more_row(shell, hidden, cx));
@@ -354,6 +355,7 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElement + use<
         .text_color(p.text)
         .child(strip)
         .child(body)
+        .children(update_notes(p, shell, cx))
         .children(relaunch(p, shell, cx))
         .child(footer(p, shell, cx))
         .children(popup(p, shell, cx))
@@ -744,6 +746,48 @@ fn project_head(shell: &Shell, g: &SideGroup, gap: f32, cx: &mut Context<Shell>)
     row.into_any_element()
 }
 
+/// Under a project's name, for a day after its work went live for its users:
+/// how long ago — where, and what it brought, on the pointer; a click opens
+/// the project's "What's live".
+fn live_line(shell: &Shell, g: &SideGroup, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let p = shell.palette;
+    let name = g.name.clone()?;
+    let path = shell.model.projects.iter().find(|path| equipe_core::board::project_name(path) == name)?;
+    let deploy = crate::live::sidebar_line(&shell.model.deploys, path, shell.model.unix)?;
+    let ago = crate::activity::ago(shell.model.unix.saturating_sub(deploy.at.max(deploy.last_at)));
+    // Short, so the time shows in a narrow sidebar: where it is live leads the pointer's words.
+    let words = t!("sidebar.live", ago = ago);
+    let place = match deploy.host() {
+        Some(host) => t!("project.live_on", host = host),
+        None => t!("project.live_live").to_owned(),
+    };
+    let mut tip: Vec<String> = std::iter::once(place).chain(deploy.items.iter().map(|i| format!("· {}", i.title))).collect();
+    if deploy.internal > 0 {
+        tip.push(t!("live.internal", count = deploy.internal));
+    }
+    Some(
+        h_flex()
+            .id(SharedString::from(format!("live-{name}")))
+            .h(px(22.))
+            .mx_2()
+            .px_2()
+            .gap(px(8.))
+            .items_center()
+            .rounded(px(8.))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.side_hover))
+            .tip_at(p, tip.join("\n"), None, gpui_kit::base::Placement::Right)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.open_project_page(name.clone(), window, cx);
+                this.board.project_tab = crate::board::ProjectTab::Live;
+                cx.notify();
+            }))
+            .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(dot(p.good(), 6.)))
+            .child(div().flex_1().min_w_0().truncate().text_size(px(12.)).text_color(p.muted).child(words))
+            .into_any_element(),
+    )
+}
+
 /// The conversations shown at once under "Conversations", the newest first;
 /// the rest behind "Show all (N)".
 const CONVERSATIONS_SHOWN: usize = 10;
@@ -755,14 +799,17 @@ const LABEL_MAX: f32 = 84.;
 /// PM, the most lately used first and in the days they were last used (Today,
 /// Yesterday, Previous 7 days, Older) — one being started on top, selected —
 /// each naming its project when it has one. Under the heading, once equipe has
-/// put old ones away that day, a quiet note says how many. "Show all" opens
+/// put old ones away that day, a quiet note says how many. The ones the person
+/// pinned come first under "Pinned", whole, in the order they pinned them. "Show all" opens
 /// the rest, and a filter over their titles. No conversation, no section.
 fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
-    let talks = model.conversations();
+    // The pins are their own section at the top, always shown whole; the rest are grouped by day.
+    let pins = model.pinned_conversations();
+    let talks: Vec<&crate::state::Lane> = model.conversations().into_iter().filter(|l| !l.pinned).collect();
     let away_today = crate::talk_days::put_away_today(&model.put_away, model.unix, crate::state::local_midnight);
-    if talks.is_empty() && model.draft_talk.is_none() && model.put_away.is_empty() {
+    if talks.is_empty() && pins.is_empty() && model.draft_talk.is_none() && model.put_away.is_empty() {
         return Vec::new();
     }
     let mut rows = vec![heading_frame(p, "talks-heading").child(div().flex_1().child(t!("sidebar.conversations"))).into_any_element()];
@@ -781,6 +828,12 @@ fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> 
                 .children(project_label(p, about.as_deref()))
                 .into_any_element(),
         );
+    }
+    if !pins.is_empty() {
+        rows.push(div().mx_2().px_2().pt(px(6.)).pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(t!("sidebar.pinned")).into_any_element());
+        for lane in &pins {
+            rows.push(conversation_row(shell, lane, cx));
+        }
     }
     let all = shell.board.side_talks_all.contains("");
     let long = talks.len() > CONVERSATIONS_SHOWN;
@@ -2219,6 +2272,54 @@ fn relaunch(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl I
             .child(words)
             .child(mark(if matches!(act, Act::CheckNow | Act::UpdateDaemon) { crate::icons::Icon::Reload } else { crate::icons::Icon::ArrowRight }, if act == Act::RestartDaemonNow { p.red } else { p.text })),
     })
+}
+
+/// What the app's update brings, over "Restart to Update" — or, once after
+/// the restart, what it brought ("Updated to …", until put away): a few
+/// lines of its release notes, and how many more.
+fn update_notes(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<impl IntoElement + use<>> {
+    let (notes, done) = match shell.whats_new() {
+        Some(notes) => (notes, false),
+        None => (shell.updated_card.clone()?, true),
+    };
+    let title = if done { t!("live.updated_to", version = notes.version.as_str()) } else { t!("live.whats_new", version = notes.version.as_str()) };
+    let close = done.then(|| {
+        div()
+            .id("updated-close")
+            .size(px(18.))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(4.))
+            .cursor_pointer()
+            .hover(move |s| s.bg(p.side_hover))
+            .tip(p, t!("live.updated_close"), None)
+            .on_click(cx.listener(|this, _, _, cx| {
+                this.updated_card = None;
+                cx.notify();
+            }))
+            .child(icon(IconName::Close, 12., p.muted))
+    });
+    Some(
+        v_flex()
+            .id("update-notes")
+            .flex_none()
+            .mx_2()
+            .mb_1()
+            .px_3()
+            .py_2()
+            .gap(px(3.))
+            .rounded(px(8.))
+            .border_1()
+            .border_color(p.hair)
+            .text_size(px(12.))
+            .child(h_flex().gap_2().items_center().child(div().flex_1().min_w_0().truncate().font_weight(FontWeight::MEDIUM).text_color(p.text).child(title)).children(close))
+            // A line each, so the card stays small: whole on the pointer.
+            .tip(p, notes.lines.iter().map(|l| format!("· {l}")).collect::<Vec<_>>().join("\n"), None)
+            .children(notes.lines.into_iter().map(move |line| div().text_color(p.text2).truncate().child(format!("· {line}"))))
+            .when(notes.more > 0, |c| c.child(div().text_color(p.muted).child(t!("live.more", count = notes.more)))),
+    )
 }
 
 /// The foot, one row: the squad and machine with the connection's dot (a

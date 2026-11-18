@@ -100,6 +100,14 @@ impl Width {
     }
 }
 
+/// Whether a link to `url` opens in the live preview rather than a browser:
+/// a page of the daemon's machine (`localhost`) while it is another machine
+/// (`remote`) — this Mac's own `localhost` isn't that page, and the preview
+/// forwards the daemon's port here.
+pub fn remote_page(url: &str, remote: bool) -> bool {
+    remote && rules::previewable(url)
+}
+
 /// Where the web view goes in the page's area (`w`×`h` points, from the
 /// area's top left) at `width`, and the page's zoom: a width that fits sits
 /// in the middle at its own size, one wider than the pane is drawn smaller,
@@ -873,6 +881,19 @@ impl Shell {
             _ => {}
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod remote_tests {
+    use super::remote_page;
+
+    #[test]
+    fn a_link_to_the_daemons_localhost_opens_in_the_preview_only_from_another_machine() {
+        assert!(remote_page("http://localhost:5173/pricing", true));
+        assert!(remote_page("http://127.0.0.1:4899/board", true));
+        assert!(!remote_page("http://localhost:5173/pricing", false), "on the daemon's Mac its own browser opens it");
+        assert!(!remote_page("https://example.com/", true), "a public page opens anywhere");
     }
 }
 

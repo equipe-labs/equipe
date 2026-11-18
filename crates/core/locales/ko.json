@@ -429,6 +429,7 @@
   "notice.profile_separation": "🔐 회사 Google Workspace가 업무 계정마다 별도의 Chrome 프로필을 요구해서, equipe 브라우저도 로그인한 계정마다 프로필을 하나씩 두고 있어요. 멤버들은 {account} 계정으로 일하고, 다른 사이트 로그인도 모두 그 프로필에 보관돼요. 다른 계정으로 일하게 하려면 `equipe browser profile`을 쓰세요. 선택 사항이에요(어느 쪽이든 equipe는 동작해요): Workspace 관리자가 Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation에서 \"Suggest profile separation\" / \"Disable profile separation\"로 바꾸면 Chrome이 계정마다 프로필을 만들지 않아요 (https://support.google.com/chrome/a/answer/11198768).",
   "notice.view_didnt_carry": "🖥 뷰에서 한 로그인이 {name}의 브라우저에 유지되지 않았어요({site}가 계속 요청해요). 그래서 지금 {name}의 브라우저를 패널에서 직접 넘겨드려요. 거기서 한 번만 로그인해 주세요. 앞으로 {site}는 바로 거기서 열려요.",
   "notice.browser_on_screen": "🖥 {name}의 브라우저가 이 Mac 화면에 떠요: {why}",
+  "notice.on_squad_mac": "지금 다른 컴퓨터에서 보고 있어요: 이건 {host}의 화면에 떠요. 화면 공유로 {host}에 접속해 열어 주세요.",
   "notice.browser_view": "🖥 {name}의 로그인이 브라우저 패널의 로그인 화면에서 열려요: {why}",
   "notice.browser_window": "🖥 {name}의 로그인이 {host}의 일반 Chrome 창에서 열려요: {why}",
   "notice.browser_window_no_chrome": "🖥 equipe가 찾는 위치에 Google Chrome이 없어서, {name}의 브라우저를 브라우저 패널에서 열어요. 자동화된 브라우저라서 사이트의 '사람인지 확인' 검사를 통과하지 못할 수 있어요. {why}",
@@ -864,5 +865,14 @@
   "design_session.no_page": "디자인 세션에서 다룰 페이지나 화면 이름을 알려 주세요.",
   "design_session.use_title": "고른 프로토타입으로 {page} 구현",
   "design_session.use_title_variant": "프로토타입 {variant}로 {page} 구현",
-  "design_session.use_intro": "디자인 세션에서 \"이걸로 할게요\"로 고른 프로토타입이에요. 제품에 그대로 구현해 주세요."
+  "design_session.use_intro": "디자인 세션에서 \"이걸로 할게요\"로 고른 프로토타입이에요. 제품에 그대로 구현해 주세요.",
+  "deploy.live_on": "{host}에 반영됐어요:",
+  "deploy.live": "{project}에 반영됐어요:",
+  "deploy.on_main": "{project}의 main에 들어갔어요(배포는 확인 못 함):",
+  "deploy.yours_live_on": "요청하신 작업이 {host}에 반영됐어요:",
+  "deploy.yours_live": "요청하신 작업이 {project}에 반영됐어요:",
+  "deploy.yours_on_main": "요청하신 작업이 {project}의 main에 들어갔어요:",
+  "deploy.more.other": "외 {count}개",
+  "deploy.internal.other": "· 내부 변경 {count}개",
+  "deploy.only_internal.other": "내부 변경만 있어요({count}개)."
 }

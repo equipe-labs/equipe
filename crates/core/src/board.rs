@@ -30,7 +30,7 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
     }
     let Ticket {
         id, title, body: _, status, kind, label, owner, assignee, project, depends_on, branch, worktree, execution, merged, off_main, created_by, note: _, asks: _,
-        remaining: _, images: _, priority, rank, updated_at, design_qa, plan, model,
+        remaining: _, images: _, priority, rank, updated_at, design_qa, plan, model, landing,
     } = ticket;
     Ticket {
         id: *id,
@@ -59,6 +59,7 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
         design_qa: *design_qa,
         plan: plan.clone(),
         model: model.clone(),
+        landing: *landing,
     }
 }
 
@@ -1821,7 +1822,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None, model: None,
+            design_qa: None, landing: false, plan: None, model: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

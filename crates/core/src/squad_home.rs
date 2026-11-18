@@ -193,8 +193,13 @@ std::thread_local! {
 
 /// Run `f` as the only one of this process using `dir`'s git: a save made off
 /// the daemon's loop and one made on it wait for each other rather than one
-/// failing on git's index lock. A thread already holding `dir` goes on.
-fn one_at_a_time<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+/// failing on git's index lock. A thread already holding `dir` goes on. The
+/// same folder however it is spelled (a symlink, `/private/var`) is one
+/// folder: landings in a repository's main checkout share this
+/// (`worktree::one_landing_at_a_time`).
+pub(crate) fn one_at_a_time<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
+    let dir = dir.as_path();
     if HELD.with(|held| held.borrow().iter().any(|d| d == dir)) {
         return f();
     }
@@ -294,10 +299,16 @@ const STALE_LOCK: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 /// left by a git that was killed, it would refuse every save after it.
 /// Whether one was taken away.
 fn clear_stale_lock(dir: &Path) -> bool {
-    let lock = dir.join(".git").join("index.lock");
-    let old = std::fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age > STALE_LOCK);
-    if old && std::fs::remove_file(&lock).is_ok() {
-        crate::daemon_log!("equipe: {} had git's index lock left from {} minutes ago; taken away", dir.display(), STALE_LOCK.as_secs() / 60);
+    clear_stale_lock_file(&dir.join(".git").join("index.lock"), STALE_LOCK)
+}
+
+/// Take away the git lock file `lock` when it is older than `stale`: no git
+/// equipe runs holds one that long, so a git that was killed left it. Only
+/// called while this process runs no git of its own there. Whether it went.
+pub(crate) fn clear_stale_lock_file(lock: &Path, stale: std::time::Duration) -> bool {
+    let old = std::fs::metadata(lock).and_then(|m| m.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age > stale);
+    if old && std::fs::remove_file(lock).is_ok() {
+        crate::daemon_log!("equipe: {} was left from more than {} minutes ago; taken away", lock.display(), stale.as_secs() / 60);
         return true;
     }
     false

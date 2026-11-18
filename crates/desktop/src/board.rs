@@ -739,6 +739,8 @@ pub enum ProjectTab {
     Work,
     /// Its briefs and plans: what was thought through before it was built.
     Docs,
+    /// What went live in it, and what each deploy brought (`live.rs`).
+    Live,
 }
 
 /// A project's briefs and plans, newest first — a brief before the plan of
@@ -1329,6 +1331,9 @@ pub fn needs_way(t: &Ticket) -> bool {
 pub fn off_main_why(t: &Ticket, way: Option<MergeWay>) -> Option<String> {
     if !t.not_on_main() {
         return None;
+    }
+    if t.landing_now() {
+        return Some(t!("peek.why_landing").to_owned());
     }
     Some(match (&t.off_main, way) {
         (Some(OffMain::Kept), _) => t!("peek.why_kept").to_owned(),
@@ -2067,6 +2072,7 @@ mod tests {
             title: None,
             active,
             pinned: false,
+            pinned_at: 0,
         };
         use crate::state::Presence;
         m.lanes = vec![lane(10, Some("web"), Presence::Ready, 5), lane(11, Some("web"), Presence::Working, 9), lane(12, Some("web"), Presence::Ready, 7), lane(13, Some("api"), Presence::Ready, 8), lane(14, None, Presence::Ready, 9)];

@@ -83,6 +83,9 @@ pub struct SessionUi {
     pub variant: Option<String>,
     /// The variants side by side in the live preview.
     pub side_by_side: bool,
+    /// The `file://` pages shown that the daemon was asked to serve for this
+    /// screen, by that address: where it serves each (`None`: asked, or refused).
+    served: std::collections::HashMap<String, Option<String>>,
 }
 
 /// The screen.
@@ -1105,7 +1108,14 @@ impl Shell {
         let finished = entries.iter().skip(session.since).filter(|e| matches!(e, equipe_core::protocol::Entry::Tool { outcome: Some(_), .. })).count();
         if (entries.len(), finished) != self.session.scanned {
             self.session.scanned = (entries.len(), finished);
-            let shown = rules::shown(entries, session.since);
+            let raw = rules::shown(entries, session.since);
+            // A page saved on the daemon's machine reaches this screen served by the daemon, never as `file://`.
+            let ask: Vec<String> = rules::file_pages(&raw).into_iter().filter(|u| !self.session.served.contains_key(u)).collect();
+            let served: std::collections::HashMap<String, String> = self.session.served.iter().filter_map(|(k, v)| Some((k.clone(), v.clone()?))).collect();
+            let shown = rules::with_served(raw, &served);
+            for url in ask {
+                self.design_session_serve(url, cx);
+            }
             let changed = shown != self.session.shown;
             let was = self.session.shown.live.clone();
             // Something new shown comes to the front over a variant picked before.
@@ -1145,6 +1155,29 @@ impl Shell {
         if matches!(self.session.shown.live, Some(Live::Page(_))) {
             self.ensure_live(window, cx);
         }
+    }
+
+    /// Ask the daemon to serve a `file://` page the designer showed; once it
+    /// says where, the session reads what is shown again with it.
+    fn design_session_serve(&mut self, url: String, cx: &mut Context<Self>) {
+        let (Some(path), Some(uploader)) = (equipe_core::design::session::file_path(&url), self.link.as_ref().map(|l| l.uploader())) else { return };
+        self.session.served.insert(url.clone(), None);
+        let squad = self.model.squad.clone();
+        let path = path.to_string_lossy().into_owned();
+        let asked = cx.background_spawn(async move { uploader.prototype_url(&squad, &path) });
+        cx.spawn(async move |this, cx| {
+            let answer = asked.await;
+            this.update(cx, |this, cx| {
+                // Refused (an older daemon, a page no member showed): it stays as it was.
+                if let Ok(served) = answer {
+                    this.session.served.insert(url, Some(served));
+                    this.session.scanned = (0, 0);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// The page's tab in the shared browser, and the stream watching it.

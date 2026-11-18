@@ -429,6 +429,7 @@
   "notice.profile_separation": "🔐 你的 Google Workspace 要求每个工作账号使用单独的 Chrome 个人资料,所以 equipe 的浏览器为每个登录过的账号各保留一个。成员以 {account} 工作,其他网站的登录也都保存在那里。要让他们用其他账号工作:`equipe browser profile`。可选(两种情况下 equipe 都能工作):Workspace 管理员可以在 Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation 中设为 \"Suggest profile separation\" / \"Disable profile separation\",Chrome 就不会为每个账号新建个人资料(https://support.google.com/chrome/a/answer/11198768)。",
   "notice.view_didnt_carry": "🖥 在视图中完成的登录没有在 {name} 的浏览器中生效({site} 仍在要求登录),所以现在把 {name} 自己的浏览器交到你手中,在面板里登录一次即可。以后 {site} 会直接在那里打开。",
   "notice.browser_on_screen": "🖥 {name} 的浏览器出现在这台 Mac 的屏幕上：{why}",
+  "notice.on_squad_mac": "你正在另一台电脑上：这会出现在 {host} 的屏幕上。请用屏幕共享连接到 {host} 打开它。",
   "notice.browser_view": "🖥 {name} 的登录在浏览器面板的登录视图中打开：{why}",
   "notice.browser_window": "🖥 {name} 的登录在 {host} 的普通 Chrome 窗口中打开：{why}",
   "notice.browser_window_no_chrome": "🖥 equipe 查找的位置没有 Google Chrome，所以 {name} 的浏览器改在浏览器面板中打开。那是自动化浏览器：网站的“验证你是真人”检查可能让任何人都通不过。{why}",
@@ -864,5 +865,14 @@
   "design_session.no_page": "请写明设计会话要做的页面或界面。",
   "design_session.use_title": "按选定的原型实现{page}",
   "design_session.use_title_variant": "按原型 {variant} 实现{page}",
-  "design_session.use_intro": "在设计会话中用“就用这个”选定的原型：请在产品中实现它。"
+  "design_session.use_intro": "在设计会话中用“就用这个”选定的原型：请在产品中实现它。",
+  "deploy.live_on": "已上线 {host}:",
+  "deploy.live": "已在 {project} 上线:",
+  "deploy.on_main": "已进入 {project} 的 main(未见部署):",
+  "deploy.yours_live_on": "你要的已上线 {host}:",
+  "deploy.yours_live": "你要的已在 {project} 上线:",
+  "deploy.yours_on_main": "你要的已进入 {project} 的 main:",
+  "deploy.more.other": "另外 {count} 项",
+  "deploy.internal.other": "· 内部改动 {count} 项",
+  "deploy.only_internal.other": "只有内部改动({count} 项)。"
 }

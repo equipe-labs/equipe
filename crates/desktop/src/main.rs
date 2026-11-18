@@ -99,6 +99,7 @@ mod chips;
 mod siteicon;
 mod icons;
 mod motion;
+mod live;
 mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
@@ -331,6 +332,14 @@ pub struct Shell {
     /// The design screen's References tab: its search.
     pub refs_search: Entity<InputState>,
     pub releases_asked: Option<std::time::Instant>,
+    /// The app's release notes (`live.rs`), once read, and the version they
+    /// were read for.
+    pub release_feed: Option<equipe_core::release_notes::Feed>,
+    pub release_feed_for: Option<String>,
+    /// The version this app ran before an update, until its notes are read.
+    pub updated_from: Option<String>,
+    /// "Updated to …": what the last update brought, until put away.
+    pub updated_card: Option<live::Notes>,
     /// Metrics' state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
     pub metrics_ui: views::metrics::Inputs,
@@ -572,6 +581,10 @@ impl Shell {
             docs_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("docs.search_placeholder"))),
             refs_search: cx.new(|cx| InputState::new(window, cx).placeholder(t!("design.refs_search_placeholder"))),
             releases_asked: None,
+            release_feed: None,
+            release_feed_for: None,
+            updated_from: None,
+            updated_card: None,
             metrics: metrics::Metrics::new(),
             metrics_ui: Default::default(),
             status: Default::default(),
@@ -662,6 +675,8 @@ impl Shell {
         shell.board.view.layout = if shell.remembered.tickets_board { tickets::Layout::Board } else { tickets::Layout::List };
         // What macOS allows, and whether this window is in front of the person.
         shell.start_bell(window, cx);
+        // Just updated: what the update brought, once.
+        shell.note_launch(cx);
         // An update downloaded in the background: the sidebar offers the restart.
         let mut updates = relaunch::watch();
         shell._updates = Some(cx.spawn_in(window, async move |this, cx| {
@@ -681,6 +696,10 @@ impl Shell {
                         this.announce(vec![alert], window, cx);
                     }
                     this.update = state;
+                    // Ready: what it brings, over "Restart to Update".
+                    if this.update.ready().is_some() {
+                        this.ask_release_notes(cx);
+                    }
                     cx.notify();
                 })
                 .is_err()
@@ -1985,6 +2004,11 @@ impl Shell {
     /// A web link from a reply: in the browser the person chose (settings),
     /// or with ⌘ (`other`) in the other — equipe's panel or the Mac's.
     pub fn open_link(&mut self, url: &str, other: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // A page on the daemon's machine (`localhost`), seen from another: its
+        // own `localhost` isn't it — the live preview forwards the page here.
+        if crate::views::preview::remote_page(url, self.endpoint.is_remote()) && self.open_live_preview(url, self.model.selected, false, window, cx) {
+            return;
+        }
         if self.remembered.links_in_app == other {
             cx.open_url(url);
             return;
@@ -2231,7 +2255,8 @@ impl Shell {
         cx.notify();
     }
 
-    /// Show a file the daemon's machine named (an approval's screen). On this
+    /// Show a file the daemon's machine named (an approval's screen, a path in
+    /// a reply). On this
     /// Mac it opens where it is; from another machine it is fetched first, over
     /// the same SSH connection, into a private temp file.
     pub fn open_file(&self, path: &str) {

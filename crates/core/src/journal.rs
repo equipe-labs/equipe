@@ -1806,6 +1806,35 @@ impl Journal {
         self.set_meta("signal_states", &serde_json::to_string(states).unwrap_or_else(|_| "{}".into()))
     }
 
+    /// What went live lately in the squad's projects, the newest first (`crate::deploys`).
+    pub fn deploys(&self) -> Vec<equipe_protocol::deploys::Deploy> {
+        self.meta("deploys").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_deploys(&self, deploys: &[equipe_protocol::deploys::Deploy]) -> Result<()> {
+        self.set_meta("deploys", &serde_json::to_string(deploys).unwrap_or_else(|_| "[]".into()))
+    }
+
+    /// Where each project's main was last seen live and how it goes live, by its path.
+    pub fn deploy_watch(&self) -> std::collections::BTreeMap<String, crate::deploys::Watch> {
+        self.meta("deploy_watch").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_deploy_watch(&self, watch: &std::collections::BTreeMap<String, crate::deploys::Watch>) -> Result<()> {
+        self.set_meta("deploy_watch", &serde_json::to_string(watch).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// The person's requests `tickets` serve, by ticket.
+    pub fn requests_of(&self, tickets: &[TicketId]) -> std::collections::HashMap<TicketId, crate::deploys::RequestOf> {
+        let store = self.requests();
+        let mut out = std::collections::HashMap::new();
+        for &ticket in tickets {
+            let Some(row) = store.of_ticket(ticket).and_then(|id| store.get(id)) else { continue };
+            out.insert(ticket, crate::deploys::RequestOf { id: row.id, title: row.title, session: row.session });
+        }
+        out
+    }
+
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub fn idle_wake_hours(&self) -> u32 {
         self.meta("idle_wake_hours").and_then(|h| h.parse().ok()).unwrap_or(crate::protocol::routines::IDLE_WAKE_HOURS)
@@ -2611,6 +2640,7 @@ impl Journal {
                 priority: Priority::parse(&r.get::<_, String>(16)?).unwrap_or_default(),
                 rank: r.get(17)?,
                 off_main: r.get::<_, Option<String>>(14)?.and_then(|o| serde_json::from_str(&o).ok()),
+                landing: false,
                 updated_at: r.get::<_, Option<i64>>(15)?.map(|at| at.max(0) as u64),
                 design_qa: r.get(20)?,
                 plan: r.get(21)?,
@@ -2970,7 +3000,17 @@ impl Journal {
     /// The person pins a conversation (or lets it go): a pinned one is never
     /// put away by itself. Not an activity of its own.
     pub fn set_conversation_pinned(&self, id: SessionId, pinned: bool) -> Result<bool> {
-        Ok(self.conn.execute("UPDATE conversations SET pinned = ?1 WHERE id = ?2", params![pinned, id as i64])? > 0)
+        // The column keeps when it was pinned (0: not), so the list can show the pins in order.
+        let at = if pinned { now().max(1) } else { 0 };
+        Ok(self.conn.execute("UPDATE conversations SET pinned = ?1 WHERE id = ?2", params![at, id as i64])? > 0)
+    }
+
+    /// When each open pinned conversation was pinned (unix seconds; 1 for one
+    /// pinned before the time was kept).
+    pub fn conversation_pins(&self) -> Result<std::collections::HashMap<SessionId, u64>> {
+        let mut stmt = self.conn.prepare("SELECT id, pinned FROM conversations WHERE open = 1 AND pinned != 0")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)?.max(0) as u64)))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// For each open conversation: when something last happened in it (its
@@ -3302,6 +3342,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn pinning_keeps_when_so_the_pins_list_in_order_and_unpinning_clears_it() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        for id in [1, 2] {
+            j.record_conversation(id, None, Path::new("/tmp")).unwrap();
+        }
+        assert!(j.conversation_pins().unwrap().is_empty());
+        assert!(j.set_conversation_pinned(1, true).unwrap());
+        let pins = j.conversation_pins().unwrap();
+        assert!(pins.get(&1).is_some_and(|at| *at > 0) && !pins.contains_key(&2));
+        assert!(j.conversation_marks().unwrap()[&1].1, "pinned, so equipe never puts it away");
+        j.set_conversation_pinned(1, false).unwrap();
+        assert!(j.conversation_pins().unwrap().is_empty() && !j.conversation_marks().unwrap()[&1].1);
+        // Put away, a conversation is not on the list of pins.
+        j.set_conversation_pinned(2, true).unwrap();
+        j.close_conversation(2).unwrap();
+        assert!(j.conversation_pins().unwrap().is_empty());
     }
 
     #[test]
@@ -3689,7 +3748,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None, model: None,
+            design_qa: None, landing: false, plan: None, model: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],
