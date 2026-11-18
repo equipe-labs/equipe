@@ -36,11 +36,13 @@ fn why_arg(args: &Value) -> Result<Option<Why>, String> {
 
 impl Runtime {
     /// Whether `tickets` go to the person on a card, and why.
-    pub(super) fn gate_card(&mut self, squad: &str, tickets: &[TicketId], args: &Value) -> Result<Gate, String> {
+    pub(super) fn gate_card(&mut self, squad: &str, member: &str, tickets: &[TicketId], args: &Value) -> Result<Gate, String> {
         let said = why_arg(args)?;
         let board: Vec<Ticket> = tickets.iter().filter_map(|t| self.find_ticket(squad, *t)).collect();
         let weighed: Vec<(&Ticket, Option<Why>)> = board.iter().map(|t| (t, rules::weigh(t, &[]).or(said))).collect();
-        let pm_decides = self.journals.get(squad).is_some_and(Journal::pm_accepts);
+        // The PM never accepts its own work: that always goes to the person.
+        let own = board.iter().any(|t| t.assignee.as_deref() == Some(member) || (t.assignee.is_none() && t.owner.as_deref() == Some(member)));
+        let pm_decides = !own && self.journals.get(squad).is_some_and(Journal::pm_accepts);
         if pm_decides && weighed.iter().all(|(_, why)| why.is_none()) {
             let list = board.iter().map(|t| format!("T-{} {}", t.id, rules::named(t))).collect::<Vec<_>>().join("; ");
             return Ok(Gate::Pm(format!(

@@ -52,7 +52,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
             )),
             Outcome::Propose(checked) => {
                 // Small work is the PM's to decide; only what is weighty goes up, with why (`person_gate`).
-                let why = match self.gate_card(squad, &checked.tickets, args)? {
+                let why = match self.gate_card(squad, member, &checked.tickets, args)? {
                     super::person_gate::Gate::Pm(reply) => return Ok(reply),
                     super::person_gate::Gate::Card(why) => why,
                 };
