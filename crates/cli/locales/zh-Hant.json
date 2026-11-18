@@ -1592,5 +1592,8 @@
   "autonomy.picks": "成員自行做出的選擇：",
   "autonomy.no_allowance": "沒有有效的長期許可 #{id}。",
   "autonomy.done": "已完成。",
-  "autonomy.no_answer": "常駐程式沒有回應。它是最新版本嗎？請執行 equipe update。"
+  "autonomy.no_answer": "常駐程式沒有回應。它是最新版本嗎？請執行 equipe update。",
+  "metrics_query.no_daemon": "這台機器上沒有常駐程式回應：先用 `equipe daemon start` 啟動它，再問一次。",
+  "metrics_query.rows": "{connection} 用時 {ms} ms，傳回 {rows} 列",
+  "metrics_query.truncated": "還有更多列：只顯示前 {limit} 列。用 --limit（最多 {most}）要更多，或在查詢裡彙總。"
 }

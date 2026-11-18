@@ -1615,5 +1615,8 @@
   "autonomy.picks": "Decisiones que tomaron los miembros:",
   "autonomy.no_allowance": "No hay ningún permiso permanente #{id} vigente.",
   "autonomy.done": "Hecho.",
-  "autonomy.no_answer": "El daemon no respondió. ¿Está actualizado? Ejecuta equipe update."
+  "autonomy.no_answer": "El daemon no respondió. ¿Está actualizado? Ejecuta equipe update.",
+  "metrics_query.no_daemon": "Ningún daemon responde en esta máquina: inícialo con `equipe daemon start` y vuelve a preguntar.",
+  "metrics_query.rows": "{rows} filas de {connection} en {ms} ms",
+  "metrics_query.truncated": "Había más filas: solo se muestran las primeras {limit}. Pide más con --limit (hasta {most}) o agrega en la consulta."
 }

@@ -1592,5 +1592,8 @@
   "autonomy.picks": "成员自行做出的选择：",
   "autonomy.no_allowance": "没有有效的长期许可 #{id}。",
   "autonomy.done": "已完成。",
-  "autonomy.no_answer": "守护进程没有回应。它是最新版本吗？请运行 equipe update。"
+  "autonomy.no_answer": "守护进程没有回应。它是最新版本吗？请运行 equipe update。",
+  "metrics_query.no_daemon": "这台机器上没有守护进程应答：先用 `equipe daemon start` 启动它，再问一次。",
+  "metrics_query.rows": "{connection} 用时 {ms} ms，返回 {rows} 行",
+  "metrics_query.truncated": "还有更多行：只显示前 {limit} 行。用 --limit（最多 {most}）要更多，或在查询里汇总。"
 }

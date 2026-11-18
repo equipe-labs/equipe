@@ -42,7 +42,8 @@ flowchart LR
 - An adapter's error message has every key of its connection cut out
   (`•••`) before it is kept, answered or logged — in case a service echoes it.
 - Members only read. Connecting, keys and disconnecting are the person's, on
-  their screen.
+  their screen. An ad-hoc query ([`metrics.hogql`](#metricshogql)) is a read
+  too: a single `SELECT`, checked in code before anything is sent.
 - Files under `~/.equipe/metrics/` are the person's only (folder 0700, files 0600).
 
 ## Sources
@@ -301,6 +302,57 @@ one kept. The phone asks it through the relay (`docs/remote-protocol.md`, "The
 project's numbers"): `metrics.summary` is the only `metrics.*` a device may
 ask; keys never go to the phone — the person reconnects on the Mac.
 
+### `metrics.hogql`
+
+`{ "squad", "connection"?, "project"?, "query", "limit"? }` → `HogqlResult`:
+one ad-hoc **read-only** HogQL query through a squad's PostHog connection,
+sent by the daemon with the key it keeps. The key never leaves the daemon:
+not in the answer, not in an error, not in the log.
+
+- **SELECT only**, enforced in code (`crates/core/src/metrics/hogql.rs`)
+  before the key is read or anything is sent: the query must start with
+  `SELECT` or `WITH`, hold one statement (no `;` but one at the end), no
+  comments (`--`, `/* */`, `#`), none of the words that write or change
+  anything (`INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`,
+  `TRUNCATE`, `RENAME`, `ATTACH`, `DETACH`, `GRANT`, `REVOKE`, `KILL`,
+  `OPTIMIZE`, `SET`, `SETTINGS`, `USE`, `EXCHANGE`, `INTO`, `OUTFILE`,
+  `UPSERT`) outside strings and quoted names, and no table function that reads
+  from outside the project (`url()`, `file()`, `remote()`, `s3()`, …).
+  Anything else is `-32602`, and nothing is sent.
+- **Rows** are capped: `limit` (default 200, at most 10 000). A query without
+  a `LIMIT` gets one of `limit + 1`, so `truncated` says whether there were more.
+- **Time**: the whole ask, its turn included, has 60 s; each request 30 s, and
+  a busy PostHog (503, 429) is asked again within the adapter's patience.
+- **Pacing and budget**: one ad-hoc query at a time per daemon, the adapter's
+  1.5 s gap between two queries of a connection, and at most 60 a connection
+  in any hour (`-32015` past it), so the daily fetch keeps its share of
+  PostHog's query limit.
+- `connection` names it; without one, the squad's only PostHog connection (of
+  `project`) is asked, and several are an error that lists them.
+- Only the person's own clients may ask it over the socket (the desktop, the
+  CLI, over SSH too); a member's process is refused (`-32000`) — members ask
+  through `metrics_query`, which checks their role.
+
+```json
+{
+  "connection": "m1", "kind": "posthog",
+  "query": "SELECT event, count() AS n FROM events GROUP BY event ORDER BY n DESC\nLIMIT 201",
+  "columns": ["event", "n"], "rows": [["$pageview", 1284], ["question_sent", 311]],
+  "truncated": false, "limit": 200, "took_ms": 840
+}
+```
+
+From a terminal on the daemon's machine:
+
+```sh
+equipe metrics query --squad acme --hogql "SELECT event, count() AS n FROM events \
+  WHERE timestamp > now() - INTERVAL 7 DAY GROUP BY event ORDER BY n DESC"
+equipe metrics query --squad acme --connection m2 --limit 1000 --json --hogql "SELECT …"
+```
+
+The table goes to standard output, the row count and any cut to standard
+error; `--json` prints the whole `HogqlResult`.
+
 ## Errors
 
 A request that can't be answered is a JSON-RPC error:
@@ -314,6 +366,8 @@ A request that can't be answered is a JSON-RPC error:
 | -32012 | no such connection in that squad |
 | -32013 | the Keychain refused to keep or remove the keys |
 | -32014 | `~/.equipe/metrics/` couldn't be written |
+| -32015 | an ad-hoc query over its connection's hourly budget |
+| -32016 | the service refused an ad-hoc query, failed, or it didn't finish in 60 s (its words, keys cut out) |
 
 A **fetch** that fails isn't a request error; it is kept on the connection as
 `last.error`, `{ code, message, retry_at?, status?, said? }` — `status` the
@@ -337,6 +391,11 @@ each metric's value beside the previous period with the change, the days known,
 a breakdown's top labels and the series. It reads the snapshots only; nothing
 in it comes from the Keychain. With nothing connected it says the person
 connects services in equipe's Metrics screen.
+
+`metrics_query` (the PM, `data` and `marketing` only): `{ hogql, connection?,
+project?, limit? }` — [`metrics.hogql`](#metricshogql) for a member, 50 rows
+unless `limit` says, 500 at most, answered as a Markdown table with long cells
+clipped. Any other role is refused. The member sees rows, never the key.
 
 ## Adding an adapter
 
