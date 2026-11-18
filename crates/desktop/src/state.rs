@@ -139,6 +139,8 @@ pub struct Lane {
     pub active: u64,
     /// The person pinned it: equipe never puts it away by itself.
     pub pinned: bool,
+    /// When it was pinned (unix seconds; 0 where not known): the pins list latest first.
+    pub pinned_at: u64,
 }
 
 /// One ticket a member runs, in a session of its own beside its
@@ -794,6 +796,14 @@ impl Model {
         kept
     }
 
+    /// The conversations the person pinned, in the order they pinned them
+    /// (the latest pin first; pins of one moment by their last use).
+    pub fn pinned_conversations(&self) -> Vec<&Lane> {
+        let mut pins: Vec<&Lane> = self.conversations().into_iter().filter(|l| l.pinned).collect();
+        pins.sort_by(|a, b| b.pinned_at.cmp(&a.pinned_at));
+        pins
+    }
+
     /// Start a new conversation with the PM about `project`: empty on
     /// screen until its first message makes it ([`Command::NewConversation`]).
     pub fn draft_conversation(&mut self, project: Option<String>) {
@@ -1435,6 +1445,7 @@ impl Model {
                     // What this window last saw, if later than what the daemon kept.
                     active: self.lanes.iter().find(|l| l.session == s.session).map_or(0, |l| l.active).max(lane.active),
                     pinned: lane.pinned,
+                    pinned_at: lane.pinned_at,
                 })
             })
             .collect();
@@ -1810,6 +1821,7 @@ impl Model {
             Event::ConversationPinned { session, pinned } => {
                 if let Some(lane) = self.lanes.iter_mut().find(|l| l.session == session) {
                     lane.pinned = pinned;
+                    lane.pinned_at = if pinned { self.unix.max(1) } else { 0 };
                     self.revision += 1;
                 }
             }
@@ -2049,7 +2061,7 @@ impl Model {
                 _ => convo.lane = true,
             }
         }
-        self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb, kept, title: None, active: self.unix, pinned: false });
+        self.lanes.push(Lane { session, of, project, presence: lane.presence, verb: lane.verb, kept, title: None, active: self.unix, pinned: false, pinned_at: 0 });
         // The new conversation this window started: made now, and open.
         if self.draft_talk.as_ref().is_some_and(|(draft, _)| *draft == session) {
             self.draft_talk = None;
@@ -3723,9 +3735,28 @@ mod tests {
     }
 
     #[test]
+    fn pinned_conversations_are_their_own_list_latest_pin_first_and_unpinning_gives_them_back() {
+        let mut model = Model::new("acme");
+        model.unix = 1_000;
+        let lane = |session, active, pinned, pinned_at| Lane { session, of: 1, project: None, presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active, pinned, pinned_at };
+        // 1 is the oldest, pinned first; 2 is newest, not pinned; 3 pinned later than 1; 4 never pinned.
+        model.lanes = vec![lane(1, 10, true, 100), lane(2, 900, false, 0), lane(3, 50, true, 200), lane(4, 20, false, 0)];
+        let pins = |m: &Model| m.pinned_conversations().iter().map(|l| l.session).collect::<Vec<_>>();
+        assert_eq!(pins(&model), [3, 1], "the latest pin first, whatever their last use");
+        // A pin made now goes on top.
+        model.apply(Update::Event(Event::ConversationPinned { session: 4, pinned: true }), T0);
+        assert_eq!(pins(&model), [4, 3, 1]);
+        // Letting go returns it to its day group: it is among the rest again.
+        model.apply(Update::Event(Event::ConversationPinned { session: 3, pinned: false }), T0);
+        assert_eq!(pins(&model), [4, 1]);
+        let rest: Vec<u64> = model.conversations().into_iter().filter(|l| !l.pinned).map(|l| l.session).collect();
+        assert_eq!(rest, [2, 3], "newest activity first, as before");
+    }
+
+    #[test]
     fn conversations_list_newest_activity_first_each_with_its_project_and_a_new_one_on_top() {
         let mut model = Model::new("acme");
-        let lane = |session, project: Option<&str>, active| Lane { session, of: 1, project: project.map(str::to_owned), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active, pinned: false };
+        let lane = |session, project: Option<&str>, active| Lane { session, of: 1, project: project.map(str::to_owned), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active, pinned: false, pinned_at: 0 };
         model.lanes.push(lane(40, None, 100));
         model.lanes.push(lane(41, Some("web"), 300));
         model.lanes.push(lane(42, Some("app"), 200));
@@ -3753,7 +3784,7 @@ mod tests {
         in_talk.ticket = None;
         let mut squad_wide = approval(9, 1);
         squad_wide.ticket = None;
-        model.lanes.push(Lane { session: 40, of: 1, project: Some("app".into()), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active: 0, pinned: false });
+        model.lanes.push(Lane { session: 40, of: 1, project: Some("app".into()), presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: None, active: 0, pinned: false, pinned_at: 0 });
         for a in [on_web, in_talk, squad_wide] {
             model.apply(Update::Event(Event::ApprovalRequested { squad: "acme".into(), approval: a }), T0);
         }
@@ -4089,7 +4120,7 @@ mod tests {
     #[test]
     fn a_snapshot_keeps_lanes_apart_from_members() {
         let mut lane = session(9, "pm", "pm", SessionState::Working);
-        lane.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: false, active: 0, pinned: false });
+        lane.lane = Some(equipe_core::protocol::Lane { of: 1, project: Some("app".into()), kept: false, active: 0, pinned: false, pinned_at: 0 });
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready), lane]), T0);
         assert_eq!(model.members.len(), 1);

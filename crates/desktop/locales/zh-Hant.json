@@ -2869,6 +2869,7 @@
   "sidebar.day_yesterday": "昨天",
   "sidebar.day_week": "過去 7 天",
   "sidebar.day_older": "更早",
+  "sidebar.pinned": "已置頂",
   "sidebar.find_conversation": "尋找對話",
   "sidebar.no_conversation_match": "沒有相符的對話",
   "sidebar.pin": "釘選",

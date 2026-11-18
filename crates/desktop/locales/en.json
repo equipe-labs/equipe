@@ -2942,6 +2942,7 @@
   "sidebar.day_yesterday": "Yesterday",
   "sidebar.day_week": "Previous 7 days",
   "sidebar.day_older": "Older",
+  "sidebar.pinned": "Pinned",
   "sidebar.find_conversation": "Find a conversation",
   "sidebar.no_conversation_match": "No conversation matches",
   "sidebar.pin": "Pin",

@@ -1948,7 +1948,7 @@ impl App {
                 lane.transcript = Transcript::from_entries(main.shown().into_iter().map(|e| e.into_owned()).collect());
             }
             lane.thread_view = None;
-            lane.lane = Some(equipe_core::protocol::Lane { of: *of, project: project.clone(), kept: *kept, active: 0, pinned: false });
+            lane.lane = Some(equipe_core::protocol::Lane { of: *of, project: project.clone(), kept: *kept, active: 0, pinned: false, pinned_at: 0 });
             self.lanes.push(lane);
             return Vec::new();
         }

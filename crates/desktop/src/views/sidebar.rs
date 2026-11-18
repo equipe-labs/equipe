@@ -755,14 +755,17 @@ const LABEL_MAX: f32 = 84.;
 /// PM, the most lately used first and in the days they were last used (Today,
 /// Yesterday, Previous 7 days, Older) — one being started on top, selected —
 /// each naming its project when it has one. Under the heading, once equipe has
-/// put old ones away that day, a quiet note says how many. "Show all" opens
+/// put old ones away that day, a quiet note says how many. The ones the person
+/// pinned come first under "Pinned", whole, in the order they pinned them. "Show all" opens
 /// the rest, and a filter over their titles. No conversation, no section.
 fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> {
     let p = shell.palette;
     let model = &shell.model;
-    let talks = model.conversations();
+    // The pins are their own section at the top, always shown whole; the rest are grouped by day.
+    let pins = model.pinned_conversations();
+    let talks: Vec<&crate::state::Lane> = model.conversations().into_iter().filter(|l| !l.pinned).collect();
     let away_today = crate::talk_days::put_away_today(&model.put_away, model.unix, crate::state::local_midnight);
-    if talks.is_empty() && model.draft_talk.is_none() && model.put_away.is_empty() {
+    if talks.is_empty() && pins.is_empty() && model.draft_talk.is_none() && model.put_away.is_empty() {
         return Vec::new();
     }
     let mut rows = vec![heading_frame(p, "talks-heading").child(div().flex_1().child(t!("sidebar.conversations"))).into_any_element()];
@@ -781,6 +784,12 @@ fn conversation_list(shell: &Shell, cx: &mut Context<Shell>) -> Vec<AnyElement> 
                 .children(project_label(p, about.as_deref()))
                 .into_any_element(),
         );
+    }
+    if !pins.is_empty() {
+        rows.push(div().mx_2().px_2().pt(px(6.)).pb(px(2.)).text_size(px(11.)).text_color(p.muted).child(t!("sidebar.pinned")).into_any_element());
+        for lane in &pins {
+            rows.push(conversation_row(shell, lane, cx));
+        }
     }
     let all = shell.board.side_talks_all.contains("");
     let long = talks.len() > CONVERSATIONS_SHOWN;

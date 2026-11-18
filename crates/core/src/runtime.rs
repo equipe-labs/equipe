@@ -10478,6 +10478,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         tickets.retain(|t| !t.status.is_closed() || recent_closed.contains(&t.id));
         watchdog::mark("snapshot: members");
         let marks = self.journals.get(squad).and_then(|j| j.conversation_marks().ok()).unwrap_or_default();
+        let pins = self.journals.get(squad).and_then(|j| j.conversation_pins().ok()).unwrap_or_default();
         let mut sessions: Vec<SessionInfo> = self
             .sessions
             .iter()
@@ -10507,7 +10508,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
                     steering_in: s.steer_threads.clone(),
-                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept, active: marks.get(&id).map_or(0, |m| m.0), pinned: marks.get(&id).is_some_and(|m| m.1) }),
+                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept, active: marks.get(&id).map_or(0, |m| m.0), pinned: marks.get(&id).is_some_and(|m| m.1), pinned_at: pins.get(&id).copied().unwrap_or(0) }),
                     run: s.run_of.zip(s.work.as_ref()).map(|(of, w)| equipe_protocol::RunOf { of, ticket: w.ticket, generation: w.execution_generation }),
                     estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {

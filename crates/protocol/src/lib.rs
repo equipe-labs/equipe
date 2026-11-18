@@ -225,6 +225,10 @@ pub struct Lane {
     /// The person pinned it: equipe never puts it away by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// When the person pinned it (unix seconds; 0 where not known): the pinned
+    /// ones are listed in the order they were pinned, the latest first.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub pinned_at: u64,
 }
 
 /// A session that runs one ticket for a member: the member's own session

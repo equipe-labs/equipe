@@ -2887,7 +2887,17 @@ impl Journal {
     /// The person pins a conversation (or lets it go): a pinned one is never
     /// put away by itself. Not an activity of its own.
     pub fn set_conversation_pinned(&self, id: SessionId, pinned: bool) -> Result<bool> {
-        Ok(self.conn.execute("UPDATE conversations SET pinned = ?1 WHERE id = ?2", params![pinned, id as i64])? > 0)
+        // The column keeps when it was pinned (0: not), so the list can show the pins in order.
+        let at = if pinned { now().max(1) } else { 0 };
+        Ok(self.conn.execute("UPDATE conversations SET pinned = ?1 WHERE id = ?2", params![at, id as i64])? > 0)
+    }
+
+    /// When each open pinned conversation was pinned (unix seconds; 1 for one
+    /// pinned before the time was kept).
+    pub fn conversation_pins(&self) -> Result<std::collections::HashMap<SessionId, u64>> {
+        let mut stmt = self.conn.prepare("SELECT id, pinned FROM conversations WHERE open = 1 AND pinned != 0")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)?.max(0) as u64)))?;
+        Ok(rows.filter_map(|r| r.ok()).collect())
     }
 
     /// For each open conversation: when something last happened in it (its
@@ -3219,6 +3229,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn pinning_keeps_when_so_the_pins_list_in_order_and_unpinning_clears_it() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        for id in [1, 2] {
+            j.record_conversation(id, None, Path::new("/tmp")).unwrap();
+        }
+        assert!(j.conversation_pins().unwrap().is_empty());
+        assert!(j.set_conversation_pinned(1, true).unwrap());
+        let pins = j.conversation_pins().unwrap();
+        assert!(pins.get(&1).is_some_and(|at| *at > 0) && !pins.contains_key(&2));
+        assert!(j.conversation_marks().unwrap()[&1].1, "pinned, so equipe never puts it away");
+        j.set_conversation_pinned(1, false).unwrap();
+        assert!(j.conversation_pins().unwrap().is_empty() && !j.conversation_marks().unwrap()[&1].1);
+        // Put away, a conversation is not on the list of pins.
+        j.set_conversation_pinned(2, true).unwrap();
+        j.close_conversation(2).unwrap();
+        assert!(j.conversation_pins().unwrap().is_empty());
     }
 
     #[test]
