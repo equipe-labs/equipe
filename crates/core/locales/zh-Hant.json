@@ -838,6 +838,8 @@
   "request.waits.other": "{count} 項等你處理（{list}）",
   "request.all_done": "全部完成",
   "request.nothing_yet": "看板上還沒有",
+  "request.uncovered": "還沒有工單負責這個請求 — 已告知 PM",
+  "request.closed": "已關閉：{why}",
   "request.news": "你的請求「{title}」：{line}",
   "request.answer": "equipe 回答（{name} 正忙，依據看板）— 「{title}」：{line}",
   "gate.why.outward": "會在外部實際執行",

@@ -525,6 +525,8 @@ fn select(conn: &Connection, since: u64, until: u64) -> rusqlite::Result<Input> 
         for row in &mut rows {
             row.tickets = stmt.query_map([row.id as i64], |r| Ok((r.get::<_, i64>(0)? as u64, r.get::<_, String>(1)?)))?.collect::<rusqlite::Result<_>>()?;
         }
+        // Words no ticket came of — thanks, a question answered — took no work to measure.
+        rows.retain(|row| !row.tickets.is_empty());
         input.requests = Some(rows);
     }
     // What went live by a deploy signal (`crate::deploys`, kept in `meta`).

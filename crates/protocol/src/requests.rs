@@ -2,11 +2,14 @@
 //! and every ticket that came of it — so one line says where it all stands
 //! and nobody has to ask about each ticket in turn.
 //!
-//! A request is born when a member puts the first ticket on the board in
-//! answer to the person (or the person puts one there themselves); tickets
-//! made while working on its tickets — follow-ups, checks, the next step a
-//! member files — join it by their lineage, and a member can put a ticket
-//! with it explicitly. The daemon works out where each stands
+//! A request is born when the person asks a member for something in a
+//! conversation (or puts a ticket on the board themselves). A ticket put on
+//! the board in answer joins it — named by the member whenever more than one
+//! request is open there; tickets made while working on its tickets —
+//! follow-ups, checks, the next step a member files — join it by their
+//! lineage. Only a work ticket covers it: one left uncovered is put to the
+//! PM, and it closes only when its work is done or a member closes it with
+//! a reason the person sees. The daemon works out where each stands
 //! (`equipe_core::requests`) and tells the screens with
 //! [`crate::Event::RequestChanged`]; a screen only draws it.
 
@@ -142,9 +145,17 @@ pub struct Status {
     pub waits: Vec<Wait>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<Step>,
-    /// Every part finished and nothing waits on the person.
+    /// Every part finished, nothing waits on the person, and a work ticket
+    /// serves it — equipe's own checks never cover a request.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
+    /// No work ticket serves it a few minutes after it was asked: it is put
+    /// to the PM, and stays open, until one does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub uncovered: bool,
+    /// Closed by a member with its work not done: why, as the person is told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_why: Option<String>,
 }
 
 /// Something the person asked for, and where it stands.

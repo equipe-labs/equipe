@@ -13,27 +13,79 @@ runtime's side is `crates/core/src/runtime/requests.rs`; the wire types are
 
 ## When a request is made
 
-- A member puts the first ticket on the board in answer to what the person
-  said in a conversation (its own or a lane of it — the turn answering them
-  now first, else their words of the last 20 minutes). The request's title is
-  the first line of those words. Every ticket made from the same words joins
-  the same request; each is a **part** of it.
+- The person asks a member for something in a conversation (its own or a
+  lane of it, not beside a ticket's run): each message is a request of its
+  own from then on — so two things asked minutes apart are two requests,
+  never one. Its title is the first line of their words (joined by the next
+  ones while that line is too short to say much: "Hi!", "Also:"). A screen
+  lists it once a ticket is with it, or once it is uncovered (below).
 - The person puts a ticket on the board themselves: a request of its own, its
   news told in the PM's conversation.
-- A message that only asks after a request ("how's the input box going?") is
-  not a new one.
+- A message that only asks after a request ("how's the input box going?"), or
+  that names a ticket already on the board ("T-12: …", "merge T-3"), is not a
+  new one.
+
+## Which request a ticket serves
+
+A ticket a member puts on the board from its own conversation, not at work on
+a ticket, serves the person's request there that it answers:
+
+- named: `request` on `create_ticket` (`3` or `R-3`; `0` for none of them);
+- not named, with exactly one of the person's requests that it could answer —
+  open, asked in a conversation of that member, not all done, and asked in
+  the last 20 minutes or still with no ticket covering it — that one;
+- not named, with more than one: **refused**, before anything is made, with
+  each request in one line (`R-3 “Login and logout show an error” (no ticket
+  yet) · asked 13:26`), so the member names it. A ticket is never put with
+  whichever request was asked last.
+
+A ticket made while working a request's ticket joins that request (`made`),
+whatever is open. The reply names the request in the person's words, so a
+wrong one shows at once; the PM moves a ticket with `update_ticket`'s
+`request` (`0`: with none), and what came of it — made while working it, its
+follow-ups, its checks — moves with it.
 
 ## How tickets join it
 
 | Link | When |
 |---|---|
-| `asked` | made in answer to the person's words (or by the person) |
+| `asked` | made in answer to the person's words, named or the one open request (or by the person) |
 | `made` | filed by a member while it worked a ticket of the request (a run's `create_ticket`) |
 | `follow_up` | a design follow-up (`design_follow_ups`) of a ticket of the request |
 | `check` | the design QA of a ticket of the request: shown in the timeline, never in the status line, never news |
-| `linked` | a member named it: `request` on `create_ticket`, or the PM's `update_ticket` with `request` (any status) |
+| `linked` | a member named it while at work on another request's ticket, or the PM's `update_ticket` with `request` (any status) |
 
-A ticket serves one request at most. Kept ideas never join one.
+A ticket serves one request at most, and what came of it follows it when it
+moves. Kept ideas never join one.
+
+## Covered, or not
+
+Only work **covers** a request: a ticket that serves it that isn't equipe's
+own check (a `check` link, or anything that came of one), a design QA ticket,
+or a meta ticket (labelled `check`). A request no ticket covers ten minutes
+after it was asked (`COVER_WAIT`) is **uncovered**:
+
+- the PM is told once, in one message listing each in the person's words, to
+  put its work on the board or close it with why — and every PM turn lists it
+  until one covers it (a member's own turns list those asked there);
+- the person sees it listed, its line starting "no ticket serves it yet — the
+  PM is told";
+- it never closes by itself.
+
+## Closing honestly
+
+A request closes by itself only when a ticket covers it, every part is
+finished and nothing waits on the person — told once as "all done". Another
+request's tickets never close it, nor do equipe's checks. New work joining a
+closed request opens it again (a check joining doesn't), and its "all done" is
+told anew.
+
+`close_request` (the PM, or the member it was asked of) closes one that asks
+for no work — thanks, a question answered — or no longer does, with why in a
+few words. The person is told in the conversation they asked in ("Your
+request “…”: closed: answered in chat"); one with tickets stays listed with
+that line. Its open tickets stay on the board unless the member cancels them.
+
 
 ## The status line
 
@@ -65,8 +117,11 @@ an `Event::RequestNews` the screens turn into a notification (as a reply is).
 ## What members are told
 
 A member's turn in a conversation starts with the person's open requests there,
-each with its tickets and status line, and the instruction to answer "how is
-it going?" from it at once. While the member is busy, a message that asks after
+each in one line — its number, its name in their words, its tickets (or "no
+ticket yet"), when it was asked, its status line — with the instruction to
+answer "how is it going?" from it at once, to give each a ticket that serves
+it, and to close what asks for no work. The PM's turns add the requests asked
+of other members that no ticket covers yet. While the member is busy, a message that asks after
 one of them (by ticket or R-number, or by a term of its words or its parts'
 titles, in a question) is answered at once by equipe from the board, marked
 as equipe's answer; the member still reads the message at its next step.
