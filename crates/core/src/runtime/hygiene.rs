@@ -222,10 +222,9 @@ impl Runtime {
         if !self.journal(squad).is_none_or(Journal::context_obsolete_check) {
             return;
         }
-        let all = tickets.clone();
         let mut held: Vec<TicketId> = Vec::new();
-        for ticket in &all {
-            let Some(flag) = crate::obsolete::flag(ticket, &all).filter(|_| !first.contains(&ticket.id)) else { continue };
+        for ticket in tickets.iter() {
+            let Some(flag) = crate::obsolete::flag(ticket, tickets).filter(|_| !first.contains(&ticket.id)) else { continue };
             let history = self.journal(squad).and_then(|j| j.ticket_history(ticket.id).ok()).unwrap_or_default();
             if crate::obsolete::confirmed(&history) {
                 continue;

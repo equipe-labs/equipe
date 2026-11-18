@@ -57,6 +57,12 @@ Edge cases covered by tests (`crates/core/src/desktop/auto.rs`):
 - a daemon on another Mac: `grant_words` in `views/desktop_setup.rs` names it and
   has no button.
 
+## Members never search the whole disk
+
+`equipe_core::guard` refuses a Claude Code member's search that starts at `/`, the data volume, every user's
+folders or the home folder (`find`, `bfs`, `fd`, `rg`, `grep -r`, `du`, `ls -R`, …). The refusal names the folder to
+search instead: where the member works, and a design session's `design/sessions/` there. See docs/LOAD.md.
+
 ## Members never change the host Mac's system settings
 
 Refused by `equipe_desktop_control::system_guard` for the desktop tools (⌘F5,

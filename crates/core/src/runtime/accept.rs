@@ -469,7 +469,7 @@ carry on meanwhile.",
             if journal.change_requests_recovered() {
                 continue;
             }
-            let in_review: Vec<TicketId> = journal.tickets().unwrap_or_default().iter().filter(|t| t.status == TicketStatus::Review).map(|t| t.id).collect();
+            let in_review: Vec<TicketId> = journal.board().unwrap_or_default().iter().filter(|t| t.status == TicketStatus::Review).map(|t| t.id).collect();
             let unheard: Vec<(TicketId, String)> = in_review
                 .into_iter()
                 .filter_map(|id| rules::unheard_change_request(&journal.ticket_entries(id).unwrap_or_default(), &pm).map(|asked| (id, asked)))

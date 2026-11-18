@@ -75,8 +75,8 @@ pub struct Breaker {
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub squad: String,
-    /// Every ticket of the board.
-    pub tickets: Vec<Ticket>,
+    /// Every ticket of the board, shared with the daemon's ([`crate::journal::Journal::board`]).
+    pub tickets: std::sync::Arc<Vec<Ticket>>,
     /// Members besides the PM.
     pub members: usize,
     pub breaker: Option<Breaker>,
@@ -578,7 +578,7 @@ mod tests {
     fn healthy() -> Facts {
         Facts {
             squad: "acme".into(),
-            tickets: vec![ticket(1, TicketStatus::InProgress), ticket(2, TicketStatus::Todo)],
+            tickets: vec![ticket(1, TicketStatus::InProgress), ticket(2, TicketStatus::Todo)].into(),
             members: 3,
             engines: vec![budget(Engine::Claude), budget(Engine::Codex)],
             in_use: vec![Engine::Claude, Engine::Codex],
@@ -609,12 +609,12 @@ mod tests {
         quiet.title = "Pick a color".into();
         let mut tickets = vec![quiet, waiting];
         tickets.extend((10..13).map(|id| Ticket { depends_on: vec![1], ..ticket(id, TicketStatus::Todo) }));
-        let facts = Facts { squad: "acme".into(), tickets, members: 1, ..healthy() };
+        let facts = Facts { squad: "acme".into(), tickets: tickets.into(), members: 1, ..healthy() };
         let s = status(&facts, &quiet_rows());
         assert_eq!(s.waiting.iter().map(|w| w.ticket).collect::<Vec<_>>(), vec![Some(1), Some(2)]);
         assert_eq!((s.waiting[0].impact.blocks, s.waiting[0].impact.reason.as_str()), (3, "blocks 3 tickets"));
         assert_eq!(s.waiting_more, 0);
-        let many = Facts { tickets: (1..=8).map(|id| ticket(id, TicketStatus::Waiting)).collect(), ..facts };
+        let many = Facts { tickets: (1..=8).map(|id| ticket(id, TicketStatus::Waiting)).collect::<Vec<_>>().into(), ..facts };
         let s = status(&many, &quiet_rows());
         assert_eq!((s.waiting.len(), s.waiting_more), (WAITING_SHOWN, 3));
     }
@@ -631,8 +631,8 @@ mod tests {
     #[test]
     fn an_open_breaker_is_red_with_its_cause_since_when_and_the_runs_it_holds() {
         let mut facts = healthy();
-        facts.tickets.push(paused(3, PauseWhy::SquadPaused, Engine::Claude, None));
-        facts.tickets.push(paused(4, PauseWhy::SquadPaused, Engine::Codex, None));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(3, PauseWhy::SquadPaused, Engine::Claude, None));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(4, PauseWhy::SquadPaused, Engine::Codex, None));
         facts.working.clear();
         facts.breaker = Some(Breaker { cause: "No space left on device".into(), since: NOW - 20 * MINUTE });
         let s = status(&facts, &quiet_rows());
@@ -649,11 +649,11 @@ mod tests {
         let mut facts = healthy();
         let back = NOW + 3 * DAY;
         for id in 10..22 {
-            facts.tickets.push(paused(id, PauseWhy::EngineLimit, Engine::Codex, Some(back)));
+            std::sync::Arc::make_mut(&mut facts.tickets).push(paused(id, PauseWhy::EngineLimit, Engine::Codex, Some(back)));
         }
-        facts.tickets.push(paused(30, PauseWhy::Retrying, Engine::Claude, Some(NOW + 600)));
-        facts.tickets.push(paused(31, PauseWhy::Retrying, Engine::Claude, Some(NOW + 120)));
-        facts.tickets.push(paused(32, PauseWhy::SignIn, Engine::Claude, None));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(30, PauseWhy::Retrying, Engine::Claude, Some(NOW + 600)));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(31, PauseWhy::Retrying, Engine::Claude, Some(NOW + 120)));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(32, PauseWhy::SignIn, Engine::Claude, None));
         let s = status(&facts, &quiet_rows());
         let row = |why| s.blocked.iter().find(|b| b.why == Some(why)).unwrap();
         let limit = row(PauseWhy::EngineLimit);
@@ -671,7 +671,7 @@ mod tests {
         let mut facts = healthy();
         facts.engines[1].out_until = Some(NOW + DAY);
         for id in 10..13 {
-            facts.tickets.push(paused(id, PauseWhy::EngineLimit, Engine::Codex, Some(NOW + DAY)));
+            std::sync::Arc::make_mut(&mut facts.tickets).push(paused(id, PauseWhy::EngineLimit, Engine::Codex, Some(NOW + DAY)));
         }
         let s = status(&facts, &quiet_rows());
         let rows: Vec<_> = s.blocked.iter().filter(|b| matches!(b.cause, Cause::EngineOut | Cause::RunsPaused)).collect();
@@ -697,7 +697,7 @@ mod tests {
         assert_eq!(carried.mood, Mood::Good, "Claude carries the work: nothing is held, so nothing is slowed");
         assert!(carried.blocked.is_empty(), "no row for an engine that holds nothing up");
         assert_eq!(carried.notes, [Note::Out { engine: Engine::Codex, back_at: Some(NOW + DAY) }], "but the status line says it");
-        only.tickets.push(paused(40, PauseWhy::EngineLimit, Engine::Codex, Some(NOW + DAY)));
+        std::sync::Arc::make_mut(&mut only.tickets).push(paused(40, PauseWhy::EngineLimit, Engine::Codex, Some(NOW + DAY)));
         assert_eq!(status(&only, &quiet_rows()).mood, Mood::Slowed, "a run waiting on it is a row to see, not a stop");
         only.tickets.pop();
         only.engines[0].out_until = Some(NOW + HOUR);
@@ -708,8 +708,8 @@ mod tests {
     fn a_sign_in_to_make_is_one_row_the_person_opens_with_its_waiting_runs() {
         let mut facts = healthy();
         facts.signed_out = vec![Engine::Claude];
-        facts.tickets.push(paused(5, PauseWhy::SignIn, Engine::Claude, None));
-        facts.tickets.push(paused(6, PauseWhy::SignIn, Engine::Claude, None));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(5, PauseWhy::SignIn, Engine::Claude, None));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(6, PauseWhy::SignIn, Engine::Claude, None));
         let s = status(&facts, &quiet_rows());
         let sign_in: Vec<_> = s.blocked.iter().filter(|b| b.cause == Cause::SignIn || b.why == Some(PauseWhy::SignIn)).collect();
         assert_eq!(sign_in.len(), 1);
@@ -726,7 +726,7 @@ mod tests {
         let mut late = ticket(8, TicketStatus::Proposed);
         late.note = back.note.clone();
         late.updated_at = Some(NOW - HOUR);
-        facts.tickets.extend([late, back, ticket(9, TicketStatus::Proposed)]);
+        std::sync::Arc::make_mut(&mut facts.tickets).extend([late, back, ticket(9, TicketStatus::Proposed)]);
         let s = status(&facts, &quiet_rows());
         let row = s.blocked.iter().find(|b| b.cause == Cause::HandedBack).unwrap();
         assert_eq!((row.count, row.tickets.clone(), row.at), (2, vec![7, 8], Some(NOW - 3 * HOUR)));
@@ -761,16 +761,16 @@ mod tests {
         assert_eq!(held.mood, Mood::Slowed);
         // Nothing to run and a proposal waiting: not slow, just waiting.
         let mut idle = Facts { squad: "acme".into(), members: 2, decisions: 1, ..Facts::default() };
-        idle.tickets.push(ticket(1, TicketStatus::Done));
+        std::sync::Arc::make_mut(&mut idle.tickets).push(ticket(1, TicketStatus::Done));
         assert_eq!(status(&idle, &Rows::default()).mood, Mood::Good);
     }
 
     #[test]
     fn waiting_tickets_stalled_runs_and_work_to_accept_count_as_needing_the_person() {
         let mut facts = healthy();
-        facts.tickets.push(ticket(3, TicketStatus::Waiting));
-        facts.tickets.push(stalled(4));
-        facts.tickets.push(ticket(5, TicketStatus::Review));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(ticket(3, TicketStatus::Waiting));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(stalled(4));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(ticket(5, TicketStatus::Review));
         facts.pm_accepts = false;
         assert_eq!(status(&facts, &quiet_rows()).tiles.needs_you, 3);
         facts.pm_accepts = true;
@@ -782,7 +782,7 @@ mod tests {
         let mut facts = healthy();
         let mut old = ticket(3, TicketStatus::InProgress);
         old.updated_at = Some(NOW - 5 * HOUR);
-        facts.tickets.extend([old, ticket(4, TicketStatus::InProgress), paused(5, PauseWhy::EngineLimit, Engine::Codex, None)]);
+        std::sync::Arc::make_mut(&mut facts.tickets).extend([old, ticket(4, TicketStatus::InProgress), paused(5, PauseWhy::EngineLimit, Engine::Codex, None)]);
         // 3: its last turn ended 3h ago; 4: 90 minutes ago; 1 is mid-turn; 5 is paused.
         let rows = Rows { last_turn: [(1, NOW - 4 * HOUR), (3, NOW - 3 * HOUR), (4, NOW - 90 * MINUTE)].into(), ..Rows::default() };
         let s = status(&facts, &rows);
@@ -827,7 +827,7 @@ mod tests {
         assert!(s.notes.is_empty() && s.blocked.is_empty());
         // The caps are full with tickets ready: slowed, and the note says how many at once.
         one_member(&mut facts, 4, 4, 4);
-        facts.tickets.extend([ticket(3, TicketStatus::Todo), ticket(4, TicketStatus::Todo)]);
+        std::sync::Arc::make_mut(&mut facts.tickets).extend([ticket(3, TicketStatus::Todo), ticket(4, TicketStatus::Todo)]);
         let s = status(&facts, &quiet_rows());
         assert_eq!(s.mood, Mood::Slowed);
         assert!(s.blocked.is_empty());
@@ -841,9 +841,9 @@ mod tests {
         let mut facts = healthy();
         one_member(&mut facts, 1, 6, 16);
         facts.tickets = vec![ticket(1, TicketStatus::InProgress), ticket(2, TicketStatus::Waiting), ticket(3, TicketStatus::Todo)];
-        facts.tickets[2].depends_on = vec![2];
-        facts.tickets.push(ticket(4, TicketStatus::Todo));
-        facts.tickets[3].depends_on = vec![1];
+        std::sync::Arc::make_mut(&mut facts.tickets)[2].depends_on = vec![2];
+        std::sync::Arc::make_mut(&mut facts.tickets).push(ticket(4, TicketStatus::Todo));
+        std::sync::Arc::make_mut(&mut facts.tickets)[3].depends_on = vec![1];
         facts.decisions = 2;
         let s = status(&facts, &quiet_rows());
         assert_eq!(s.mood, Mood::Good, "{s:#?}");
@@ -858,7 +858,7 @@ mod tests {
         let mut facts = healthy();
         one_member(&mut facts, 1, 4, 8);
         facts.lanes[0].reserve = true;
-        facts.tickets.push(ticket(5, TicketStatus::Todo));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(ticket(5, TicketStatus::Todo));
         let s = status(&facts, &quiet_rows());
         assert_eq!(s.notes, [Note::Reserve { engine: Engine::Claude }]);
         assert_eq!(s.mood, Mood::Slowed, "ready tickets wait for the engine's reserve");
@@ -874,10 +874,10 @@ mod tests {
         facts.engines[0].out_until = Some(NOW + HOUR);
         let mut back = ticket(7, TicketStatus::Proposed);
         back.note = Some(format!("{}x", equipe_protocol::HANDED_BACK));
-        facts.tickets.push(back);
-        facts.tickets.push(paused(20, PauseWhy::Retrying, Engine::Claude, None));
-        facts.tickets.push(paused(21, PauseWhy::Retrying, Engine::Codex, None));
-        facts.tickets.push(paused(22, PauseWhy::SignIn, Engine::Codex, None));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(back);
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(20, PauseWhy::Retrying, Engine::Claude, None));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(21, PauseWhy::Retrying, Engine::Codex, None));
+        std::sync::Arc::make_mut(&mut facts.tickets).push(paused(22, PauseWhy::SignIn, Engine::Codex, None));
         facts.decisions = 1;
         facts.approvals = 1;
         let rows = Rows { failures_hour: 4, ..quiet_rows() };
@@ -894,7 +894,7 @@ mod tests {
         let mut facts = healthy();
         let mut urgent = ticket(3, TicketStatus::Todo);
         urgent.priority = Priority::Urgent;
-        facts.tickets.extend([urgent, ticket(4, TicketStatus::Done)]);
+        std::sync::Arc::make_mut(&mut facts.tickets).extend([urgent, ticket(4, TicketStatus::Done)]);
         let rows = Rows { accepted_today: 5, accepted_2h: 2, ..quiet_rows() };
         let t = status(&facts, &rows).tiles;
         assert_eq!((t.accepted_today, t.accepted_2h), (5, 2));
@@ -924,7 +924,7 @@ mod tests {
         done.priority = Priority::Urgent;
         let mut idea = ticket(6, TicketStatus::Idea);
         idea.priority = Priority::Urgent;
-        facts.tickets.extend([a, b, done, idea]);
+        std::sync::Arc::make_mut(&mut facts.tickets).extend([a, b, done, idea]);
         let list = status(&facts, &quiet_rows()).watched;
         assert!(!list.pinned);
         assert_eq!(list.tickets.iter().map(|t| t.ticket).collect::<Vec<_>>(), [4, 3], "under way first; closed ideas and done work are not urgent anymore");

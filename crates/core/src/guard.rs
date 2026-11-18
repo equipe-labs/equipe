@@ -20,6 +20,13 @@
 //!   simulator, never on the host (`equipe_desktop_control::system_guard`
 //!   refuses the same through the desktop tools).
 //!
+//! - a search that walks the whole disk or the whole home folder (`find /`,
+//!   `bfs ~`, `fd . /`, `rg … /`, `grep -r … ~`, `du /`, `ls -R /`): on a Mac
+//!   shared by a squad it runs for minutes at full speed and slows every
+//!   member and the person's screens. The answer names the folder to search
+//!   instead — where the member works, and a design session's
+//!   `design/sessions/` there ([`scan_refused`]).
+//!
 //! After a command ran (`PostToolUse`), one answer more: a shell `screencapture`
 //! or `osascript` UI script that macOS refused for want of a permission is
 //! answered with a pointer to equipe's desktop tools, which hold the
@@ -129,6 +136,9 @@ pub fn refusal(tool: &str, input: &Value, cwd: &Path, work: &Path, read_only: &[
                     here = dir;
                     continue;
                 }
+                if let Some((program, root)) = whole_disk_scan(&c.words, &here, home.as_deref()) {
+                    return Some(scan_refused(&program, &root, work));
+                }
                 if let Some(why) = writes(c).iter().find_map(|target| shut(target, &here)) {
                     return Some(why);
                 }
@@ -140,6 +150,100 @@ pub fn refusal(tool: &str, input: &Value, cwd: &Path, work: &Path, read_only: &[
         }
         _ => None,
     }
+}
+
+/// What a member is told when a command would search the whole disk or the
+/// whole home folder: where to look instead.
+fn scan_refused(program: &str, root: &str, work: &Path) -> String {
+    let work = work.display();
+    format!(
+        "Blocked: `{program} {root}` walks every folder under {root}: on a Mac shared by a squad it runs for minutes at \
+full speed and slows every member and the person's screen. Search where the files are: where you work, {work} \
+(`{program} {work} …`). A design session's prototypes are in its folder under `{work}/design/sessions/` \
+(`ls -t {work}/design/sessions/` lists the latest first). For anything else, ask the PM or the person where it is; \
+on macOS, `mdfind -name <file>` asks Spotlight's index and answers at once."
+    )
+}
+
+/// Folders a search must never start at: the whole disk, its data volume,
+/// every user's folders, and the home folder itself.
+const SCAN_ROOTS: &[&str] = &["/", "/System", "/System/Volumes/Data", "/Volumes", "/Users", "/home", "/private"];
+
+/// Searches deeper than this from such a root are refused; `find / -maxdepth 1` is a glance.
+const SCAN_DEPTH_OK: u32 = 2;
+
+/// A command that searches every folder under the whole disk or the home
+/// folder: its program and the root as written, else `None`.
+fn whole_disk_scan(words: &[String], cwd: &Path, home: Option<&Path>) -> Option<(String, String)> {
+    let mut words = unwrapped(words.to_vec());
+    while words.first().is_some_and(|w| w.rsplit('/').next() == Some("sudo")) {
+        let options = words[1..].iter().take_while(|w| w.starts_with('-')).count();
+        words = unwrapped(words.split_off(1 + options));
+    }
+    let (program, args) = words.split_first()?;
+    let program = program.rsplit('/').next().unwrap_or(program).to_owned();
+    let depth = |names: &[&str]| -> Option<u32> {
+        args.iter().enumerate().find_map(|(i, a)| {
+            names.iter().find_map(|name| match a.strip_prefix(name) {
+                Some("") => args.get(i + 1)?.parse().ok(),
+                Some(rest) => rest.strip_prefix('=')?.parse().ok(),
+                None => None,
+            })
+        })
+    };
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with('-')).collect();
+    // The pattern comes first unless an option gives it.
+    let pattern_first = |given: &[&str]| !args.iter().any(|a| given.iter().any(|g| a == g || a.starts_with(&format!("{g}="))));
+    let short_flag = |flag: char| args.iter().any(|a| a.starts_with('-') && !a.starts_with("--") && a[1..].contains(flag));
+    let paths: Vec<&String> = match program.as_str() {
+        "find" | "bfs" | "gfind" => {
+            if depth(&["-maxdepth"]).is_some_and(|d| d <= SCAN_DEPTH_OK) {
+                return None;
+            }
+            // Its starting points: before the expression.
+            args.iter().skip_while(|a| matches!(a.as_str(), "-H" | "-L" | "-P") || a.starts_with("-O")).take_while(|a| !a.starts_with(['-', '(', '!', ')'])).collect()
+        }
+        "fd" | "fdfind" => {
+            if depth(&["--max-depth", "-d"]).is_some_and(|d| d <= SCAN_DEPTH_OK) {
+                return None;
+            }
+            let mut paths: Vec<&String> = positional.iter().skip(1).copied().collect();
+            paths.extend(args.iter().enumerate().filter(|(_, a)| matches!(a.as_str(), "--search-path" | "--base-directory")).filter_map(|(i, _)| args.get(i + 1)));
+            paths
+        }
+        "rg" | "ag" | "ack" => {
+            if depth(&["--max-depth", "--depth"]).is_some_and(|d| d <= SCAN_DEPTH_OK) {
+                return None;
+            }
+            let skip = usize::from(pattern_first(&["-e", "--regexp", "-f", "--file", "--files"]));
+            positional.iter().skip(skip).copied().collect()
+        }
+        "grep" | "egrep" | "fgrep" | "ggrep" => {
+            let recursive = short_flag('r') || short_flag('R') || args.iter().any(|a| a == "--recursive" || a == "--dereference-recursive");
+            if !recursive {
+                return None;
+            }
+            let skip = usize::from(pattern_first(&["-e", "--regexp", "-f", "--file"]));
+            positional.iter().skip(skip).copied().collect()
+        }
+        "du" | "gdu" => positional,
+        "ls" | "gls" if short_flag('R') || args.iter().any(|a| a == "--recursive") => positional,
+        "tree" if depth(&["-L"]).is_none_or(|d| d > SCAN_DEPTH_OK) => positional,
+        _ => return None,
+    };
+    paths.into_iter().find(|p| is_scan_root(p, cwd, home)).map(|p| (program.clone(), p.clone()))
+}
+
+/// Whether a search starting at `path` walks the whole disk or the home folder.
+fn is_scan_root(path: &str, cwd: &Path, home: Option<&Path>) -> bool {
+    let path = path.strip_suffix("/*").or_else(|| path.strip_suffix("/.")).unwrap_or(path);
+    let path = if path.is_empty() { "/" } else { path };
+    let resolved = match path {
+        "$HOME" | "${HOME}" | "$HOME/" | "${HOME}/" => home.map(Path::to_path_buf),
+        _ => resolve(path, cwd, home),
+    };
+    let Some(resolved) = resolved else { return false };
+    SCAN_ROOTS.iter().any(|root| resolved == Path::new(root)) || home.is_some_and(|home| resolved == home)
 }
 
 fn read_only_refused(target: &Path, dir: &Path) -> String {
@@ -643,6 +747,60 @@ mod tests {
 
     fn in_background(command: &str) -> Option<String> {
         refusal("Bash", &json!({ "command": command, "run_in_background": true }), Path::new(WORK), Path::new(WORK), &[PathBuf::from(PROJECT)])
+    }
+
+    #[test]
+    fn a_search_of_the_whole_disk_or_home_is_refused_with_the_folder_to_search() {
+        for command in [
+            "find / -path '*design/sessions/*' -name index-a.html -mmin -600",
+            "bfs / -path '*design/sessions/*' -name index-a.html -mmin -600 2>/dev/null",
+            "find /System/Volumes/Data -name '*.html'",
+            "sudo find / -name x",
+            "fd . /",
+            "fd index-a.html / --type f",
+            "fd -e html --search-path /",
+            "rg -l 'Pricing' /",
+            "rg --files / ",
+            "grep -rn 'Pricing' /Users",
+            "grep -R --include=*.html Pricing /",
+            "du -sh /",
+            "ls -R /",
+            "find /* -name index-a.html",
+            "cd /tmp && find / -name x | head",
+        ] {
+            let why = bash(command).unwrap_or_else(|| panic!("{command} let through"));
+            assert!(why.starts_with("Blocked: `"), "{command}: {why}");
+            for part in [&format!("where you work, {WORK}"), &format!("{WORK}/design/sessions/"), "ls -t"] {
+                assert!(why.contains(part.as_str()), "{command}: {part}: {why}");
+            }
+        }
+        assert!(bash("find / -name x").unwrap().contains("`find /`"), "it names the search");
+        // The home folder itself, however written.
+        let (home, cwd) = (Path::new("/Users/someone"), Path::new("/w"));
+        let words = |line: &str| parse(line).remove(0).words;
+        for command in ["find ~ -name index-a.html", "find ~/ -name x", "bfs $HOME -name x", "rg x /Users/someone", "du -sh ~", "fd x ~"] {
+            assert!(whole_disk_scan(&words(command), cwd, Some(home)).is_some(), "{command} let through");
+        }
+        // Searches where the files are, and glances at a root, go through.
+        for command in [
+            "find . -name index-a.html",
+            "find design/sessions -name '*.html' -mmin -600",
+            "find ~/code/site -name x",
+            "find / -maxdepth 1 -name tmp",
+            "fd index-a.html design/",
+            "fd /",
+            "rg / src",
+            "rg -n Pricing",
+            "grep -n / notes.txt",
+            "grep Pricing /etc/hosts",
+            "du -sh target/",
+            "ls /",
+            "ls -la ~",
+            "tree -L 2 /",
+            "mdfind -name index-a.html",
+        ] {
+            assert_eq!(whole_disk_scan(&words(command), cwd, Some(home)), None, "{command}");
+        }
     }
 
     #[test]

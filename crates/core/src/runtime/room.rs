@@ -417,7 +417,7 @@ impl Runtime {
         let (home, prefix) = (self.config.home.clone(), format!("t{}-", ticket.id));
         // Another squad's open ticket of the same number may own a bare `T<id>` simulator.
         let shared = self.journals.keys().filter(|s| s.as_str() != squad).cloned().collect::<Vec<_>>().iter().any(|other| {
-            self.journal(other).and_then(|j| j.tickets().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == ticket.id && !matches!(t.status, TicketStatus::Done | TicketStatus::Cancelled)))
+            self.journal(other).and_then(|j| j.board().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == ticket.id && !matches!(t.status, TicketStatus::Done | TicketStatus::Cancelled)))
         });
         let (id, owner) = (ticket.id, squad.to_owned());
         tokio::task::spawn_blocking(move || {
@@ -458,7 +458,7 @@ impl Runtime {
     fn clear_finished_leftovers(&mut self, squad: &str, ticket: &Ticket) {
         let id = ticket.id;
         let shared = self.journals.keys().filter(|s| s.as_str() != squad).cloned().collect::<Vec<_>>().iter().any(|other| {
-            self.journal(other).and_then(|j| j.tickets().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == id && !t.status.is_closed()))
+            self.journal(other).and_then(|j| j.board().ok()).is_some_and(|ts| ts.iter().any(|t| t.id == id && !t.status.is_closed()))
         });
         // A daemon with a home of its own for the person never looks at the machine's `/tmp`.
         let temp = if shared || self.config.person_home.is_some() { Vec::new() } else { disk::temp_roots() };
