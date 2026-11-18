@@ -603,6 +603,11 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
 /// landing their own work (the default).
 async fn landing_squad() -> (Handle, UnboundedReceiver<Event>, PathBuf) {
     let repo = repo();
+    // An origin, where the project deploys from: landed work is pushed there.
+    let origin = scratch("origin");
+    git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+    git(&repo, &["push", "-q", "origin", "main"]);
     let home = scratch("home");
     squads::create(&home, "acme", &repo).unwrap();
     let (handle, mut events) = runtime::start(config(&claude(), &home));
@@ -623,6 +628,17 @@ async fn work_that_needs_no_one_lands_by_its_member_and_what_a_person_must_see_w
     until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
     assert_eq!(git(&repo, &["show", "main:HERO.md"]), "made by the squad", "on main");
     assert_eq!(status(&handle, 1).await, TicketStatus::Done);
+    // And it goes live: main is pushed to origin, as the PM's acceptance did.
+    let origin = PathBuf::from(git(&repo, &["remote", "get-url", "origin"]));
+    let mut pushed = String::new();
+    for _ in 0..100 {
+        pushed = Process::new("git").arg("-C").arg(&origin).args(["show", "main:HERO.md"]).output().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned()).unwrap_or_default();
+        if !pushed.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(pushed, "made by the squad", "pushed to origin");
     // The person's digest says who landed it.
     let mut decided = Vec::new();
     for _ in 0..100 {
