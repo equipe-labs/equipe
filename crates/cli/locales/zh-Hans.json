@@ -1577,7 +1577,7 @@
   "open.no_app": "没有应用打开 {link}。请安装 equipe 桌面应用(equipe.app),启动一次后再试。",
   "open.opening": "正在 equipe 中打开 {link}",
   "open.unsupported": "equipe open 目前支持 macOS 和 Linux。链接是 {link}",
-  "autonomy.usage": "equipe squad autonomy [show | set <类别> <ask|decide_and_tell|just_do> | window <分钟> | revoke <编号>] — 类别：design、merge、internal、production_data",
+  "autonomy.usage": "equipe squad autonomy [show | set <类别> <ask|decide_and_tell|just_do> | window <分钟> | revoke <编号>] — 类别：design、merge、internal、production_data、deploy",
   "autonomy.floor": "{kind}总是先问你——任何策略都改变不了。",
   "autonomy.title": "{squad} 的成员不问你能做到哪一步：",
   "autonomy.window": "「决定后告诉我」等你回答 {minutes} 分钟（0：立即）。",

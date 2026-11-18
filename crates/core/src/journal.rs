@@ -1843,6 +1843,15 @@ impl Journal {
         self.set_meta("deploy_watch", &serde_json::to_string(watch).unwrap_or_else(|_| "{}".into()))
     }
 
+    /// How each project goes live after its landings, by its path (`crate::go_live`).
+    pub fn go_live(&self) -> std::collections::BTreeMap<String, crate::go_live::Lane> {
+        self.meta("go_live").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_go_live(&self, lanes: &std::collections::BTreeMap<String, crate::go_live::Lane>) -> Result<()> {
+        self.set_meta("go_live", &serde_json::to_string(lanes).unwrap_or_else(|_| "{}".into()))
+    }
+
     /// The person's requests `tickets` serve, by ticket.
     pub fn requests_of(&self, tickets: &[TicketId]) -> std::collections::HashMap<TicketId, crate::deploys::RequestOf> {
         let store = self.requests();

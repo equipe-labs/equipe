@@ -40,6 +40,8 @@ impl Runtime {
                 continue;
             }
             let watch: BTreeMap<String, Watch> = self.journals.get(&squad).map(Journal::deploy_watch).unwrap_or_default();
+            // Projects that go live by a command of their own: what they deployed is told when it ran (`go_live`).
+            let confirmed: HashSet<String> = self.lanes(&squad).iter().filter(|(_, l)| l.confirmed.is_some()).map(|(k, _)| k.clone()).collect();
             self.deploys_looking.insert(squad.clone());
             let internal = self.internal.clone();
             tokio::task::spawn_blocking(move || {
@@ -47,6 +49,11 @@ impl Runtime {
                 for path in projects {
                     let Ok(repo) = worktree::repo_root(&path) else { continue };
                     let before = watch.get(&key_of(&path)).cloned().unwrap_or_default();
+                    let by_command = confirmed.contains(&key_of(&path)) || crate::go_live::declared_on_main(&repo).is_ok_and(|go| go.is_some());
+                    // Pushed isn't live for them: never noted as "on main" news, once watching started.
+                    if by_command && before.live.is_some() {
+                        continue;
+                    }
                     let (after, looked) = rules::look(&repo, before.clone(), &rules::Gh, now_secs());
                     if after != before || looked != Looked::Nothing {
                         looks.push((path, after, looked));
@@ -62,6 +69,13 @@ impl Runtime {
     /// to be told.
     pub(super) fn deploys_looked(&mut self, squad: &str, looks: Vec<(PathBuf, Watch, Looked)>) {
         self.deploys_looking.remove(squad);
+        self.note_looks(squad, looks);
+    }
+
+    /// What went live, noted: each project's watch kept, and its deploy
+    /// folded into one of the same project close before. A look's, or a
+    /// project's own go-live command's (`go_live`).
+    pub(super) fn note_looks(&mut self, squad: &str, looks: Vec<(PathBuf, Watch, Looked)>) {
         if looks.is_empty() {
             return;
         }
@@ -164,6 +178,6 @@ impl Runtime {
 }
 
 /// A project's key among the watches: its path.
-fn key_of(path: &Path) -> String {
+pub(super) fn key_of(path: &Path) -> String {
     path.to_string_lossy().into_owned()
 }

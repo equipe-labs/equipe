@@ -6,8 +6,11 @@
 //!   new commits, a few `gh api` calls. A project that reports production
 //!   deployments (Vercel does, for every push) is live once one of them
 //!   succeeded for a commit on main; one with a deploy workflow, once that
-//!   workflow's run on main succeeded; one with neither (or no GitHub), once
-//!   its commits are on main — as far as equipe can see.
+//!   workflow's run on main succeeded; one with neither (or no GitHub, or a
+//!   GitHub that wouldn't say) is only ever "on main, not live yet". A
+//!   project with a go-live command of its own (`crate::go_live`) is live
+//!   once that command succeeded, and isn't looked at here after the first
+//!   look.
 //! - **What it brought** ([`parse_log`], [`note`]): the tickets equipe merged
 //!   in that range of commits (its merge commits say `equipe: merge T-12 …`),
 //!   one plain line each from the ticket's title, grouped by the person's

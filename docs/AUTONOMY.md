@@ -29,6 +29,7 @@ Each kind of thing gets one of three levels:
 | Merging reviewed work | Just do | The same switch as "the PM accepts the team's work" (`pm_accepts`). The importance gate (`person_gate`) reads this policy: small work is the PM's to accept; work weighty for a reason on the floor (outward, irreversible, security, money, legal) or a big visible change always goes to the person on a card, and work touching production data does unless the person set "writing to live data" to just-do (`Why::pm_may`). |
 | Internal and process questions | Just do | `ask_decision` refuses a set whose every question the member marked `kind: internal` and tells it to decide and note its choice on the ticket. |
 | Writing to live data | Ask | Open to standing allowances (below). Set to decide-and-tell or just-do, it goes ahead with a one-line note. A schema migration that only adds (CREATE TABLE/INDEX, ADD COLUMN nullable or with a default — read from its SQL by `crate::migrations`) isn't a live-data write to ask about: it lands like code, and the PM's digest of landed work says so; an `ask_person` that names only such files is answered "not asked". One that drops, deletes, updates existing rows, changes a type or renames still needs the person. |
+| Production deploys after a landing | Just do | Running a project's declared go-live command (`.equipe/deploy.json`, or one the PM confirmed with `set_deploy`) once its work landed and main was pushed ([USAGE.md](USAGE.md#going-live)). Set to ask, nothing deploys on its own: the PM is told the work is on main, not live, and asks the person first. Decide-and-tell deploys at once, like just-do: what went live is told either way. A deploy ticket, or work whose files deploy (a workflow, infrastructure), still goes to the person through the importance gate. |
 
 ### The floor
 
@@ -65,6 +66,7 @@ PM's words never count as the person's approval.
 equipe squad autonomy                          # show
 equipe squad autonomy set design just_do
 equipe squad autonomy set production_data decide_and_tell
+equipe squad autonomy set deploy ask
 equipe squad autonomy window 60                # minutes; 0: at once
 equipe squad autonomy revoke 3                 # a standing allowance
 ```
