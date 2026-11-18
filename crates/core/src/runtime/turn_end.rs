@@ -259,6 +259,9 @@ pub(super) enum Reason {
     Cannot,
     /// equipe's: its turns kept ending with no end to the work.
     NoEnd,
+    /// equipe's: its turns cost more than the squad allows a ticket, or kept
+    /// repeating without a new commit (`crate::spend`); the PM decides.
+    Budget,
     /// `pass_baton`: another member (`suggest`) carries it on, on the same
     /// ticket, branch and worktree (`runtime::flow`).
     Baton,
@@ -277,13 +280,14 @@ impl Reason {
     }
 
     /// In the PM's words.
-    fn said(self) -> &'static str {
+    pub(super) fn said(self) -> &'static str {
         match self {
             Reason::WaitingOn => "waiting on other tickets",
             Reason::Duplicate => "a duplicate",
             Reason::NotMyRole => "not its role's work",
             Reason::Cannot => "can't be done as asked",
             Reason::NoEnd => "its turns kept ending without a hand-in",
+            Reason::Budget => "stopped by equipe: it cost too much for what moved",
             Reason::Baton => "passed on",
         }
     }
@@ -480,6 +484,12 @@ impl Runtime {
             return false;
         }
         let (ticket, engine) = (work.ticket, s.engine);
+        // Cost too much already: no more turns on it; the PM decides (`guards`).
+        // A turn its engine failed or cut short did no work to repeat: it counts toward the budget only.
+        let worked = ending.outcome != TurnOutcome::Failed && !ending.limit;
+        if self.budget_stop(id, &squad, &name, ticket, worked) {
+            return true;
+        }
         let failed = ending.outcome == TurnOutcome::Failed;
         // An engine out of its limit fails every turn: that is the limit, not a
         // failure to retry — unless the failure is its sign-in.
@@ -1305,6 +1315,15 @@ on its branch. End your turn now with a short line."
             let line = format!("{name} passed T-{id} to {to} on the same ticket and branch: {}", hand.note);
             return (crate::lead_time::BATON, line, "news.baton");
         }
+        // Stopped for what it cost: the PM gets its card (`guards`).
+        if hand.reason == Reason::Budget {
+            self.count_ending(squad, turn_ending::TO_PM, Some(id), name);
+            ticket.status = TicketStatus::Proposed;
+            ticket.assignee = None;
+            ticket.note = Some(format!("{}{} — {}", crate::protocol::HANDED_BACK, hand.reason.said(), hand.note));
+            let line = self.take_budget_card(squad, id).map_or_else(|| format!("T-{id} was stopped before another turn: {}.", hand.note), |card| card.pm_line());
+            return (crate::spend::STOP, line, "news.budget_stop");
+        }
         self.count_ending(squad, if hand.reason == Reason::NoEnd { turn_ending::TO_PM } else { turn_ending::HANDED_BACK }, Some(id), name);
         if hand.reason == Reason::WaitingOn {
             for t in &hand.tickets {
@@ -1338,7 +1357,7 @@ one with `propose_team_change` if nobody on the team fits.",
 only they can unblock it.",
             Reason::NoEnd => "Look at its record and branch: put it back (`update_ticket`, status todo — the same owner or another) \
 with what to do next in `body`, cancel it, or ask the person.",
-            Reason::WaitingOn | Reason::Baton => "",
+            Reason::WaitingOn | Reason::Baton | Reason::Budget => "",
         };
         let line = format!("{name} handed T-{id} back — {why}. It is a proposal again, its branch kept. {next}");
         let news = match hand.reason {

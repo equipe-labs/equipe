@@ -677,6 +677,7 @@ impl Journal {
                tokens INTEGER NOT NULL DEFAULT 0
              );
              CREATE INDEX IF NOT EXISTS turns_ended ON turns(ended);
+             CREATE INDEX IF NOT EXISTS turns_ticket ON turns(ticket);
              CREATE TABLE IF NOT EXISTS waits (
                kind TEXT NOT NULL,
                member TEXT NOT NULL,
@@ -2940,6 +2941,72 @@ impl Journal {
         rows.collect()
     }
 
+    /// Every turn and token each of `tickets` took, whenever they ran:
+    /// `(turns, tokens)` by ticket; a ticket with no turn is left out.
+    pub fn ticket_spend(&self, tickets: &[TicketId]) -> Result<HashMap<TicketId, (u64, u64)>> {
+        let mut out = HashMap::new();
+        for chunk in tickets.chunks(200) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let sql = format!("SELECT ticket, COUNT(*), COALESCE(SUM(tokens), 0) FROM turns WHERE ticket IN ({marks}) GROUP BY ticket");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                Ok((r.get::<_, TicketId>(0)?, (r.get::<_, i64>(1)?.max(0) as u64, r.get::<_, i64>(2)?.max(0) as u64)))
+            })?;
+            for row in rows {
+                let (ticket, spent) = row?;
+                out.insert(ticket, spent);
+            }
+        }
+        Ok(out)
+    }
+
+    /// When each of `tickets` last had a turn end, by ticket.
+    pub fn ticket_last_turns(&self, tickets: &[TicketId]) -> Result<HashMap<TicketId, u64>> {
+        let mut out = HashMap::new();
+        for chunk in tickets.chunks(200) {
+            let marks = vec!["?"; chunk.len()].join(",");
+            let sql = format!("SELECT ticket, MAX(ended) FROM turns WHERE ticket IN ({marks}) GROUP BY ticket");
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| Ok((r.get::<_, TicketId>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
+            for row in rows {
+                let (ticket, at) = row?;
+                out.insert(ticket, at);
+            }
+        }
+        Ok(out)
+    }
+
+    /// When the squad's last turn ended, any member's, on a ticket or not.
+    pub fn last_turn_ended(&self) -> Result<Option<u64>> {
+        let at: Option<i64> = self.conn.query_row("SELECT MAX(ended) FROM turns", [], |r| r.get(0))?;
+        Ok(at.map(|a| a.max(0) as u64))
+    }
+
+    /// Each turn that ended at or after `since`: when it ended, its tokens and its ticket.
+    pub fn turn_spend_since(&self, since: u64) -> Result<Vec<(u64, u64, Option<TicketId>)>> {
+        let mut stmt = self.conn.prepare("SELECT ended, tokens, ticket FROM turns WHERE ended >= ?1 ORDER BY ended")?;
+        let rows = stmt.query_map([since as i64], |r| Ok((r.get::<_, i64>(0)?.max(0) as u64, r.get::<_, i64>(1)?.max(0) as u64, r.get(2)?)))?;
+        rows.collect()
+    }
+
+    /// The squad's spend guards (`crate::spend`), as set for it.
+    pub fn spend_settings(&self) -> crate::spend::Settings {
+        self.meta("spend_guards").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_spend_settings(&self, settings: &crate::spend::Settings) -> Result<()> {
+        self.set_meta("spend_guards", &serde_json::to_string(settings).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// What the squad's self-watch told last, by finding (`crate::health`).
+    pub fn health_told(&self) -> crate::health::Told {
+        self.meta("health_told").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_health_told(&self, told: &crate::health::Told) -> Result<()> {
+        self.set_meta("health_told", &serde_json::to_string(told).unwrap_or_else(|_| "{}".into()))
+    }
+
     /// Keep what a member waited on the person for, once answered.
     pub fn record_wait(&self, w: &crate::retro::Wait) -> Result<()> {
         let answered = w.answered.unwrap_or(w.asked);
@@ -3445,6 +3512,25 @@ impl Journal {
             entries: count("SELECT COUNT(*) FROM entries")?,
             oldest_entry: self.conn.query_row("SELECT MIN(at) FROM entries", [], |r| r.get(0))?,
         })
+    }
+
+    /// Move every line of a ticket's record, and when it last changed, to `at` — a fixture journal's past.
+    #[cfg(test)]
+    pub(crate) fn backdate_ticket(&self, id: TicketId, at: u64) {
+        self.conn.execute("UPDATE ticket_events SET at = ?1 WHERE ticket = ?2", params![at as i64, id]).unwrap();
+        self.conn.execute("UPDATE tickets SET updated_at = ?1 WHERE id = ?2", params![at as i64, id]).unwrap();
+    }
+
+    /// One line on a ticket's record at `at`, for a fixture journal.
+    #[cfg(test)]
+    pub(crate) fn ticket_event_at(&self, id: TicketId, at: u64, by: &str, kind: &str, text: &str) {
+        self.conn
+            .execute(
+                "INSERT INTO ticket_events (ticket, seq, at, by, kind, text)
+                 VALUES (?1, (SELECT COALESCE(MAX(seq), 0) + 1 FROM ticket_events WHERE ticket = ?1), ?2, ?3, ?4, ?5)",
+                params![id, at as i64, by, kind, text],
+            )
+            .unwrap();
     }
 
     #[cfg(test)]
