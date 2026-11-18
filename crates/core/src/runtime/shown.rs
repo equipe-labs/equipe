@@ -38,8 +38,10 @@ impl Runtime {
         let mut said = Vec::new();
         for url in &urls {
             let Some(page) = session::file_path(url) else { continue };
+            // Where it works, the squad's folder, and the squad's projects (a designer at its desk works in their `design/`).
             let (work, mut roots) = self.picture_places(&squad, id);
             roots.extend([work, cwd.clone()]);
+            roots.extend(self.projects_cached(&squad));
             match serve_shown(&page, &roots) {
                 Ok(served) => crate::daemon_log!("equipe: {squad}: a session page served for the person's screen at {served}"),
                 Err(why) => said.push(why),
@@ -79,13 +81,13 @@ impl Runtime {
 }
 
 /// Serve page `page` a member showed, when it is under one of `roots`
-/// (where it works, the squad's folder): from its design folder when it is
+/// (where it works, the squad's folder and projects): from its design folder when it is
 /// in one, else its own. Its address, or what the member must fix.
 pub(super) fn serve_shown(page: &Path, roots: &[PathBuf]) -> Result<String, String> {
     let real = std::fs::canonicalize(page).map_err(|_| format!("{} isn't there any more, so the person's screen can't open it — save it and show it again.", page.display()))?;
     let roots: Vec<PathBuf> = roots.iter().filter_map(|r| std::fs::canonicalize(r).ok()).collect();
     let Some(root) = roots.iter().filter(|r| real.starts_with(r)).max_by_key(|r| r.components().count()) else {
-        return Err(format!("{} is outside your worktree and the squad's folder, so the person's screen can't open it — save it there and show it again.", real.display()));
+        return Err(format!("{} is outside your worktree, the squad's projects and its folder, so the person's screen can't open it — save it there and show it again.", real.display()));
     };
     let scope = session::page_scope(&real, root);
     let server = crate::prototype::Server::now().ok_or("equipe's page server couldn't start, so the person's screen can't open the page; tell them where it is in words.")?;

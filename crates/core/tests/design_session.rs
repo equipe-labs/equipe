@@ -426,7 +426,7 @@ async fn a_page_the_designer_shows_is_served_for_the_persons_screen_and_nobody_w
     say_to_designer(&handle, &mut events, "show it").await;
     let said = turns(&log);
     assert!(said.iter().any(|l| l.starts_with("MID ") && l.contains("reached nobody")), "{said:?}");
-    let served = equipe_core::prototype::Server::now().and_then(|s| s.address_of(&page)).expect("served for the person's screen");
+    let served = equipe_core::prototype::Server::now().and_then(|s| s.address_of(&page)).unwrap_or_else(|| panic!("served for the person's screen: {said:?}"));
     assert!(served.starts_with("http://127.0.0.1:") && served.ends_with("/sessions/pricing/a.html"), "{served}");
     assert!(!said[0].contains("another machine"), "nothing said of where the person is before anyone followed: {}", said[0]);
 
