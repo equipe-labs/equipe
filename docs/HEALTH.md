@@ -78,13 +78,13 @@ person). What was told is kept in the journal, so a restart doesn't repeat it.
 | stalled ticket | in progress, no turn for 2 h, and its member is free (a stopped run is on the person's waiting list instead) |
 | idle squad | nothing has run for 30 min while tickets wait to be done — with what they wait on: the tickets, not to do themselves, that hold them through their dependencies (waiting on the person, in review, a proposal…), and how many were ready but didn't start. The PM is woken for this one: nothing else would read its brief |
 | main not pushed | the project's main has had commits origin's main lacks for 10 min |
-| main not live | the project deploys some way equipe can see (production deployments or a deploy workflow on GitHub), and origin's main has had commits past what is live for 30 min |
-| waiting on the person | something on the person's waiting list (a ticket waiting on them, a card to confirm, a decision, a permission, a sign-in) has waited 2 h |
+| main not live | the project deploys some way equipe can see (its own go-live command, production deployments or a deploy workflow on GitHub), and origin's main has had commits past what is live for 30 min |
+| waiting on the person | something on the person's waiting list (a ticket waiting on them, a card to confirm, a decision, a permission, a sign-in) has waited 2 h. That list already tells the person and the PM by itself (`importance`, "waiting on you"), so the self-watch doesn't tell it again; `equipe health` shows it |
 | going in circles | one ticket was handed back, sent back, or reopened 3 times within a day |
 
-What is live is read through a small trait (`health::LiveState`), today from
-the deploy watch (`crates/core/src/deploys.rs`); a richer record of going live
-plugs in there.
+What is live is read through a small trait (`health::LiveState`): the last
+commit a project's own go-live command deployed (`crates/core/src/go_live.rs`),
+else the deploy watch (`crates/core/src/deploys.rs`).
 
 ### `equipe health`
 

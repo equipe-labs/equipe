@@ -11,7 +11,7 @@
 //! | [`Finding::Idle`] | nothing has run for [`IDLE_AFTER`] while tickets wait to be done — with what they wait on |
 //! | [`Finding::Unpushed`] | a project's main has had commits origin lacks for [`UNPUSHED_AFTER`] |
 //! | [`Finding::NotLive`] | a project that deploys has had commits on main not live for [`NOT_LIVE_AFTER`] |
-//! | [`Finding::Waiting`] | things have waited on the person for [`WAITING_AFTER`] (the person's waiting list, `crate::importance`) |
+//! | [`Finding::Waiting`] | things have waited on the person for [`WAITING_AFTER`] (the person's waiting list, `crate::importance`; the daemon tells that list itself, so the self-watch only shows it) |
 //! | [`Finding::Bounced`] | one ticket went back [`BOUNCES`] times or more in [`BOUNCE_WINDOW`] |
 //!
 //! [`detect`] is pure over a snapshot, so each finding is tested on fixture
@@ -472,13 +472,22 @@ pub trait LiveState {
     fn live_commit(&self, path: &Path) -> Option<String>;
 }
 
-/// What the deploy watch keeps (`crate::deploys`): a project that reports
-/// production deployments or has a deploy workflow.
-pub struct DeployWatch<'a>(pub &'a BTreeMap<String, crate::deploys::Watch>);
+/// What equipe keeps of how projects go live: a project's own go-live
+/// command (`crate::go_live`) and the last commit it deployed, else the
+/// deploy watch (`crate::deploys`) for a project that reports production
+/// deployments or has a deploy workflow. Neither: nothing is known live.
+pub struct DeployWatch<'a> {
+    pub watch: &'a BTreeMap<String, crate::deploys::Watch>,
+    pub lanes: &'a BTreeMap<String, crate::go_live::Lane>,
+}
 
 impl LiveState for DeployWatch<'_> {
     fn live_commit(&self, path: &Path) -> Option<String> {
-        let watch = self.0.get(path.to_string_lossy().as_ref())?;
+        let key = path.to_string_lossy();
+        if let Some(deployed) = self.lanes.get(key.as_ref()).and_then(|l| l.deployed.clone()) {
+            return Some(deployed);
+        }
+        let watch = self.watch.get(key.as_ref())?;
         match watch.channel.as_ref()? {
             crate::deploys::Channel::Deployments | crate::deploys::Channel::Workflows { .. } => watch.live.clone(),
             crate::deploys::Channel::Main => None,

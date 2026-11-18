@@ -64,8 +64,8 @@ fn report(squad: Option<String>, as_json: bool) -> Result<(), String> {
     let now = now();
     let tickets = journal.tickets().map_err(|e| e.to_string())?;
     let live = Live::from_leases(&tickets, now);
-    let watch = journal.deploy_watch();
-    let deploys = health::DeployWatch(&watch);
+    let (watch, lanes) = (journal.deploy_watch(), journal.go_live());
+    let deploys = health::DeployWatch { watch: &watch, lanes: &lanes };
     let repos = journal.projects().unwrap_or_default().iter().map(|p| health::repo_facts(p, &deploys)).collect();
     let findings = health::detect(&Snapshot::gather(&journal, tickets, now, live, &[], repos));
     let settings = journal.spend_settings();

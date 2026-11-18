@@ -170,9 +170,10 @@ impl Runtime {
         }
         let projects = self.projects(squad);
         let watch = self.journals.get(squad).map(Journal::deploy_watch).unwrap_or_default();
+        let lanes = self.lanes(squad).clone();
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
-            let live = health::DeployWatch(&watch);
+            let live = health::DeployWatch { watch: &watch, lanes: &lanes };
             let facts = projects.iter().map(|p| health::repo_facts(p, &live)).collect();
             let _ = internal.send(Internal::RepoFacts { squad, facts });
         });
@@ -228,7 +229,8 @@ impl Runtime {
             crate::daemon_log!("equipe: {squad}: what the self-watch told wasn't kept: {err}");
         }
         let words = crate::i18n::core(self.config.lang);
-        for finding in fresh {
+        // What waits on the person is told by its own list (`tell_waiting_on_person`): not twice.
+        for finding in fresh.into_iter().filter(|f| !matches!(f, Finding::Waiting { .. })) {
             crate::daemon_log!("equipe: {squad}: self-watch: {}", finding.key());
             let line = format!("[equipe self-watch] {}", finding.pm_line());
             let shown = finding.said(words);
