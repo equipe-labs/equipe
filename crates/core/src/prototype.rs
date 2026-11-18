@@ -15,6 +15,13 @@
 //! nothing fetched from elsewhere (its CSP). A screen asks where
 //! (`prototype_url`) and shows it in its live preview, as it shows a
 //! member's dev server, forwarded over its SSH link from another Mac.
+//!
+//! A design session's page (`equipe design session show page.html`) is
+//! served the same way ([`Server::put_session`]), so the person's screen
+//! opens it wherever it is — never as a `file://` address only the
+//! daemon's machine can open: its design folder (the page may reach
+//! `../tokens.css`), and the web's fonts and pictures it uses, in a frame of
+//! the variants side by side (docs/REMOTE.md).
 
 use std::collections::HashMap;
 use std::net::{SocketAddr, TcpStream};
@@ -50,6 +57,28 @@ const KINDS: [(&str, &str); 16] = [
 /// What a prototype may do: run its own scripts and styles, load its own
 /// files — nothing from the network, no forms sent anywhere, no framing.
 const CSP: &str = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'";
+/// What a design session's page may do: as a prototype, and load the web's
+/// fonts, pictures, styles and scripts it names (as the `file://` page did),
+/// and be framed — the variants side by side are frames of one page.
+const SESSION_CSP: &str = "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: https:; connect-src 'self' https:; form-action 'none'; base-uri 'none'";
+
+/// How a folder is served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    /// A decision's prototype: its own files only, never framed.
+    Prototype,
+    /// A design session's page: the web's resources too, framed side by side.
+    Session,
+}
+
+impl Policy {
+    fn csp(self) -> &'static str {
+        match self {
+            Policy::Prototype => CSP,
+            Policy::Session => SESSION_CSP,
+        }
+    }
+}
 
 /// The type a prototype's file goes as, by its name; `None`: not served.
 fn kind_of(path: &Path) -> Option<&'static str> {
@@ -123,11 +152,11 @@ pub async fn url_of(page: &Path) -> Result<String, String> {
 pub struct Server {
     port: u16,
     token: String,
-    /// Each folder served, by its key.
-    folders: Arc<Mutex<HashMap<String, PathBuf>>>,
+    /// Each folder served, by its key, and how.
+    folders: Arc<Mutex<HashMap<String, (PathBuf, Policy)>>>,
 }
 
-static SERVER: tokio::sync::OnceCell<Option<Server>> = tokio::sync::OnceCell::const_new();
+static SERVER: std::sync::OnceLock<Option<Server>> = std::sync::OnceLock::new();
 
 /// A random token, from the system's randomness.
 fn token() -> String {
@@ -140,14 +169,25 @@ fn token() -> String {
 impl Server {
     /// The server, started on first use; `None` when it couldn't listen.
     pub async fn get() -> Option<Server> {
-        SERVER.get_or_init(|| async { Server::start().await.ok() }).await.clone()
+        Server::now()
     }
 
-    async fn start() -> std::io::Result<Server> {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let server = Server { port: listener.local_addr()?.port(), token: token(), folders: Arc::default() };
+    /// [`Server::get`], from code that can't wait (the runtime's loop): it
+    /// starts at once, on the Tokio runtime this is called on. `None` when
+    /// it couldn't listen, or there is no runtime to serve on.
+    pub fn now() -> Option<Server> {
+        SERVER.get_or_init(|| Server::start().ok()).clone()
+    }
+
+    fn start() -> std::io::Result<Server> {
+        let tokio = tokio::runtime::Handle::try_current().map_err(std::io::Error::other)?;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let port = listener.local_addr()?.port();
+        let server = Server { port, token: token(), folders: Arc::default() };
         let serving = server.clone();
-        tokio::spawn(async move {
+        tokio.spawn(async move {
+            let Ok(listener) = tokio::net::TcpListener::from_std(listener) else { return };
             while let Ok((socket, _)) = listener.accept().await {
                 tokio::spawn(serving.clone().answer(socket));
             }
@@ -155,30 +195,67 @@ impl Server {
         Ok(server)
     }
 
-    /// Serve page `page`'s folder; the page's address. The same folder keeps its address.
+    /// Serve page `page`'s folder as a decision's prototype; the page's
+    /// address. The same folder keeps its address.
     pub fn put(&self, page: &Path) -> Result<String, String> {
         let real = std::fs::canonicalize(page).map_err(|_| format!("{}: no such page", page.display()))?;
         let folder = real.parent().ok_or("a page with no folder")?.to_path_buf();
-        let name = real.file_name().and_then(|n| n.to_str()).ok_or("a page with no name")?.to_owned();
+        self.serve(&real, &folder, Policy::Prototype)
+    }
+
+    /// Serve a design session's page `page` (already checked to be where its
+    /// member works): `scope`, the folder whose files it may load — its
+    /// design folder, else its own; the page's address.
+    pub fn put_session(&self, page: &Path, scope: &Path) -> Result<String, String> {
+        let real = std::fs::canonicalize(page).map_err(|_| format!("{}: no such page", page.display()))?;
+        let scope = std::fs::canonicalize(scope).ok().filter(|s| real.starts_with(s)).or_else(|| real.parent().map(Path::to_path_buf)).ok_or("a page with no folder")?;
+        self.serve(&real, &scope, Policy::Session)
+    }
+
+    /// Where `page` is served already, if it is: by the folder it went in.
+    pub fn address_of(&self, page: &Path) -> Option<String> {
+        let real = std::fs::canonicalize(page).ok()?;
+        let folders = self.folders.lock().ok()?;
+        let (key, (folder, _)) = folders.iter().filter(|(_, (f, _))| real.starts_with(f)).max_by_key(|(_, (f, _))| f.components().count())?;
+        Some(self.address(key, &real.strip_prefix(folder).ok()?.to_string_lossy()))
+    }
+
+    /// The file an address of this server's names, when it names one.
+    pub fn file_of(&self, url: &str) -> Option<PathBuf> {
+        let path = url.strip_prefix(&format!("http://127.0.0.1:{}", self.port))?;
+        self.file_at(path).map(|(file, _, _)| file)
+    }
+
+    fn serve(&self, real: &Path, folder: &Path, policy: Policy) -> Result<String, String> {
+        let rel = real.strip_prefix(folder).map_err(|_| format!("{}: outside the folder it is served from", real.display()))?.to_string_lossy().into_owned();
+        if rel.is_empty() {
+            return Err(format!("{}: a page, not a folder", real.display()));
+        }
         let mut folders = self.folders.lock().map_err(|_| "the prototype server is unwell")?;
-        let key = match folders.iter().find(|(_, f)| **f == folder) {
+        let key = match folders.iter().find(|(_, (f, p))| f == folder && *p == policy) {
             Some((key, _)) => key.clone(),
             None => {
                 let key = token();
-                folders.insert(key.clone(), folder);
+                folders.insert(key.clone(), (folder.to_path_buf(), policy));
                 key
             }
         };
-        Ok(format!("http://127.0.0.1:{}/{}/{key}/{}", self.port, self.token, encode(&name)))
+        Ok(self.address(&key, &rel))
+    }
+
+    /// The address of `rel` (`/`-separated) in the folder served at `key`.
+    fn address(&self, key: &str, rel: &str) -> String {
+        let rel: Vec<String> = Path::new(rel).components().map(|c| encode(&c.as_os_str().to_string_lossy())).collect();
+        format!("http://127.0.0.1:{}/{}/{key}/{}", self.port, self.token, rel.join("/"))
     }
 
     /// The file asked for by its path, `/<token>/<key>/<rel>`: inside its
     /// folder (links resolved), never hidden, of a kind served.
-    fn file_at(&self, path: &str) -> Option<(PathBuf, &'static str)> {
+    fn file_at(&self, path: &str) -> Option<(PathBuf, &'static str, Policy)> {
         let path = path.split(['?', '#']).next()?;
         let rest = path.strip_prefix('/')?.strip_prefix(self.token.as_str())?.strip_prefix('/')?;
         let (key, rel) = rest.split_once('/')?;
-        let folder = self.folders.lock().ok()?.get(key)?.clone();
+        let (folder, policy) = self.folders.lock().ok()?.get(key)?.clone();
         let rel = decode(rel)?;
         let rel = if rel.is_empty() || rel.ends_with('/') { format!("{rel}index.html") } else { rel };
         let rel = Path::new(&rel);
@@ -187,7 +264,7 @@ impl Server {
         }
         let real = std::fs::canonicalize(folder.join(rel)).ok()?;
         let kind = kind_of(&real)?;
-        (real.starts_with(&folder) && std::fs::metadata(&real).is_ok_and(|m| m.is_file() && m.len() <= FILE_MAX)).then_some((real, kind))
+        (real.starts_with(&folder) && std::fs::metadata(&real).is_ok_and(|m| m.is_file() && m.len() <= FILE_MAX)).then_some((real, kind, policy))
     }
 
     async fn answer(self, mut socket: tokio::net::TcpStream) {
@@ -199,12 +276,13 @@ impl Server {
             (Some("GET" | "HEAD"), Some(path)) => self.file_at(path),
             _ => None,
         };
-        let (status, kind, body) = match found.and_then(|(path, kind)| std::fs::read(path).ok().map(|b| (kind, b))) {
-            Some((kind, body)) => ("200 OK", kind, body),
-            None => ("404 Not Found", "text/plain; charset=utf-8", b"Not here.".to_vec()),
+        let (status, kind, body, policy) = match found.and_then(|(path, kind, policy)| std::fs::read(path).ok().map(|b| (kind, b, policy))) {
+            Some((kind, body, policy)) => ("200 OK", kind, body, policy),
+            None => ("404 Not Found", "text/plain; charset=utf-8", b"Not here.".to_vec(), Policy::Prototype),
         };
         let reply = format!(
-            "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-security-policy: {CSP}\r\ncache-control: no-store\r\nx-content-type-options: nosniff\r\nreferrer-policy: no-referrer\r\nconnection: close\r\ncontent-length: {}\r\n\r\n",
+            "HTTP/1.1 {status}\r\ncontent-type: {kind}\r\ncontent-security-policy: {}\r\ncache-control: no-store\r\nx-content-type-options: nosniff\r\nreferrer-policy: no-referrer\r\nconnection: close\r\ncontent-length: {}\r\n\r\n",
+            policy.csp(),
             body.len()
         );
         let _ = socket.write_all(reply.as_bytes()).await;
@@ -287,12 +365,12 @@ mod tests {
         std::fs::write(page.join(".env"), "SECRET=1").unwrap();
         std::fs::write(page.join("notes.md"), "private").unwrap();
         std::fs::write(root.join("outside.html"), "<p>outside").unwrap();
-        let server = Server::start().await.unwrap();
+        let server = Server::start().unwrap();
         let url = server.put(&page.join("index.html")).unwrap();
         assert!(url.starts_with(&format!("http://127.0.0.1:{}/{}/", server.port, server.token)) && url.ends_with("/index.html"), "{url}");
         assert_eq!(server.put(&page.join("index.html")).unwrap(), url, "the same folder, the same address");
         let base = url.trim_start_matches(&format!("http://127.0.0.1:{}", server.port)).trim_end_matches("index.html").to_owned();
-        let get = |rel: &str| server.file_at(&format!("{base}{rel}")).map(|(p, k)| (p.file_name().unwrap().to_string_lossy().into_owned(), k));
+        let get = |rel: &str| server.file_at(&format!("{base}{rel}")).map(|(p, k, _)| (p.file_name().unwrap().to_string_lossy().into_owned(), k));
         assert_eq!(get("index.html").unwrap().0, "index.html");
         assert_eq!(get("").unwrap().0, "index.html", "the folder: its index");
         assert_eq!(get("assets/app.css?v=2").unwrap(), ("app.css".to_owned(), "text/css; charset=utf-8"));
@@ -314,6 +392,33 @@ mod tests {
         .await
         .unwrap();
         assert!(reply.starts_with("HTTP/1.1 200") && reply.contains("connect-src 'self'") && reply.ends_with("<button>Save</button>"), "{reply}");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_design_sessions_page_is_served_from_its_design_folder_and_may_be_framed() {
+        let root = dir("session");
+        let design = root.join("design");
+        std::fs::create_dir_all(design.join("sessions/pricing")).unwrap();
+        std::fs::write(design.join("tokens.css"), ":root{--ink:#111}").unwrap();
+        std::fs::write(design.join("sessions/pricing/a.html"), "<link rel=stylesheet href=../../tokens.css>A").unwrap();
+        std::fs::write(design.join("sessions/pricing/b b.html"), "B").unwrap();
+        let server = Server::start().unwrap();
+        let a = server.put_session(&design.join("sessions/pricing/a.html"), &design).unwrap();
+        let b = server.put_session(&design.join("sessions/pricing/b b.html"), &design).unwrap();
+        assert!(a.ends_with("/sessions/pricing/a.html") && b.ends_with("/sessions/pricing/b%20b.html"), "{a} {b}");
+        assert_eq!(a.rsplit_once("/sessions/").unwrap().0, b.rsplit_once("/sessions/").unwrap().0, "one folder, one address: side by side on one port");
+        assert_eq!(server.address_of(&design.join("sessions/pricing/a.html")).as_deref(), Some(a.as_str()), "found again by its file");
+        assert_eq!(server.file_of(&b), Some(design.join("sessions/pricing/b b.html")), "and its file by its address");
+        assert!(server.file_of("http://127.0.0.1:1/x/y/z.html").is_none());
+        assert!(server.address_of(&root.join("elsewhere.html")).is_none());
+        let base = a.trim_start_matches(&format!("http://127.0.0.1:{}", server.port)).trim_end_matches("sessions/pricing/a.html").to_owned();
+        let (css, _, policy) = server.file_at(&format!("{base}tokens.css")).unwrap();
+        assert_eq!((css.file_name().unwrap().to_str().unwrap(), policy), ("tokens.css", Policy::Session), "the page's ../ reaches its design folder");
+        assert!(!SESSION_CSP.contains("frame-ancestors") && SESSION_CSP.contains("https:"), "framed side by side, the web's fonts load");
+        // A scope that isn't the page's: its own folder.
+        let own = server.put_session(&design.join("sessions/pricing/a.html"), &root.join("nowhere")).unwrap();
+        assert!(own.ends_with("/a.html") && !own.contains("/sessions/"), "{own}");
         std::fs::remove_dir_all(root).unwrap();
     }
 

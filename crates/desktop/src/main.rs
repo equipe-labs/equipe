@@ -1985,6 +1985,11 @@ impl Shell {
     /// A web link from a reply: in the browser the person chose (settings),
     /// or with ⌘ (`other`) in the other — equipe's panel or the Mac's.
     pub fn open_link(&mut self, url: &str, other: bool, window: &mut Window, cx: &mut Context<Self>) {
+        // A page on the daemon's machine (`localhost`), seen from another: its
+        // own `localhost` isn't it — the live preview forwards the page here.
+        if crate::views::preview::remote_page(url, self.endpoint.is_remote()) && self.open_live_preview(url, self.model.selected, false, window, cx) {
+            return;
+        }
         if self.remembered.links_in_app == other {
             cx.open_url(url);
             return;
@@ -2231,7 +2236,8 @@ impl Shell {
         cx.notify();
     }
 
-    /// Show a file the daemon's machine named (an approval's screen). On this
+    /// Show a file the daemon's machine named (an approval's screen, a path in
+    /// a reply). On this
     /// Mac it opens where it is; from another machine it is fetched first, over
     /// the same SSH connection, into a private temp file.
     pub fn open_file(&self, path: &str) {

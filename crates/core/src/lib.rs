@@ -26,6 +26,7 @@ pub mod controls;
 pub mod design_qa;
 pub mod taste;
 pub mod scratch;
+pub mod screens;
 pub mod browser;
 pub mod design;
 pub mod group;

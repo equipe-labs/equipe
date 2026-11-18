@@ -81,6 +81,10 @@ pub const TELEMETRY: &str = "telemetry";
 pub const TELEMETRY_SET: &str = "telemetry_set";
 pub const SCREEN_LOOK: &str = "screen_look";
 pub const PERSON_LOOK: &str = "person_look";
+/// Sent by `equipe attach --stdio` as the first line of each connection it
+/// bridges, before the screen's own: this connection comes from another
+/// machine, whatever the screen says of itself (docs/REMOTE.md). No answer.
+pub const BRIDGED: &str = "bridged";
 
 /// The wire's version: bumped when a change would break a screen built
 /// against the one before (a method or a field it relies on removed or
@@ -246,6 +250,13 @@ pub struct HelloParams {
     /// screen must be updated to follow them, never one of them as its work.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub runs: bool,
+    /// The screen is on another machine than the daemon (the app following
+    /// a Mac over SSH, a terminal over SSH): nothing of the daemon's machine —
+    /// its files, its `localhost`, its screen — is the person's to open, and
+    /// what equipe shows them goes through the daemon (docs/REMOTE.md). A
+    /// connection `equipe attach --stdio` bridges counts as remote anyway.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remote: bool,
 }
 
 /// A member calling one of its board tools.
@@ -422,7 +433,9 @@ pub struct ReadImage {
 /// path) is served on the daemon's machine: a loopback address the screen
 /// shows in its live preview — forwarded over its own SSH link when the
 /// daemon is on another Mac. Given only for a path a waiting decision of
-/// that squad names as `try`.
+/// that squad names as `try`, or a design session's page a member showed
+/// (`equipe design session show page.html`), which the daemon serves as it
+/// reads the command's output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PrototypeUrl {
     pub squad: crate::SquadName,

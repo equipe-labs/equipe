@@ -78,6 +78,7 @@ mod design;
 mod design_session;
 mod revise;
 mod live_preview;
+mod shown;
 mod refcards;
 mod briefs;
 mod plans;
@@ -360,9 +361,17 @@ pub struct Handle {
     requests: UnboundedSender<Request>,
     /// What the loop is on, for an answer when it doesn't answer.
     pulse: std::sync::Arc<watchdog::Pulse>,
+    /// The screens following each squad, and where they are ([`crate::screens`]).
+    screens: std::sync::Arc<crate::screens::Screens>,
 }
 
 impl Handle {
+    /// The screens following each squad: a screen takes a seat as it says
+    /// hello, and leaves with its connection.
+    pub fn screens(&self) -> &std::sync::Arc<crate::screens::Screens> {
+        &self.screens
+    }
+
     pub fn send(&self, command: Command) {
         let _ = self.requests.send(Request::Command(command));
     }
@@ -740,8 +749,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let logins = vault.logins.clone();
     let (never_offer, can_keep_logins) = (vault.never_offer.clone(), vault.can_keep());
     let telemetry = if config.persist { crate::telemetry::Telemetry::start(&config.home, &config.client_version) } else { crate::telemetry::Telemetry::off() };
+    let screens = std::sync::Arc::new(crate::screens::Screens::default());
     let mut runtime = Runtime {
         telemetry,
+        screens: screens.clone(),
+        remote_told: HashMap::new(),
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
         never_offer,
@@ -901,7 +913,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);
     tokio::spawn(CORE_LOOP.scope((), watchdog::scoped(pulse.clone(), run(runtime, req_rx, internal_rx, host_rx, pulse.clone()))));
-    let handle = Handle { requests: req_tx, pulse };
+    let handle = Handle { requests: req_tx, pulse, screens };
     // Memos for a turn the restart ended go in first, as if just sent.
     for (session, text) in memos {
         handle.send(Command::Submit { session, text, about: None });
@@ -1397,6 +1409,12 @@ struct Runtime {
     /// Anonymous usage events, after the person's yes (docs/TELEMETRY.md):
     /// the daemon's only, never a terminal's own runtime.
     telemetry: crate::telemetry::Telemetry,
+    /// The screens following each squad, and where they are: the person's
+    /// screen on this Mac or another ([`crate::screens`]).
+    screens: std::sync::Arc<crate::screens::Screens>,
+    /// Where each member's conversation was last told the person looks from
+    /// (`true`: another machine), so it hears again only when that changes.
+    remote_told: HashMap<SessionId, bool>,
     /// Every attached screen, with the squad it follows (`None`: everything).
     /// Closed ones drop out on the next event.
     subscribers: Vec<(Option<String>, UnboundedSender<Event>)>,
@@ -2021,9 +2039,18 @@ impl Runtime {
                         event => {
                             // A build that failed for want of room says so plainly.
                             let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
+                            // A page a member showed the person: served for their screen, before
+                            // the screen reads it; the member hears at once if nobody can see it.
+                            let shown = match &event {
+                                Event::ToolResult { session, outcome, .. } => self.member_showed(*session, outcome).map(|note| (*session, note)),
+                                _ => None,
+                            };
                             self.publish(event);
                             if let Some(id) = no_room {
                                 self.member_out_of_room(id);
+                            }
+                            if let Some((id, note)) = shown {
+                                self.set_going(id, format!("[equipe: {note}]")).await;
                             }
                         }
                     }
@@ -5415,6 +5442,12 @@ for one project goes to it as tickets for its owners, with that project — and 
             Some(brief) => format!("{brief}\n\n{prompt}"),
             None => prompt,
         };
+        // Where the person looks from, when that changed since it was last told:
+        // from another machine, nothing of this Mac's is theirs to open.
+        let prompt = match self.screens_note(id) {
+            Some(note) => format!("[equipe: {note}]\n\n{prompt}"),
+            None => prompt,
+        };
         // The squad's memory as its files say now — the person's edits in Finder
         // included, its index brought up to date before their changes are saved.
         watchdog::mark("turn start: squad memory");
@@ -8576,10 +8609,17 @@ It starts when {owner} is free."
             if self.window_mode() {
                 match self.begin_window_handoff(&call, url.as_deref(), &why).await {
                     Ok(view) => {
+                        // A window on this Mac while the person is on another: said where, and how to reach it.
+                        let far = (!view).then(|| self.on_this_screen(&call.squad)).flatten();
                         if let Some(id) = self.caller_id(&call) {
                             let text = if view { say!(self, "notice.browser_view", name = call.member, why = why) } else { self.window_notice(&call.member, &why) };
+                            let text = match &far {
+                                Some((_, person)) => format!("{text}\n{person}"),
+                                None => text,
+                            };
                             self.publish(Event::Notice { undo: None, session: id, text });
                         }
+                        let far = far.map(|(member, _)| member).unwrap_or_default();
                         let _ = reply.send(ToolResult {
                             text: if view {
                                 "A sign-in view is opening on the person's screen at that page: an ordinary web view, not your browser — they sign in there \
@@ -8591,7 +8631,8 @@ a real browser of theirs, not yours: your browser tools are off until they press
 isn't yours to look at. Say in one line what they should do there, then end your turn. When they're done you get a message and \
 carry on by yourself — don't ask them to tell you."
                             }
-                            .into(),
+                            .to_owned()
+                                + &far,
                             is_error: false,
                             image: None,
                         });
@@ -8622,14 +8663,21 @@ and hand it back you get a message and carry on by yourself — don't ask them t
                 self.show_url.insert((call.squad.clone(), call.member.clone()), url);
             }
             self.show_browser(&call.squad, Some(call.member.clone()), true);
+            // On this Mac's screen while the person is on another: said where, and how to reach it.
+            let far = self.on_this_screen(&call.squad);
             if let Some(id) = self.caller_id(&call) {
                 let text = say!(self, "notice.browser_on_screen", name = call.member, why = why);
+                let text = match &far {
+                    Some((_, person)) => format!("{text}\n{person}"),
+                    None => text,
+                };
                 self.publish(Event::Notice { undo: None, session: id, text });
             }
             let _ = reply.send(ToolResult {
                 text: "Your browser comes up on the person's screen when this turn ends, at that page. Tell them what to do \
 there, end your turn, and carry on when they say they're done."
-                    .into(),
+                    .to_owned()
+                    + &far.map(|(member, _)| member).unwrap_or_default(),
                 is_error: false,
                 image: None,
             });

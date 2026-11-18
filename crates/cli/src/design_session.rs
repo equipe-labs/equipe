@@ -74,6 +74,21 @@ fn with_variant(marker: Marker, variant: Option<&str>) -> Result<Marker, String>
     }
 }
 
+/// What `show` says it did. Sent, not seen: equipe reads the line below and
+/// brings the page to the person's screen — a saved file served by the
+/// daemon, so it opens on another Mac too — and tells the member at once
+/// when no screen of theirs can show it (docs/REMOTE.md).
+fn shown_line(marker: &Marker) -> String {
+    let served = |url: &str| if url.starts_with("file://") { " (equipe serves the file to their screen, on this Mac or another — don't hand them this address)" } else { "" };
+    let after = "It reloads each time you show it; if no screen of the person's can show it, equipe tells you right away.";
+    match marker {
+        Marker::Show(url) => format!("Sent beside the session: {url}{}. {after}", served(url)),
+        Marker::Variant { label, url } => format!("Variant {label} sent beside the session, next to the others: {url}{}. {after}", served(url)),
+        Marker::Render(path) => format!("Sent beside the session: {path}. If no screen of the person's can show it, equipe tells you right away."),
+        Marker::Done { .. } => unreachable!("a target is never a pin"),
+    }
+}
+
 fn design_dir(dir: Option<PathBuf>) -> PathBuf {
     dir.unwrap_or_else(|| PathBuf::from("design"))
 }
@@ -83,13 +98,7 @@ pub fn session_command(action: SessionAction) -> Result<(), String> {
         SessionAction::Show { target, variant } => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
             let marker = with_variant(session::target(&target, &cwd)?, variant.as_deref())?;
-            let shown = match &marker {
-                Marker::Show(url) => format!("Live beside the session: {url}. It reloads each time you show it."),
-                Marker::Variant { label, url } => format!("Variant {label} live beside the session, next to the others: {url}. It reloads each time you show it."),
-                Marker::Render(path) => format!("Shown beside the session: {path}."),
-                Marker::Done { .. } => unreachable!("a target is never a pin"),
-            };
-            println!("{shown}");
+            println!("{}", shown_line(&marker));
             println!("{}", marker.line());
             Ok(())
         }

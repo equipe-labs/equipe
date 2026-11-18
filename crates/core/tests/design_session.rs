@@ -384,3 +384,60 @@ async fn a_member_revises_its_own_ticket_that_hasnt_started_and_says_so() {
     assert!(!dropped.is_error, "{dropped:?}");
     handle.shutdown().await;
 }
+
+/// A stand-in `claude` that logs each turn's first line; a turn that says
+/// "show it" runs `equipe design session show` on `page` as variant A, then
+/// waits a moment for anything said to it mid-turn (logged too) before it ends.
+fn showing_claude(page: &Path) -> (PathBuf, PathBuf) {
+    use std::os::unix::fs::PermissionsExt as _;
+    let dir = scratch("show");
+    let log = dir.join("turns.log");
+    let bin = dir.join("claude");
+    let url = format!("file://{}", page.display());
+    let script = format!(
+        "#!/bin/bash\nif [ \"$1\" = \"auth\" ]; then echo '{{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}}'; exit 0; fi\n\
+IFS= read -r line; printf '%s\\n' \"$line\" >> '{log}'\n\
+echo '{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-test\",\"session_id\":\"sess-1\"}}'\n\
+case \"$line\" in *'show it'*)\n\
+echo '{{\"type\":\"assistant\",\"parent_tool_use_id\":null,\"message\":{{\"content\":[{{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Bash\",\"input\":{{\"command\":\"equipe design session show a.html --variant A\"}}}}]}}}}'\n\
+printf '%s\\n' '{{\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"Variant A sent.\\ndesign-session: variant A {url}\"}}]}}}}'\n\
+IFS= read -r -t 4 more && printf 'MID %s\\n' \"$more\" >> '{log}';;\n\
+esac\n\
+echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"usage\":{{\"input_tokens\":3,\"output_tokens\":1}}}}'\n",
+        log = log.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, log)
+}
+
+#[tokio::test]
+async fn a_page_the_designer_shows_is_served_for_the_persons_screen_and_nobody_watching_is_said_at_once() {
+    use equipe_core::screens::Place;
+    let (home, project) = squad_home();
+    let page = project.join("design/sessions/pricing/a.html");
+    std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+    std::fs::write(&page, "<h1>A</h1>").unwrap();
+    let (claude, log) = showing_claude(&page);
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 2, member(&project, "designer")).await;
+
+    // Nobody follows the squad: the page is served all the same, and the designer hears at once that nobody saw it.
+    say_to_designer(&handle, &mut events, "show it").await;
+    let said = turns(&log);
+    assert!(said.iter().any(|l| l.starts_with("MID ") && l.contains("reached nobody")), "{said:?}");
+    let served = equipe_core::prototype::Server::now().and_then(|s| s.address_of(&page)).expect("served for the person's screen");
+    assert!(served.starts_with("http://127.0.0.1:") && served.ends_with("/sessions/pricing/a.html"), "{served}");
+    assert!(!said[0].contains("another machine"), "nothing said of where the person is before anyone followed: {}", said[0]);
+
+    // The person's app follows from another Mac: the designer's next turn opens with it, once, and the show is quiet.
+    let _seat = handle.screens().sit("acme", Place::Elsewhere, true);
+    std::fs::remove_file(&log).unwrap();
+    say_to_designer(&handle, &mut events, "show it").await;
+    let said = turns(&log);
+    assert!(said[0].contains("from another machine") && said[0].contains("file://"), "{}", said[0]);
+    assert!(!said.iter().any(|l| l.starts_with("MID ")), "a screen shows it: nothing to say mid-turn — {said:?}");
+    say_to_designer(&handle, &mut events, "thanks").await;
+    assert!(!turns(&log).last().unwrap().contains("another machine"), "told once");
+    handle.shutdown().await;
+}
