@@ -831,5 +831,14 @@
   "design_session.no_page": "请写明设计会话要做的页面或界面。",
   "design_session.use_title": "按选定的原型实现{page}",
   "design_session.use_title_variant": "按原型 {variant} 实现{page}",
-  "design_session.use_intro": "在设计会话中用“就用这个”选定的原型：请在产品中实现它。"
+  "design_session.use_intro": "在设计会话中用“就用这个”选定的原型：请在产品中实现它。",
+  "deploy.live_on": "已上线 {host}:",
+  "deploy.live": "已在 {project} 上线:",
+  "deploy.on_main": "已进入 {project} 的 main(未见部署):",
+  "deploy.yours_live_on": "你要的已上线 {host}:",
+  "deploy.yours_live": "你要的已在 {project} 上线:",
+  "deploy.yours_on_main": "你要的已进入 {project} 的 main:",
+  "deploy.more.other": "另外 {count} 项",
+  "deploy.internal.other": "· 内部改动 {count} 项",
+  "deploy.only_internal.other": "只有内部改动({count} 项)。"
 }

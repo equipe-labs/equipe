@@ -337,6 +337,24 @@ enum Command {
         #[arg(long, default_value = "file")]
         kind: String,
     },
+    /// Write a release's notes for people from its pull requests (the release
+    /// workflow runs it): `release-notes.md` for the GitHub release and
+    /// `release-notes.json`, the latest releases' notes, for the app
+    #[command(hide = true)]
+    ReleaseNotes {
+        /// The version being released (`0.103.139`)
+        #[arg(long)]
+        version: String,
+        /// The pull requests it brings: a JSON array of `gh pr view --json number,title,body,labels`
+        #[arg(long)]
+        prs: std::path::PathBuf,
+        /// The previous release's `release-notes.json`, when it has one
+        #[arg(long)]
+        previous: Option<std::path::PathBuf>,
+        /// Where to write the two files
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
     /// Update equipe to the latest release
     Update,
     /// Show the language equipe speaks to you, or pick one for every screen:
@@ -545,6 +563,25 @@ fn main() -> ExitCode {
     tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("start the async runtime").block_on(run(cli))
 }
 
+/// `equipe release-notes`: this release's notes from its pull requests, at
+/// the head of the previous feed (`equipe_core::release_notes`).
+fn release_notes(version: &str, prs: &std::path::Path, previous: Option<&std::path::Path>, out: &std::path::Path) -> Result<(), String> {
+    use equipe_core::release_notes as notes;
+    let read = |path: &std::path::Path| std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()));
+    let prs: Vec<notes::Pr> = serde_json::from_str(&read(prs)?).map_err(|e| format!("the pull requests: {e}"))?;
+    // A previous feed that can't be read starts a new one: the notes still go out.
+    let feed = previous.and_then(|p| read(p).ok()).and_then(|text| serde_json::from_str::<notes::Feed>(&text).ok()).unwrap_or_default();
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let date: String = equipe_core::quality::live::date_of(now).chars().take(10).collect();
+    let release = notes::Release { version: version.trim_start_matches('v').to_owned(), date, notes: notes::notes_of(&prs) };
+    std::fs::create_dir_all(out).map_err(|e| format!("{}: {e}", out.display()))?;
+    std::fs::write(out.join("release-notes.md"), notes::markdown(&release)).map_err(|e| e.to_string())?;
+    let feed = notes::add(feed, release);
+    let json = serde_json::to_string_pretty(&feed).map_err(|e| e.to_string())?;
+    std::fs::write(out.join(notes::FILE), json + "\n").map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Claude Code's `PreToolUse` hook for a member: equipe's guard's answer to
 /// the call on stdin — a refusal, or nothing for the engine's own rules to
 /// decide. A call it can't read is let through: the guard only refuses.
@@ -667,6 +704,10 @@ async fn run(cli: Cli) -> ExitCode {
         },
         Command::Attach { stdio: true, no_start } => attach::stdio(no_start).await,
         Command::Attach { stdio: false, .. } => return attach::usage(),
+        Command::ReleaseNotes { version, prs, previous, out } => match release_notes(&version, &prs, previous.as_deref(), &out) {
+            Ok(()) => Ok(()),
+            Err(why) => Err(Failure::new(why)),
+        },
         Command::Receive { name, size, kind } => {
             use equipe_core::protocol::rpc::UploadKind as K;
             let kind = match kind.as_str() {
@@ -1986,6 +2027,8 @@ impl App {
                 | Event::RestingChanged { .. }
                 | Event::StatusChanged { .. }
                 | Event::SignalsChanged { .. }
+                | Event::DeploysChanged { .. }
+                | Event::Deployed { .. }
                 | Event::Logins { .. }
                 | Event::SquadSecrets { .. }
                 | Event::SquadSecretRevealed { .. }

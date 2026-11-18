@@ -836,5 +836,17 @@
   "design_session.no_page": "Indiquez la page ou l'écran de la session de design.",
   "design_session.use_title": "Construire {page} d'après le prototype choisi",
   "design_session.use_title_variant": "Construire {page} d'après le prototype {variant}",
-  "design_session.use_intro": "Choisi dans une session de design avec « Prendre celui-ci » : construire ce prototype dans le produit."
+  "design_session.use_intro": "Choisi dans une session de design avec « Prendre celui-ci » : construire ce prototype dans le produit.",
+  "deploy.live_on": "En ligne sur {host} :",
+  "deploy.live": "En ligne dans {project} :",
+  "deploy.on_main": "Sur main dans {project} (aucun déploiement vu) :",
+  "deploy.yours_live_on": "Ce que vous avez demandé est en ligne sur {host} :",
+  "deploy.yours_live": "Ce que vous avez demandé est en ligne dans {project} :",
+  "deploy.yours_on_main": "Ce que vous avez demandé est sur main dans {project} :",
+  "deploy.more.one": "+{count} de plus",
+  "deploy.more.other": "+{count} de plus",
+  "deploy.internal.one": "· +{count} changement interne",
+  "deploy.internal.other": "· +{count} changements internes",
+  "deploy.only_internal.one": "seulement des changements internes ({count}).",
+  "deploy.only_internal.other": "seulement des changements internes ({count})."
 }

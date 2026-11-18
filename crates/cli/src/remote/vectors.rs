@@ -993,6 +993,7 @@ fn snapshot() -> Snapshot {
         model_choice: Default::default(),
         design_reviewer: Default::default(),
         signals: Vec::new(),
+        deploys: Vec::new(),
         accepts: vec![accept_proposal()],
         scale: Some(0),
         plan: Some(plan(Engine::Claude, 86, 41).usage),

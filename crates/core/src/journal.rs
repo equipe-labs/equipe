@@ -1766,6 +1766,51 @@ impl Journal {
         self.set_meta("signal_states", &serde_json::to_string(states).unwrap_or_else(|_| "{}".into()))
     }
 
+    /// What went live lately in the squad's projects, the newest first (`crate::deploys`).
+    pub fn deploys(&self) -> Vec<equipe_protocol::deploys::Deploy> {
+        self.meta("deploys").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_deploys(&self, deploys: &[equipe_protocol::deploys::Deploy]) -> Result<()> {
+        self.set_meta("deploys", &serde_json::to_string(deploys).unwrap_or_else(|_| "[]".into()))
+    }
+
+    /// Where each project's main was last seen live and how it goes live, by its path.
+    pub fn deploy_watch(&self) -> std::collections::BTreeMap<String, crate::deploys::Watch> {
+        self.meta("deploy_watch").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_deploy_watch(&self, watch: &std::collections::BTreeMap<String, crate::deploys::Watch>) -> Result<()> {
+        self.set_meta("deploy_watch", &serde_json::to_string(watch).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// The person's requests `tickets` belong to, where the journal keeps
+    /// requests (`requests` and `request_tickets`); nothing where it doesn't.
+    pub fn requests_of(&self, tickets: &[TicketId]) -> std::collections::HashMap<TicketId, crate::deploys::RequestOf> {
+        let mut out = std::collections::HashMap::new();
+        let kept: bool = self
+            .conn
+            .query_row("SELECT COUNT(*) = 2 FROM sqlite_master WHERE type = 'table' AND name IN ('requests', 'request_tickets')", [], |r| r.get(0))
+            .unwrap_or(false);
+        if !kept || tickets.is_empty() {
+            return out;
+        }
+        let Ok(mut stmt) = self.conn.prepare("SELECT r.id, r.title, r.session FROM request_tickets t JOIN requests r ON r.id = t.request WHERE t.ticket = ?1") else {
+            return out;
+        };
+        for &ticket in tickets {
+            let found = stmt
+                .query_row([ticket as i64], |r| Ok(crate::deploys::RequestOf { id: r.get::<_, i64>(0)? as u64, title: r.get(1)?, session: r.get::<_, Option<i64>>(2)?.map(|s| s as SessionId) }))
+                .optional()
+                .ok()
+                .flatten();
+            if let Some(request) = found {
+                out.insert(ticket, request);
+            }
+        }
+        out
+    }
+
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub fn idle_wake_hours(&self) -> u32 {
         self.meta("idle_wake_hours").and_then(|h| h.parse().ok()).unwrap_or(crate::protocol::routines::IDLE_WAKE_HOURS)

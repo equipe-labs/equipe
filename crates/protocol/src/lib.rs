@@ -19,6 +19,7 @@ pub mod by_words;
 pub mod call;
 pub mod decide;
 pub mod deeplink;
+pub mod deploys;
 pub mod disk;
 pub mod metrics;
 pub mod plan_use;
@@ -3293,6 +3294,13 @@ pub enum Event {
     /// The squad's signals now, each with its latest readings: on a new
     /// reading, one turned on or off, or paused.
     SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
+    /// What went live lately in the squad's projects, the newest first
+    /// ([`deploys::Deploy`]): a deploy found, or folded into one close before.
+    DeploysChanged { squad: SquadName, deploys: Vec<deploys::Deploy> },
+    /// A deploy's news, once: `line` says what is live now, in the person's
+    /// language. For a notification; the line itself is in the PM's
+    /// conversation and in those the work was asked in, as [`Event::Notice`]s.
+    Deployed { squad: SquadName, deploy: deploys::Deploy, line: String },
     /// A squad was deleted ([`Command::DeleteSquad`]): told every screen. A
     /// screen on it moves to `next` — the squad to open now, as the daemon's
     /// machine remembers it — or, with none left, to starting a new one.
@@ -3507,6 +3515,8 @@ impl Event {
             | Event::ModelChoiceChanged { squad, .. }
             | Event::DesignReviewerChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
+            | Event::DeploysChanged { squad, .. }
+            | Event::Deployed { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
             | Event::DesignSessionStarted { squad, .. }
@@ -3626,6 +3636,8 @@ impl Event {
             | Event::ModelChoiceChanged { .. }
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
+            | Event::DeploysChanged { .. }
+            | Event::Deployed { .. }
             | Event::Logins { .. }
             | Event::Autopilot { .. }
             | Event::MailboxConnect { .. }
@@ -4065,6 +4077,9 @@ pub struct Snapshot {
     /// The squad's signals, each with its latest readings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<signals::SignalView>,
+    /// What went live lately in its projects, the newest first ([`deploys`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deploys: Vec<deploys::Deploy>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
