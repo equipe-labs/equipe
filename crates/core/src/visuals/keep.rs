@@ -202,6 +202,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_link_out_of_the_worktree_is_not_copied() {
         let home = home("link");

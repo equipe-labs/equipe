@@ -11014,7 +11014,9 @@ activity, so equipe moved you here."
         // where they weren't yet (a hand-in from before equipe kept them).
         let days = crate::visuals::keep::days();
         let now = now_secs();
-        let pictures: Vec<(String, Vec<(TicketId, Vec<String>)>, Vec<String>)> = self
+        // By squad: its tickets' pictures, by ticket, and its waiting decisions'.
+        type Pictures = (String, Vec<(TicketId, Vec<String>)>, Vec<String>);
+        let pictures: Vec<Pictures> = self
             .journals
             .iter()
             .map(|(squad, j)| {
