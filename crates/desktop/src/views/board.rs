@@ -2127,8 +2127,23 @@ pub fn label_chip(p: Palette, ticket: &Ticket) -> Option<Div> {
 /// cleanly — with the title smaller below an ask. The number is its own
 /// column, in muted mono, never part of this.
 pub fn title_cell(shell: &Shell, t: &Ticket, depth: usize, min_w: f32, strong: bool) -> Div {
+    title_cell_below(shell, t, depth, min_w, strong, crate::glance::heading(t))
+}
+
+/// [`title_cell`] in Needs you: below the ticket's name, what it asks of the
+/// person item by item, how long it has waited, and the request of theirs it
+/// holds up ([`crate::glance::needs_below`]).
+fn need_title_cell(shell: &Shell, t: &Ticket, depth: usize, min_w: f32) -> Div {
+    let model = &shell.model;
+    let mut heading = crate::glance::heading(t);
+    let waited = model.in_state_for(t).map(crate::state::short_span);
+    let request = model.requests.iter().find(|r| r.closed_at.is_none() && r.tickets.iter().any(|l| l.ticket == t.id)).map(|r| (r.id, r.title.as_str()));
+    heading.below = crate::glance::needs_below(t, heading.below.as_deref(), waited.as_deref(), request);
+    title_cell_below(shell, t, depth, min_w, false, heading)
+}
+
+fn title_cell_below(shell: &Shell, t: &Ticket, depth: usize, min_w: f32, strong: bool, heading: crate::glance::Heading) -> Div {
     let p = shell.palette;
-    let heading = crate::glance::heading(t);
     let closed = t.status.is_closed();
     let main = if depth > 0 { format!("↳ {}", heading.main) } else { heading.main.clone() };
     let two = heading.below.is_some();
@@ -2215,7 +2230,8 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
     // title · flags · detail · when · time.
     let width = shell.board.list_width;
     let compact = width < 720.;
-    let show_project = model.focus.is_none() && model.projects.len() > 1;
+    // Needs you holds every project's whatever is in focus: there, each row says whose it is.
+    let show_project = model.projects.len() > 1 && (model.focus.is_none() || shell.board.view.menu == Menu::Inbox);
     // Narrower still (a ticket panel dragged wide beside it): the flags and
     // the estimate go, so what is left is never cut at the edge.
     let narrow = width < 560.;
@@ -2464,7 +2480,7 @@ fn item_row(shell: &Shell, need: Need, depth: usize, picked: bool, cx: &mut Cont
                 }))
                 .child(div().w(px(ID_W)).flex_none().whitespace_nowrap().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(format!("T-{id}")))
                 .when(show_project, |r| r.child(project_col(Some(t))))
-                .child(title_cell(shell, t, depth, TITLE_MIN, false))
+                .child(need_title_cell(shell, t, depth, TITLE_MIN))
                 .child(
                     crate::chips::row(p, &m.flags, flags_w, SharedString::from(format!("flag-{id}")), true).w(px(flags_w)),
                 )

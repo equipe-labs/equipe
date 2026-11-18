@@ -27,7 +27,7 @@ impl Runtime {
         self.go_live.entry(squad.to_owned()).or_default()
     }
 
-    fn keep_lanes(&mut self, squad: &str) {
+    pub(super) fn keep_lanes(&mut self, squad: &str) {
         let lanes = self.lanes(squad).clone();
         if let Some(journal) = self.journals.get(squad)
             && let Err(err) = journal.set_go_live(&lanes)
@@ -69,7 +69,10 @@ impl Runtime {
         match found {
             Found::Command(go) if ask => {
                 let tickets = lane.pending.take().map(|p| p.tickets).unwrap_or_default();
+                lane.declared = true;
+                lane.stuck = Some("deploy_waits".into());
                 self.keep_lanes(squad);
+                self.requests_of_moved(squad, &tickets);
                 crate::daemon_log!("equipe: {squad}: {name} is on main, not deployed: the squad's policy asks before deploys");
                 let line = format!(
                     "Work landed in {name} and main is pushed ({}), but {name} is NOT live: the squad's policy asks the person before a \
@@ -82,11 +85,14 @@ deploy. Ask them whether to deploy now (`{}`); on their yes, call `set_deploy` w
             }
             Found::Command(go) => {
                 lane.quiet = go.quiet;
+                lane.declared = true;
                 self.keep_lanes(squad);
                 self.go_live_schedule(squad, &project);
             }
             Found::Invalid(err) => {
                 lane.pending = None;
+                lane.declared = true;
+                lane.stuck = Some("deploy_invalid".into());
                 let again = lane.failed.as_deref() == Some(err.as_str());
                 lane.failed = Some(err.clone());
                 self.keep_lanes(squad);
@@ -96,6 +102,8 @@ deploy. Ask them whether to deploy now (`{}`); on their yes, call `set_deploy` w
             }
             Found::Undeclared { suggestion } => {
                 lane.pending = None;
+                lane.declared = false;
+                lane.stuck = None;
                 let ask_pm = suggestion.filter(|s| !channel_known && lane.asked.as_deref() != Some(s.as_str()));
                 if let Some(command) = &ask_pm {
                     lane.asked = Some(command.clone());
@@ -198,7 +206,9 @@ each landing — else ask the person how it goes live. Until then its landed wor
             Outcome::Blocked { command, blocked } => {
                 let why = blocked.why();
                 crate::daemon_log!("equipe: {squad}: {name} wasn't deployed: {why}");
-                self.lanes(squad).entry(key).or_default().finished(Err(&why), now);
+                let lane = self.lanes(squad).entry(key).or_default();
+                lane.finished(Err(&why), now);
+                lane.stuck = Some("deploy_blocked".into());
                 let fix = match &blocked {
                     Blocked::Dirty { .. } => "Get those files committed through a ticket, or cleared if they are leftovers, ",
                     Blocked::NotAtOrigin { .. } => "Get main and origin's main together again (push main, or merge origin's in), ",
@@ -211,7 +221,9 @@ each landing — else ask the person how it goes live. Until then its landed wor
                 let short = rules::short(&sha);
                 let why = if ran.timed_out { format!("it ran longer than {} min and was stopped", timeout.as_secs() / 60) } else { format!("it exited with {}", ran.code.map_or("no code".into(), |c| c.to_string())) };
                 crate::daemon_log!("equipe: {squad}: deploying {name} at {short} failed: {why}: {}", ran.tail.lines().last().unwrap_or_default());
-                self.lanes(squad).entry(key).or_default().finished(Err(&why), now);
+                let lane = self.lanes(squad).entry(key).or_default();
+                lane.finished(Err(&why), now);
+                lane.stuck = Some("deploy_failed".into());
                 let shown = if ran.timed_out {
                     say!(self, "news.deploy_timed_out", project = name, command = command, minutes = timeout.as_secs() / 60)
                 } else {
@@ -229,19 +241,51 @@ Find out why and get it fixed (a ticket, if it is the project's code); then {aga
             }
             Outcome::Invalid(err) => {
                 crate::daemon_log!("equipe: {squad}: {name} wasn't deployed: {err}");
-                self.lanes(squad).entry(key).or_default().finished(Err(&err), now);
+                let lane = self.lanes(squad).entry(key).or_default();
+                lane.finished(Err(&err), now);
+                lane.stuck = Some("deploy_invalid".into());
                 self.tell_invalid(squad, &name, &err);
             }
             Outcome::Gone => {
                 crate::daemon_log!("equipe: {squad}: {name} has no go-live command any more: nothing deployed");
                 if let Some(lane) = self.lanes(squad).get_mut(&key) {
                     lane.running = false;
+                    lane.declared = false;
+                    lane.stuck = None;
                 }
                 self.brief_pm(squad, format!("Nothing was deployed for {name}: it declares no {} and no command is confirmed with `set_deploy`.", rules::FILE), None);
             }
         }
         self.keep_lanes(squad);
+        // The requests its work serves move with it: live, or on main and why not.
+        self.requests_of_moved(squad, &tickets);
         self.go_live_schedule(squad, &path);
+    }
+
+    /// Whether work on main is live, as the squad's deploys say
+    /// (`crate::requests::Shipped`): the tickets a deploy equipe saw succeed
+    /// carried, and the projects that go live only by a deploy — a command
+    /// of their own, or a production deployment or deploy workflow GitHub
+    /// confirmed — with why theirs can't now.
+    pub(super) fn shipped(&self, squad: &str) -> crate::requests::Shipped {
+        let Some(journal) = self.journals.get(squad) else { return crate::requests::Shipped::default() };
+        let live = journal.deploys().iter().filter(|d| d.source.is_live()).flat_map(|d| d.tickets.iter().copied()).collect();
+        let lanes = self.go_live.get(squad).cloned().unwrap_or_else(|| journal.go_live());
+        let mut by_deploy: std::collections::HashMap<String, Option<String>> =
+            lanes.into_iter().filter(|(_, l)| l.by_deploy()).map(|(k, l)| (k, l.stuck)).collect();
+        for (key, watch) in journal.deploy_watch() {
+            if !watch.channel_failed && matches!(watch.channel, Some(Channel::Deployments | Channel::Workflows { .. })) {
+                by_deploy.entry(key).or_insert(None);
+            }
+        }
+        crate::requests::Shipped { live, by_deploy }
+    }
+
+    /// The requests `tickets` serve moved: told where they stand now.
+    pub(super) fn requests_of_moved(&mut self, squad: &str, tickets: &[TicketId]) {
+        for &t in tickets {
+            self.request_question_changed(squad, t);
+        }
     }
 
     /// The person's news for a deploy that couldn't start.

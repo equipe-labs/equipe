@@ -456,6 +456,13 @@ pub struct Lane {
     pub confirmed: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asked: Option<String>,
+    /// Its main declares a deploy file (readable or not), as last read.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub declared: bool,
+    /// While its work can't go live, why, as a code a request's status says
+    /// (`deploy_failed`, `deploy_blocked`, `deploy_invalid`, `deploy_waits`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stuck: Option<String>,
     /// Its command runs now (not kept: a restart ends every run).
     #[serde(skip)]
     pub running: bool,
@@ -466,6 +473,12 @@ fn default_quiet() -> u64 {
 }
 
 impl Lane {
+    /// Whether its work is live only once a deploy says so: it declares or
+    /// has a confirmed command, or the PM was asked to confirm one.
+    pub fn by_deploy(&self) -> bool {
+        self.declared || self.confirmed.is_some() || self.asked.is_some()
+    }
+
     /// A landing of `ticket` (none: the PM asked for a deploy now) was pushed at `now`.
     pub fn landed(&mut self, ticket: Option<TicketId>, now: u64) {
         let pending = self.pending.get_or_insert(Pending { first: now, last: now, tickets: Vec::new() });
@@ -507,6 +520,7 @@ impl Lane {
             Ok(sha) => {
                 self.deployed = Some(sha.to_owned());
                 self.deployed_at = now;
+                self.stuck = None;
                 self.failed.take().is_some()
             }
             Err(why) => {

@@ -1615,5 +1615,8 @@
   "autonomy.picks": "Choices members took on their own:",
   "autonomy.no_allowance": "No live standing allowance #{id}.",
   "autonomy.done": "Done.",
-  "autonomy.no_answer": "The daemon didn't answer. Is it up to date? Run equipe update."
+  "autonomy.no_answer": "The daemon didn't answer. Is it up to date? Run equipe update.",
+  "metrics_query.no_daemon": "No daemon answers on this machine: start it with `equipe daemon start`, then ask again.",
+  "metrics_query.rows": "{rows} rows from {connection} in {ms} ms",
+  "metrics_query.truncated": "There were more rows: only the first {limit} are shown. Ask for more with --limit (up to {most}), or aggregate in the query."
 }

@@ -2967,6 +2967,8 @@
   "settings.auto_put_away_desc": "Put away conversations left alone for 3 days. Nothing is deleted; bring one back any time. Pinned conversations stay.",
   "sidebar.work_working": "{n} working",
   "sidebar.work_needs_you": "{n} need you",
+  "needs.waited": "waiting {span}",
+  "needs.holds_request": "holds up R-{id} “{title}”",
   "header.squad_wide": "Whole squad",
   "menu.palette": "Command Palette…",
   "menu.toggle_board": "Switch Board / Conversation",
@@ -4863,5 +4865,12 @@
   "autonomy.allowances_foot": "Each use is logged and told in one line. Revoke one and its kind asks again.",
   "autonomy.picks": "Choices members took on their own",
   "autonomy.dock_line": "{name} picked «{picked}»{why}",
-  "autonomy.dock_title": "No answer in time, so members took their recommendation ({n}). Change any you'd pick differently."
+  "autonomy.dock_title": "No answer in time, so members took their recommendation ({n}). Change any you'd pick differently.",
+  "keys.group_members": "Kept by members",
+  "keys.group_connections": "Connections",
+  "keys.metrics_connection": "Metrics connection",
+  "keys.use_daily_fetch": "Daily metrics fetch",
+  "keys.last_fetched": "Last fetched {when}",
+  "keys.never_fetched": "Not fetched yet",
+  "keys.manage_connection": "Replace or delete"
 }

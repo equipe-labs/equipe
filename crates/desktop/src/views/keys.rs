@@ -6,6 +6,12 @@
 //! copy it, change the projects it may be used on (or any), delete it (asked
 //! twice).
 //!
+//! Below them, the keys equipe keeps for the squad's Metrics connections
+//! (`metrics/connections.json` names them, the Keychain holds them): one row
+//! each, with the service, the key's name, what it is used for and when it
+//! last worked, and a button to the Metrics connections to replace or delete
+//! it. Those are asked of the daemon's metrics service when the page opens.
+//!
 //! The list carries facts only. A value comes from the daemon only when the
 //! person asks to see it ([`Command::RevealSquadSecret`]), is held here for
 //! half a minute at most, and is dropped when hidden, when the row closes
@@ -14,6 +20,7 @@
 use std::time::{Duration, Instant};
 
 use equipe_core::protocol::Command;
+use equipe_core::protocol::metrics::{Connection, SourceKind, Sources, SourcesParams};
 use equipe_core::protocol::secrets::{NO_PROJECT, SquadSecret};
 use equipe_core::t;
 use gpui_kit::component::input::{Input, InputState};
@@ -60,6 +67,29 @@ pub struct KeysUi {
     pub any: bool,
     /// What the copy button last did, for the row: `true` once copied.
     pub copied: bool,
+    /// The squad's Metrics connections, as the daemon last said (names of keys, never keys).
+    pub connections: Option<Sources>,
+}
+
+/// A key equipe keeps for a Metrics connection: facts only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionKey {
+    /// The connection it belongs to (`m1`).
+    pub connection: String,
+    pub kind: SourceKind,
+    /// The field's name: `api_key`.
+    pub name: String,
+    /// Unix seconds of the last fetch that worked.
+    pub last_ok: Option<u64>,
+}
+
+/// One row for each secret field of each of `squad`'s connections.
+pub fn connection_keys(squad: &str, connections: &[Connection]) -> Vec<ConnectionKey> {
+    connections
+        .iter()
+        .filter(|c| c.squad == squad)
+        .flat_map(|c| c.keys.iter().map(|name| ConnectionKey { connection: c.id.clone(), kind: c.kind, name: name.clone(), last_ok: c.last_ok }))
+        .collect()
 }
 
 impl KeysUi {
@@ -74,6 +104,7 @@ impl KeysUi {
             editing: false,
             any: false,
             copied: false,
+            connections: None,
         }
     }
 
@@ -127,12 +158,16 @@ fn now_secs() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-/// The section: a heading, then a card with a row for each key.
+/// The section: a heading, then a card with a row for each key — the ones
+/// members kept, and (under their own heading) the ones for Metrics connections.
 pub fn section(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     let p = shell.palette;
     let keys = &shell.model.squad_secrets;
-    let mut body = v_flex().w_full().rounded(px(crate::theme::R_LG)).border_1().border_color(p.hair).bg(p.raised).overflow_hidden();
-    if keys.is_empty() {
+    let wired = shell.logins_ui.keys.connections.as_ref().map(|s| connection_keys(&shell.model.squad, &s.connections)).unwrap_or_default();
+    let total = keys.len() + wired.len();
+    let card = || v_flex().w_full().rounded(px(crate::theme::R_LG)).border_1().border_color(p.hair).bg(p.raised).overflow_hidden();
+    let mut body = card();
+    if total == 0 {
         body = body.child(
             v_flex()
                 .w_full()
@@ -147,18 +182,70 @@ pub fn section(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     for (ix, secret) in keys.iter().enumerate() {
         body = body.child(row(shell, secret, ix > 0, cx));
     }
-    let aside = (!keys.is_empty()).then(|| t!("keys.count", n = keys.len()));
     let mut head = h_flex().w_full().px_1().gap_2().items_baseline().child(div().id("keys-title").text_size(px(13.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).role(Role::Heading).child(t!("keys.title")));
-    if let Some(aside) = aside {
-        head = head.child(div().text_size(px(12.)).text_color(p.muted).child(aside));
+    if total > 0 {
+        head = head.child(div().text_size(px(12.)).text_color(p.muted).child(t!("keys.count", n = total)));
     }
-    v_flex()
+    let group = |text: &'static str| div().w_full().px_1().pt_1().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.text2).child(text);
+    let mut page = v_flex()
         .id("logins-keys")
         .w_full()
         .gap_2()
         .child(head)
-        .child(div().w_full().px_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("keys.subtitle", machine = shell.endpoint.label())))
-        .child(body)
+        .child(div().w_full().px_1().text_size(px(12.)).line_height(px(18.)).text_color(p.muted).child(t!("keys.subtitle", machine = shell.endpoint.label())));
+    if !wired.is_empty() {
+        page = page.child(group(t!("keys.group_members")));
+    }
+    page = page.child(body);
+    if !wired.is_empty() {
+        let mut linked = card();
+        for (ix, key) in wired.iter().enumerate() {
+            linked = linked.child(connection_row(shell, key, ix > 0, cx));
+        }
+        page = page.child(group(t!("keys.group_connections"))).child(linked);
+    }
+    page.into_any_element()
+}
+
+/// A Metrics connection's key, in the look of the rows above. No value, no
+/// details to open: its one action goes to where it is replaced or deleted.
+fn connection_row(shell: &Shell, key: &ConnectionKey, divider: bool, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let spec = shell.logins_ui.keys.connections.as_ref().and_then(|s| s.kinds.iter().find(|k| k.kind == key.kind));
+    let service = super::metrics::service(key.kind, spec);
+    let last = match key.last_ok {
+        Some(at) => t!("keys.last_fetched", when = crate::activity::ago(now_secs().saturating_sub(at))),
+        None => t!("keys.never_fetched").to_owned(),
+    };
+    let id = SharedString::from(format!("{}-{}", key.connection, key.name));
+    let open = cx.listener(|this, _, window, cx| this.metrics_open_connect(None, None, window, cx));
+    h_flex()
+        .id(SharedString::from(format!("key-conn-{id}")))
+        .w_full()
+        .px_4()
+        .py_3()
+        .gap_3()
+        .items_center()
+        .when(divider, |b| b.border_t_1().border_color(p.hair))
+        .aria_label(format!("{}, {}", key.name, service))
+        .child(div().flex_none().size(px(32.)).flex().items_center().justify_center().rounded(px(8.)).bg(p.wash).child(icon(Icon::Lock, 14., p.text2)))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(div().truncate().text_size(px(SMALL)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(key.name.clone()))
+                .child(div().truncate().text_size(px(12.)).text_color(p.muted).child(format!("{} · {}", service, t!("keys.metrics_connection")))),
+        )
+        .child(
+            h_flex()
+                .flex_none()
+                .gap_3()
+                .items_center()
+                .child(chip(p, t!("keys.use_daily_fetch").to_owned()))
+                .child(div().w(px(190.)).truncate().text_size(px(11.5)).text_color(p.muted).child(last))
+                .child(ui::button(p, SharedString::from(format!("key-conn-manage-{id}")), Kind::Secondary, t!("keys.manage_connection")).on_click(open)),
+        )
         .into_any_element()
 }
 
@@ -360,9 +447,20 @@ fn actions(shell: &Shell, secret: &SquadSecret, which: &Which, cx: &mut Context<
 
 impl Shell {
     /// The page opened: what the daemon keeps, asked for; nothing of a value kept from before.
-    pub fn keys_open(&mut self) {
+    pub fn keys_open(&mut self, cx: &mut Context<Self>) {
         self.logins_ui.keys.forget();
         self.send_command(Command::SquadSecrets);
+        if self.metrics.demo {
+            return;
+        }
+        // The squad's Metrics connections: their keys' names are part of this list.
+        let params = SourcesParams { squad: self.model.squad.clone(), project: None };
+        self.metrics_ask::<Sources>(equipe_core::protocol::metrics::SOURCES, params, Duration::from_secs(10), cx, |this, answer, cx| {
+            if let Ok(sources) = answer {
+                this.logins_ui.keys.connections = Some(sources);
+                cx.notify();
+            }
+        });
     }
 
     fn keys_toggle(&mut self, which: Which, cx: &mut Context<Self>) {
@@ -429,5 +527,53 @@ impl Shell {
         ui.open = None;
         self.send_command(Command::DeleteSquadSecret { squad: which.0.clone(), name: which.1.clone() });
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Not `super::*`: gpui_kit's glob brings its own `test` macro over `#[test]`.
+    use super::connection_keys;
+    use equipe_core::protocol::metrics::{Connection, SourceKind};
+
+    fn connection(id: &str, squad: &str, kind: SourceKind, keys: &[&str], last_ok: Option<u64>) -> Connection {
+        Connection {
+            id: id.into(),
+            squad: squad.into(),
+            project: None,
+            kind,
+            settings: [("project_id".to_owned(), "123".to_owned())].into(),
+            keys: keys.iter().map(|k| (*k).to_owned()).collect(),
+            connected_at: 1,
+            last: None,
+            last_ok,
+        }
+    }
+
+    #[test]
+    fn a_metrics_connections_keys_each_get_a_row_with_names_only() {
+        let all = [connection("m1", "acme", SourceKind::Posthog, &["api_key"], Some(500)), connection("m2", "other", SourceKind::Github, &["token"], None), connection("m3", "acme", SourceKind::Github, &["token"], None)];
+        let rows = connection_keys("acme", &all);
+        assert_eq!(rows.len(), 2, "another squad's key isn't listed");
+        assert_eq!((rows[0].connection.as_str(), rows[0].kind, rows[0].name.as_str(), rows[0].last_ok), ("m1", SourceKind::Posthog, "api_key", Some(500)));
+        assert_eq!(rows[1].last_ok, None);
+        // Settings that aren't secret are not carried either: a row is a name and a time.
+        assert!(!format!("{rows:?}").contains("123"));
+    }
+
+    #[test]
+    fn a_connection_without_keys_has_no_row() {
+        assert!(connection_keys("acme", &[connection("m1", "acme", SourceKind::Posthog, &[], None)]).is_empty());
+    }
+
+    #[test]
+    fn every_language_has_the_words_a_connection_row_shows() {
+        let ids = ["keys.group_members", "keys.group_connections", "keys.metrics_connection", "keys.use_daily_fetch", "keys.last_fetched", "keys.never_fetched", "keys.manage_connection"];
+        for (language, text) in crate::i18n::FILES {
+            let words: std::collections::HashMap<String, String> = serde_json::from_str(text).unwrap();
+            for id in ids {
+                assert!(words.get(id).is_some_and(|w| !w.is_empty()), "{language}: no {id}");
+            }
+        }
     }
 }
