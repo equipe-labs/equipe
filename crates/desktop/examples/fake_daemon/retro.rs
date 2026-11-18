@@ -54,7 +54,7 @@ fn ticket(id: u32, title: &str, status: TicketStatus, who: &str, project: &str) 
         execution: None,
         merged: Some(status == TicketStatus::Done),
         off_main: None,
-        design_qa: None,
+        design_qa: None, landing: false,
         created_by: "pm".into(),
         note: None,
         plan: None,

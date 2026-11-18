@@ -411,6 +411,11 @@ pub struct Ticket {
     /// it on its branch, or merging it failed. `None` otherwise (and once merged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub off_main: Option<OffMain>,
+    /// Accepted and on its way to main right now: in line behind the
+    /// repository's other landings, or being merged. Only ever on what the
+    /// daemon sends — never kept: a daemon that restarts has nothing landing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub landing: bool,
     /// `you`, or the member who wrote it.
     pub created_by: String,
     /// The latest word on it: a hand-in summary, why it was reopened.
@@ -683,10 +688,16 @@ impl Ticket {
         self.kind == TicketKind::Code && self.status == TicketStatus::Done && self.branch.is_some() && self.merged == Some(false)
     }
 
+    /// Accepted and on its way to main now ([`Ticket::landing`]): nothing
+    /// for the person to do about it.
+    pub fn landing_now(&self) -> bool {
+        self.landing && self.not_on_main()
+    }
+
     /// Accepted, not on main, and still the person's call — not left on its
     /// branch by their choice. What the inbox lists.
     pub fn waits_to_merge(&self) -> bool {
-        self.not_on_main() && self.off_main != Some(OffMain::Kept)
+        self.not_on_main() && self.off_main != Some(OffMain::Kept) && !self.landing
     }
 }
 
@@ -4272,7 +4283,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None, model: None,
+            design_qa: None, landing: false, plan: None, model: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
             note: None,

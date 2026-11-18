@@ -168,6 +168,9 @@ const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// and how many times before the PM is told to see to it.
 const MERGE_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 const MERGE_TRIES: u32 = 6;
+/// Past [`MERGE_TRIES`], still tried this often: once what is in the way is
+/// cleared, accepted work lands on its own — nobody accepts it again.
+const MERGE_RETRY_SLOW: Duration = Duration::from_secs(30 * 60);
 /// A done ticket whose merge failed this lately is tried again after a restart.
 const MERGE_RETRY_WITHIN: u64 = 3 * 86_400;
 
@@ -2320,9 +2323,11 @@ impl Runtime {
         }
         // A ticket waiting for the person carries what it asks, item by item
         // (kept in its note); any other, nothing.
-        if let Event::TicketChanged { ticket, .. } = &mut event {
+        if let Event::TicketChanged { squad, ticket } = &mut event {
             ticket.asks = Vec::new();
             ticket.asks = ticket.asks();
+            // On its way to main: the screens say so rather than "not in main".
+            ticket.landing = self.landing(squad, ticket);
             // It changed now: the screens know when it finished.
             ticket.updated_at = Some(now_secs());
         }
@@ -8017,6 +8022,19 @@ with what else waits.]"
         self.dispatch(squad).await;
     }
 
+    /// Whether `ticket`, accepted and not on main, is on its way there now:
+    /// its landing is in line or under way ([`Runtime::merge`]).
+    pub(super) fn landing(&self, squad: &str, ticket: &Ticket) -> bool {
+        ticket.not_on_main() && self.merging.contains(&(squad.to_owned(), ticket.id))
+    }
+
+    /// Its landing just went in line: every screen shows it on its way to main.
+    pub(super) fn show_landing(&mut self, squad: &str, ticket: TicketId) {
+        if let Some(t) = self.journal(squad).and_then(|j| j.ticket(ticket).ok().flatten()) {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: t });
+        }
+    }
+
     /// The person merges a done ticket's branch into main — their gate, never a
     /// member's — and pushes main when they said so. A conflict merges nothing.
     /// The merge and the push are worked out off the loop (a push talks to a
@@ -8043,11 +8061,16 @@ with what else waits.]"
         if !self.merging.insert((squad.to_owned(), ticket)) {
             return;
         }
+        self.show_landing(squad, ticket);
         let message = format!("equipe: merge T-{ticket} {}\n\nAccepted; merged from {branch}.", found.title);
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
-            let result = worktree::merge_into_main(&repo, &branch, &message)
-                .map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
+            // In line with the repository's other landings: merged and pushed as one.
+            let result = landing_tries(|| {
+                worktree::one_landing_at_a_time(&repo, || {
+                    worktree::merge_into_main(&repo, &branch, &message).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))))
+                })
+            });
             let kept = crate::design::captures::take_report(&repo, &branch);
             let _ = internal.send(Internal::Merged { squad, ticket, result, kept, push });
         });
@@ -8095,7 +8118,7 @@ with what else waits.]"
                     Some(owner) => {
                         let branch = found.branch.clone().unwrap_or_else(|| "its branch".into());
                         let line = format!(
-                            "T-{ticket} couldn't be merged into main: {err}. In the ticket's worktree, merge main into {branch}, resolve the conflict keeping what both sides meant, run the tests and commit. Then say it's ready: the person merges it again from the board."
+                            "T-{ticket} couldn't be merged into main: {err}. In the ticket's worktree, merge main into {branch}, resolve the conflict keeping what both sides meant, run the tests and commit. Then tell the PM it's ready: it is accepted already, and lands again with `accept_work` — nobody accepts it twice."
                         );
                         let shown = say!(self, "news.merge_conflict_owner", id = ticket);
                         self.brief_member(squad, &owner, &line, &shown);
@@ -8157,17 +8180,22 @@ with what else waits.]"
         let failed = before.map_or(1, |b| b.failed + 1);
         let ticket = t.id;
         if failed > MERGE_TRIES {
-            crate::daemon_log!("equipe: {squad}: T-{ticket} still isn't merged after {MERGE_TRIES} tries: {err}");
-            self.brief_pm(
-                squad,
-                format!(
-                    "T-{ticket} · {} is accepted but still not on main: equipe tried to merge it {MERGE_TRIES} times and stopped ({err}). It stays \
-\"accepted, not on main\" on the board. Find out what is in the way — usually uncommitted changes in the project's main checkout — and \
-tell the person; once it is cleared, the person merges it from the board.",
-                    t.title
-                ),
-                None,
-            );
+            // Said once; tried again every half hour from here, so it lands once cleared.
+            if failed == MERGE_TRIES + 1 {
+                crate::daemon_log!("equipe: {squad}: T-{ticket} still isn't merged after {MERGE_TRIES} tries: {err}");
+                self.brief_pm(
+                    squad,
+                    format!(
+                        "T-{ticket} · {} is accepted but still not on main after {MERGE_TRIES} tries ({err}). It stays \"accepted, not on main\" \
+on the board. Find out what is in the way — usually uncommitted changes in the project's main checkout — and get it cleared. It is accepted \
+already: equipe keeps trying on its own and lands it once it can, or land it at once with `accept_work` — never put it to the person again.",
+                        t.title
+                    ),
+                    None,
+                );
+            }
+            let next = std::time::Instant::now() + MERGE_RETRY_SLOW;
+            self.merge_retries.insert((squad.to_owned(), ticket), MergeRetry { push, failed, next, running: false });
             return;
         }
         if failed == 1 {
@@ -10021,7 +10049,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     execution: None,
                     merged: None,
                     off_main: None,
-                    design_qa: None,
+                    design_qa: None, landing: false,
                     // Read and checked off the loop before it gets here (`cut_from_plan`).
                     plan: board::arg_str(&args, "plan").map(str::to_owned),
                     model: None,
@@ -10472,6 +10500,9 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         watchdog::mark("snapshot: board");
         let projects = self.projects(squad);
         let mut tickets = self.tickets(squad);
+        for t in &mut tickets {
+            t.landing = self.landing(squad, t);
+        }
         // Open tickets, and the latest closed ones.
         let recent_closed: Vec<TicketId> =
             tickets.iter().rev().filter(|t| t.status.is_closed()).map(|t| t.id).take(CLOSED_TICKETS_SHOWN).collect();
@@ -11800,6 +11831,30 @@ fn work_before(tickets: &[Ticket], ticket: &Ticket) -> Vec<(String, String)> {
         .filter_map(|id| tickets.iter().find(|t| t.id == *id && t.status == TicketStatus::Done && t.kind.in_home() == ticket.kind.in_home()))
         .filter_map(|t| Some((format!("T-{}", t.id), t.branch.clone()?)))
         .collect()
+}
+
+/// How many times a landing that failed only for a moment — another git
+/// holding the main checkout's lock, main moved on — is tried again at once,
+/// and how long apart: in seconds, not at the next retry minutes away.
+const LANDING_TRIES: u32 = 6;
+const LANDING_AGAIN_AFTER: Duration = Duration::from_secs(10);
+
+/// `land` (a landing, merged and pushed), tried again after a moment while
+/// it fails for a passing cause ([`worktree::passing`]) — the ticket stays
+/// "landing" meanwhile. What still fails is for someone to see to: the
+/// retries minutes apart and the PM take it from there. Blocking.
+pub(super) fn landing_tries(mut land: impl FnMut() -> MergeResult) -> MergeResult {
+    let mut tries = 1;
+    loop {
+        match land() {
+            Err(err) if worktree::passing(&err) && tries < LANDING_TRIES => {
+                crate::daemon_log!("equipe: a landing waits a moment and goes again: {err}");
+                std::thread::sleep(LANDING_AGAIN_AFTER);
+                tries += 1;
+            }
+            landed => return landed,
+        }
+    }
 }
 
 /// The message a task's or action's work lands in the squad's folder with.

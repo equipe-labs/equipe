@@ -1330,6 +1330,9 @@ pub fn off_main_why(t: &Ticket, way: Option<MergeWay>) -> Option<String> {
     if !t.not_on_main() {
         return None;
     }
+    if t.landing_now() {
+        return Some(t!("peek.why_landing").to_owned());
+    }
     Some(match (&t.off_main, way) {
         (Some(OffMain::Kept), _) => t!("peek.why_kept").to_owned(),
         (Some(OffMain::Conflict { detail }), _) => t!("peek.why_conflict", detail = detail),

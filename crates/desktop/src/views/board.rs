@@ -2060,7 +2060,9 @@ pub fn row_flags(shell: &Shell, t: &Ticket) -> Vec<crate::chips::Flag> {
     }
     if t.not_on_main() {
         let branch = t.branch.clone().unwrap_or_default();
-        flags.push(if t.waits_to_merge() {
+        flags.push(if t.landing_now() {
+            Flag::new(t!("state.chip_landing"), p.accent, Some(t!("state.chip_landing_tip").to_owned()), NOTE)
+        } else if t.waits_to_merge() {
             Flag::new(t!("state.chip_not_on_main"), p.accent, Some(t!("state.chip_not_on_main_tip", branch = branch)), NOTE)
         } else {
             Flag::new(t!("state.chip_kept"), p.muted, Some(t!("state.chip_kept_tip", branch = branch)), NOTE)
