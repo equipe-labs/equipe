@@ -385,12 +385,12 @@ mod tests {
         let page = session.join("index-a.html");
         std::fs::write(
             &page,
-            r#"<!doctype html><link rel="stylesheet" href="../../src/tokens.css"><link rel=stylesheet href='../2026-11-17-hero/mascot.css'>
+            r##"<!doctype html><link rel="stylesheet" href="../../src/tokens.css"><link rel=stylesheet href='../2026-11-17-hero/mascot.css'>
 <link rel="preconnect" href="https://fonts.gstatic.com"><link href="https://fonts.googleapis.com/css2?family=Inter" rel="stylesheet">
 <style>@import url("/src/type.css"); .hero{background:url('/public/og.png')}</style>
 <img src="../../assets/logo/mark.svg" srcset="../../assets/logo/mark.svg 1x, ../../assets/logo/mark@2x.svg 2x">
 <img src="data:image/png;base64,AAA"><a href="../other.html">next</a>
-<script src="./app.js"></script><img src="/assets/missing.svg"><svg><use href="#icon"/></svg>"#,
+<script src="./app.js"></script><img src="/assets/missing.svg"><svg><use href="#icon"/></svg>"##,
         )
         .unwrap();
         let scope = Scope::of_page(&page);
