@@ -342,7 +342,9 @@ any condition that failed. Then hand in again.",
                 None
             }
         };
-        let call = crate::design_qa::gate(report.as_ref());
+        // Built from a live prototype the person picked: the precheck alone decides, whatever the squad's gate.
+        let prototype = self.checked_by(squad, qa).and_then(|c| self.approved_prototype(squad, c.id));
+        let call = if prototype.is_some() { crate::design_qa::gate_prototype(report.as_ref()) } else { crate::design_qa::gate(report.as_ref()) };
         let Some(journal) = self.journal(squad) else { return };
         let mut run = journal.design_qa_run(qa).unwrap_or(journal::DesignQaRun { qa, ..Default::default() });
         let mode = GateMode::parse(&run.gate).unwrap_or_default();
@@ -353,7 +355,7 @@ any condition that failed. Then hand in again.",
         let checked = self.checked_by(squad, qa);
         let free = open.is_some() && checked.is_some() && self.worker_on(squad, qa).is_none();
         // In risk_batch the route decides: refused, a designer now, or the daily review.
-        let routed: Option<RouteCall> = match (risk_batch, &checked) {
+        let routed: Option<RouteCall> = match (risk_batch && prototype.is_none(), &checked) {
             (true, Some(c)) => {
                 let spec = self.spec_of(c);
                 let follow_up = self.follow_up_of(squad, c.id).is_some_and(|f| f.quiet_qa());
@@ -363,6 +365,7 @@ any condition that failed. Then hand in again.",
         };
         let act = match &routed {
             Some(r) => free && r.route != Route::PerTicket,
+            None if prototype.is_some() => call.decision == Decision::AutoPass && free,
             None => mode == GateMode::On && call.decision != Decision::Designer && free,
         };
         let headline = match &routed {
@@ -396,6 +399,7 @@ any condition that failed. Then hand in again.",
             Some(r) => crate::daemon_log!("equipe: {squad}: design QA T-{qa} precheck: {} [{}] ({secs}s)", r.route.code(), r.risk_codes()),
             None => crate::daemon_log!("equipe: {squad}: design QA T-{qa} precheck: {} ({}, {secs}s)", call.decision.code(), if act { "acted" } else { mode.code() }),
         }
+        let checked_id = checked.as_ref().map(|c| c.id);
         let (Some(mut qa_ticket), Some(_)) = (open, checked) else { return };
         // What it flags, shown on the design QA ticket.
         if !flagged.is_empty() {
@@ -422,11 +426,35 @@ truncation with the whole text available), hand in again with `waive_findings` s
                 (Some(_), _, _) => (GateEnd::Batched, format!("{headline}\n{report_line}")),
                 (None, Decision::SendBack, Some(r)) => (GateEnd::SentBack, format!("{headline}\n{}\n{report_line}", blockers(r))),
                 (None, Decision::SendBack, None) => (GateEnd::SentBack, format!("{headline}\n{report_line}")),
+                // Built from the picked prototype: the person sees the result at once.
+                (None, _, Some(r)) if prototype.is_some() => {
+                    let shots: Vec<&str> = r.shots.iter().filter_map(|s| s.picture.as_deref()).take(3).collect();
+                    let see = prototype.as_deref().map(|p| format!("\nThe prototype it was built from: {p}")).unwrap_or_default();
+                    (GateEnd::Passed, format!("{headline}\nSee the result: {}{see}\n{report_line}", shots.join(", ")))
+                }
                 (None, _, _) => (GateEnd::Passed, format!("{headline}\n{report_line}")),
             };
             self.precheck_verdict(squad, qa_ticket, Verdict { passed: matches!(how, GateEnd::Passed | GateEnd::Batched), findings }, how);
+            // Built from the picked prototype and passed: the built screens on the ticket, one tap from the person's review.
+            if let (true, GateEnd::Passed, Some(id), Some(r)) = (prototype.is_some(), how, checked_id, &report) {
+                self.show_built_screens(squad, id, r);
+            }
         }
         self.dispatch(squad).await;
+    }
+
+    /// The pictures the precheck took of `ticket`'s built screens, on the
+    /// ticket when it has none of its own: its review shows the result.
+    fn show_built_screens(&mut self, squad: &str, ticket: TicketId, report: &precheck::Report) {
+        let shots: Vec<String> = report.shots.iter().filter(|s| s.error.is_none()).filter_map(|s| s.picture.clone()).take(crate::visuals::HAND_IN).collect();
+        let Some(journal) = self.journal(squad) else { return };
+        let Some(mut t) = journal.ticket(ticket).ok().flatten().filter(|t| t.images.is_empty()) else { return };
+        if shots.is_empty() {
+            return;
+        }
+        t.images = shots;
+        let _ = journal.save_ticket(&t);
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: t });
     }
 
     /// The gate's verdict on design QA ticket `qa`, without a designer turn:
