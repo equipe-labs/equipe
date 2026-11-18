@@ -852,6 +852,8 @@
   "request.closed": "닫힘: {why}",
   "request.news": "요청하신 “{title}”: {line}",
   "request.answer": "equipe 답변 ({name}이(가) 작업 중이라 보드 기준) — “{title}”: {line}",
+  "waiting.headline.one": "확인해 주실 일 ({count}): {list}",
+  "waiting.headline.other": "확인해 주실 일 ({count}): {list}",
   "gate.why.outward": "바깥에 실제로 실행돼요",
   "gate.why.irreversible": "되돌릴 수 없어요",
   "gate.why.data": "운영 데이터",

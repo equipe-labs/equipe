@@ -859,6 +859,8 @@
   "request.closed": "closed: {why}",
   "request.news": "Your request “{title}”: {line}",
   "request.answer": "equipe answer, from the board while {name} works — “{title}”: {line}",
+  "waiting.headline.one": "Waiting on you ({count}): {list}",
+  "waiting.headline.other": "Waiting on you ({count}): {list}",
   "gate.why.outward": "acts in the world",
   "gate.why.irreversible": "can't be taken back",
   "gate.why.data": "production data",

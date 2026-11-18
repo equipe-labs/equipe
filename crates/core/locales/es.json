@@ -859,6 +859,8 @@
   "request.closed": "cerrada: {why}",
   "request.news": "Tu solicitud «{title}»: {line}",
   "request.answer": "Respuesta de equipe según el tablero, mientras {name} trabaja — «{title}»: {line}",
+  "waiting.headline.one": "Esperando por ti ({count}): {list}",
+  "waiting.headline.other": "Esperando por ti ({count}): {list}",
   "gate.why.outward": "actúa en el mundo",
   "gate.why.irreversible": "no se puede deshacer",
   "gate.why.data": "datos de producción",

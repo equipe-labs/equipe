@@ -25,7 +25,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use equipe_protocol::importance::{Impact, WaitKind, Waiting};
+use equipe_protocol::importance::{HeldRequest, Impact, WaitKind, Waiting};
 use equipe_protocol::{ExecutionState, Priority, Ticket, TicketId, TicketStatus};
 
 /// Points for each ticket blocked.
@@ -311,34 +311,158 @@ pub fn waiting_list(tickets: &[Ticket], asks: &[Ask], pm_accepts: bool) -> Vec<W
     by.into_iter()
         .map(|i| {
             let (ticket, title) = shown[i].clone();
-            let status = ticket.and_then(|id| tickets.iter().find(|t| t.id == id)).map(|t| t.status);
-            Waiting { kind: waiters[i].kind, ticket, status, title, since: Some(waiters[i].since).filter(|s| *s > 0), impact: impacts[i].clone() }
+            let found = ticket.and_then(|id| tickets.iter().find(|t| t.id == id));
+            let status = found.map(|t| t.status);
+            // A ticket put down for the person says what they have to do, in plain words, and item by item.
+            let waits = found.filter(|t| t.status == TicketStatus::Waiting && waiters[i].kind == WaitKind::Ticket);
+            let title = waits.and_then(Ticket::ask_headline).unwrap_or(title);
+            let asks = waits.map(Ticket::asks).unwrap_or_default();
+            Waiting { kind: waiters[i].kind, ticket, status, title, since: Some(waiters[i].since).filter(|s| *s > 0), impact: impacts[i].clone(), asks, request: None }
         })
         .collect()
 }
 
-/// The PM's note of what waits on the person, for it to remind them of the
-/// right things: the top `n`, each with what it holds up. `None` when none of
-/// them holds anything up (then the order is no news).
+/// Something waiting on the person this long is stale: the PM brings it up
+/// with them now, or finds a way around it (unix seconds).
+pub const STALE_AFTER: u64 = 3 * 3600;
+
+/// At most this many waiting things are named to the PM, and to the person
+/// in one line.
+pub const PM_SHOWN: usize = 8;
+pub const PERSON_SHOWN: usize = 4;
+
+/// Each item of `list` whose ticket serves one of the person's requests
+/// names it (`request_of`): what the person asked for that it holds up.
+pub fn hold_requests(list: &mut [Waiting], request_of: impl Fn(TicketId) -> Option<HeldRequest>) {
+    for w in list.iter_mut() {
+        w.request = w.ticket.and_then(&request_of);
+    }
+}
+
+fn cut(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    format!("{}…", text.chars().take(max.saturating_sub(1)).collect::<String>().trim_end())
+}
+
+/// How long `w` has waited at `now`, when known.
+fn waited(w: &Waiting, now: u64) -> Option<u64> {
+    w.since.map(|s| now.saturating_sub(s))
+}
+
+/// Whether `w` has waited [`STALE_AFTER`] or more.
+pub fn is_stale(w: &Waiting, now: u64) -> bool {
+    waited(w, now).is_some_and(|d| d >= STALE_AFTER)
+}
+
+/// One waiting thing as the PM reads it: what, what it holds up, how long
+/// it waited (and that it is stale), the request it holds up, what it asks.
+fn pm_line(w: &Waiting, now: u64) -> String {
+    let what = cut(&w.ticket.map_or_else(|| w.title.clone(), |id| format!("T-{id} {}", w.title)), 90);
+    let mut facts = vec![w.impact.reason.clone()];
+    if let Some(d) = waited(w, now) {
+        facts.push(format!("waiting {}{}", ago(d), if d >= STALE_AFTER { " — STALE" } else { "" }));
+    }
+    if let Some(r) = &w.request {
+        facts.push(format!("holds up R-{} “{}”", r.id, r.title));
+    }
+    if !w.asks.is_empty() {
+        facts.push(format!("asks: {}", w.asks.iter().map(|a| cut(a.lines().next().unwrap_or_default(), 60)).collect::<Vec<_>>().join("; ")));
+    }
+    format!("- {what} — {}", facts.into_iter().filter(|f| !f.is_empty()).collect::<Vec<_>>().join(", "))
+}
+
+/// The PM's note of everything waiting on the person, for it to remind them
+/// of the right things: the first `n` (the most blocking first), each with
+/// what it holds up, how long it waited, the request it holds up and what it
+/// asks; those waiting [`STALE_AFTER`] or more marked, to bring up now or
+/// get around. `None` when nothing waits.
 pub fn pm_note(list: &[Waiting], n: usize, now: u64) -> Option<String> {
-    if !list.first().is_some_and(|w| w.impact.is_blocking()) {
+    if list.is_empty() {
         return None;
     }
-    let lines: Vec<String> = list
-        .iter()
-        .take(n)
-        .map(|w| {
-            let what = w.ticket.map_or_else(|| w.title.clone(), |id| format!("T-{id} {}", w.title));
-            let cut: String = what.chars().take(90).collect();
-            let waited = w.since.map(|s| format!(", waiting {}", ago(now.saturating_sub(s)))).unwrap_or_default();
-            format!("- {cut} — {}{waited}", w.impact.reason)
-        })
-        .collect();
+    let mut lines: Vec<String> = list.iter().take(n).map(|w| pm_line(w, now)).collect();
+    if list.len() > n {
+        lines.push(format!("- … and {} more", list.len() - n));
+    }
+    let mut text = format!(
+        "Waiting on the person ({} in all), the most blocking first. When you remind them, lead with these and say in plain words what each holds up:\n{}",
+        list.len(),
+        lines.join("\n")
+    );
+    let stale = list.iter().filter(|w| is_stale(w, now)).count();
+    if stale > 0 {
+        text.push_str(&format!(
+            "\n{stale} of them waited {} or more (STALE): bring each up with the person now, in plain words and with what it holds up — \
+or find a way around it (another route, a sensible default they can change later) so the work doesn't stay stuck.",
+            ago(STALE_AFTER)
+        ));
+    }
+    Some(text)
+}
+
+/// What is told to the PM about the things that just went stale: each in a
+/// line, and what to do. `None` when none did.
+pub fn stale_message(newly: &[&Waiting], now: u64) -> Option<String> {
+    if newly.is_empty() {
+        return None;
+    }
+    let lines: Vec<String> = newly.iter().map(|w| pm_line(w, now)).collect();
     Some(format!(
-        "Waiting on the person, most blocking first. When you remind them of what waits, lead with these, and say what each holds up:\n{}",
+        "[Waiting on the person · {}+] These have waited on the person {} or more:\n{}\n\nBring each up with them now, in plain words: \
+what to do, and what it holds up. Where you can, find a way around it instead — another route, or a sensible default they can change \
+later — and tell them what you chose.",
+        ago(STALE_AFTER),
+        ago(STALE_AFTER),
         lines.join("\n")
     ))
 }
+
+/// The items of `list` stale at `now` that `told` doesn't hold yet (by key).
+pub fn newly_stale<'a>(list: &'a [Waiting], told: &HashSet<String>, now: u64) -> Vec<&'a Waiting> {
+    list.iter().filter(|w| is_stale(w, now) && !told.contains(&key(w))).collect()
+}
+
+/// A waiting thing's key, the same as escalation's: its ticket, else its kind and words.
+pub fn key(w: &Waiting) -> String {
+    w.ticket.map_or_else(|| format!("{:?}:{}", w.kind, w.title), |id| format!("t{id}"))
+}
+
+/// Everything waiting on the person in one line, in `words`' language: how
+/// many, then the first few in plain words with how long each waited.
+/// `None` when nothing waits.
+pub fn person_line(list: &[Waiting], words: &crate::i18n::Catalog, now: u64) -> Option<String> {
+    if list.is_empty() {
+        return None;
+    }
+    let mut items: Vec<String> = list
+        .iter()
+        .take(PERSON_SHOWN)
+        .map(|w| {
+            let what = cut(&w.title, 48);
+            match waited(w, now) {
+                Some(d) => format!("{what} ({})", ago(d)),
+                None => what,
+            }
+        })
+        .collect();
+    if list.len() > PERSON_SHOWN {
+        items.push(words.fill("request.more", &[("count", (list.len() - PERSON_SHOWN).to_string())]));
+    }
+    Some(words.fill("waiting.headline", &[("count", list.len().to_string()), ("list", items.join(" · "))]))
+}
+
+/// Whether the person is told what waits on them now: something new waits
+/// that wasn't told (by key), and the last time was [`TELL_EVERY`] ago or
+/// more — or never.
+pub fn tell_person(list: &[Waiting], told: &HashSet<String>, last: Option<u64>, now: u64) -> bool {
+    list.iter().any(|w| !told.contains(&key(w))) && last.is_none_or(|at| now.saturating_sub(at) >= TELL_EVERY)
+}
+
+/// The person is told what waits on them at most this often (unix seconds).
+pub const TELL_EVERY: u64 = 30 * 60;
 
 fn ago(secs: u64) -> String {
     match secs {
@@ -543,15 +667,101 @@ mod tests {
     }
 
     #[test]
-    fn the_pms_note_names_the_top_few_and_is_silent_when_nothing_is_held_up() {
+    fn the_pms_note_names_the_top_few_and_what_holds_nothing_up_too() {
         let tickets = vec![ticket(1, "AWS admin sign-in", TicketStatus::Waiting, Priority::Normal, &[]), todo(2, &[1]), ticket(3, "Pick a font", TicketStatus::Waiting, Priority::Normal, &[]), todo(4, &[3])];
         let mut list = waiting_list(&tickets, &[], false);
         list[0].since = Some(1_000);
         let note = pm_note(&list, 1, 1_000 + 3 * 86_400).unwrap();
-        assert!(note.contains("T-1 AWS admin sign-in — blocks 1 ticket, waiting 3d") && !note.contains("Pick a font"), "{note}");
+        assert!(note.contains("T-1 AWS admin sign-in — blocks 1 ticket, waiting 3d — STALE") && !note.contains("Pick a font"), "{note}");
+        assert!(note.contains("(2 in all)") && note.contains("… and 1 more") && note.contains("1 of them waited 3h or more"), "{note}");
+        // Holding nothing up, it is still named: the person has it to do all the same.
         let quiet = waiting_list(&[ticket(9, "pick", TicketStatus::Waiting, Priority::Normal, &[])], &[], false);
-        assert_eq!(pm_note(&quiet, 3, 0), None);
+        assert!(pm_note(&quiet, 3, 0).unwrap().contains("T-9 pick — blocks nothing"));
         assert_eq!(pm_note(&[], 3, 0), None);
+    }
+
+    /// The incident's morning: tickets put down for the person with their checklists, a card to
+    /// accept, questions, a sign-in — all of it gathered, in plain words, the most blocking first.
+    fn morning() -> (Vec<Ticket>, Vec<Ask>) {
+        let mut aws = ticket(1, "Infra: AWS console access", TicketStatus::Waiting, Priority::Normal, &[]);
+        aws.asks = vec!["Sign in to the AWS console in the browser card".into()];
+        aws.note = Some(equipe_protocol::asks::waiting_note_headed(&aws.asks, None, Some("Sign in to AWS")));
+        aws.updated_at = Some(1_000);
+        let mut draft = ticket(2, "ERP drafts cleanup", TicketStatus::Waiting, Priority::Normal, &[]);
+        // From an older daemon: the checklist only in its note.
+        draft.note = Some("Waiting on you:\n- [ ] Delete the test ERP draft\n- [ ] Say which approval line to use".into());
+        draft.updated_at = Some(5_000);
+        let mut unlock = ticket(3, "Desktop run", TicketStatus::Waiting, Priority::Normal, &[]);
+        unlock.asks = vec!["Unlock the Mac's screen".into()];
+        unlock.updated_at = Some(9_000);
+        let build = todo(4, &[3]);
+        let asks = vec![
+            Ask { kind: WaitKind::Decision, label: "Accept “Collection run”".into(), tickets: vec![5], holding: vec![], since: 2_000, idle_members: 0 },
+            Ask { kind: WaitKind::SignIn, label: "Log in to the preview".into(), tickets: vec![], holding: vec![], since: 3_000, idle_members: 1 },
+        ];
+        (vec![aws, draft, unlock, build], asks)
+    }
+
+    #[test]
+    fn everything_waiting_on_the_person_is_gathered_in_plain_words_with_what_it_asks() {
+        let (tickets, asks) = morning();
+        let mut list = waiting_list(&tickets, &asks, true);
+        assert_eq!(list.len(), 5, "{list:#?}");
+        let aws = list.iter().find(|w| w.ticket == Some(1)).unwrap();
+        assert_eq!(aws.title, "Sign in to AWS", "its one-line ask, not the member's title");
+        assert_eq!(aws.asks, ["Sign in to the AWS console in the browser card"]);
+        let draft = list.iter().find(|w| w.ticket == Some(2)).unwrap();
+        assert_eq!(draft.asks, ["Delete the test ERP draft", "Say which approval line to use"], "an older note's checklist");
+        assert!(list.iter().any(|w| w.kind == WaitKind::Decision && w.title.contains("Collection run")));
+        // The request each holds up.
+        hold_requests(&mut list, |t| (t == 3).then(|| HeldRequest { id: 7, title: "Personal dashboards".into() }));
+        assert_eq!(list.iter().find(|w| w.ticket == Some(3)).unwrap().request, Some(HeldRequest { id: 7, title: "Personal dashboards".into() }));
+        let note = pm_note(&list, PM_SHOWN, 9_000 + STALE_AFTER).unwrap();
+        assert!(note.contains("T-3 Unlock the Mac's screen") || note.contains("T-3 Desktop run"), "{note}");
+        assert!(note.contains("holds up R-7 “Personal dashboards”") && note.contains("asks: Delete the test ERP draft; Say which approval line to use"), "{note}");
+    }
+
+    #[test]
+    fn what_blocks_comes_first_then_the_longest_waiting() {
+        let (tickets, asks) = morning();
+        let list = waiting_list(&tickets, &asks, true);
+        let order: Vec<String> = list.iter().map(key).collect();
+        // T-3 holds T-4 up; the sign-in holds a member; then the rest, the oldest first.
+        assert_eq!(order[0], "t3", "{order:?}");
+        assert_eq!(order[1], "SignIn:Log in to the preview", "{order:?}");
+        assert_eq!(&order[2..], ["t1", "t5", "t2"], "the card, by the ticket it is about: {order:?}");
+    }
+
+    #[test]
+    fn the_person_reads_it_in_one_line_and_is_told_again_only_when_something_new_waits() {
+        let (tickets, asks) = morning();
+        let list = waiting_list(&tickets, &asks, true);
+        let line = person_line(&list, crate::i18n::core(crate::i18n::Lang::En), 1_000 + 5 * 3600).unwrap();
+        assert!(line.starts_with("Waiting on you (5): "), "{line}");
+        assert!(line.contains("Sign in to AWS (5h)") && line.ends_with("+1 more"), "{line}");
+        assert_eq!(person_line(&[], crate::i18n::core(crate::i18n::Lang::En), 0), None);
+        let mut told: HashSet<String> = HashSet::new();
+        assert!(tell_person(&list, &told, None, 10_000), "never told");
+        told.extend(list.iter().map(key));
+        assert!(!tell_person(&list, &told, Some(10_000), 10_000 + 2 * TELL_EVERY), "nothing new");
+        told.remove("t2");
+        assert!(!tell_person(&list, &told, Some(10_000), 10_000 + 60), "not twice within the half hour");
+        assert!(tell_person(&list, &told, Some(10_000), 10_000 + TELL_EVERY), "something new, a while after");
+    }
+
+    #[test]
+    fn what_waits_hours_goes_stale_once_for_the_pm() {
+        let (tickets, asks) = morning();
+        let list = waiting_list(&tickets, &asks, true);
+        let now = 2_000 + STALE_AFTER;
+        // T-1 (since 1000) and the card (2000) are stale; T-2, T-3 and the sign-in not yet.
+        let stale: Vec<String> = newly_stale(&list, &HashSet::new(), now).into_iter().map(key).collect();
+        assert_eq!(stale, ["t1", "t5"]);
+        let told: HashSet<String> = stale.iter().cloned().collect();
+        assert!(newly_stale(&list, &told, now).is_empty(), "told once");
+        let message = stale_message(&newly_stale(&list, &HashSet::new(), now), now).unwrap();
+        assert!(message.starts_with("[Waiting on the person · 3h+]") && message.contains("find a way around"), "{message}");
+        assert_eq!(stale_message(&[], now), None);
     }
 
     fn titled(title: &str) -> Ticket {
