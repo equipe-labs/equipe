@@ -137,6 +137,10 @@ counting as its repository):
 - **Hand-in pictures stay out of a squad's folder's history**: pictures, videos and other
   generated files under `outputs/` are kept the way design captures are
   ([DESIGN-CAPTURES.md](DESIGN-CAPTURES.md#a-squads-folder-what-its-tasks-hand-over)).
+- **A hand-in's machine output stays on disk only, for 30 days**: probe and DOM dumps, logs,
+  generated scripts and anything under a hand-in's `raw/` are never in the folder's history; the
+  hourly sweep removes those older than 30 days (counted from the upgrade for older files)
+  ([DESIGN-CAPTURES.md](DESIGN-CAPTURES.md#what-git-keeps-of-a-hand-in)).
 - **Design QA's pictures** (`~/.equipe/squads/<squad>/design-qa`, a precheck's `T-<n>` and a
   daily batch's `B-<n>`, gigabytes each) go three days after they were last written, once their
   ticket isn't open; `daemon.log` says how much went and how much stays.

@@ -59,10 +59,12 @@ pub fn ensure(home: &Path, squad: &str, language: Option<&str>) -> Result<bool, 
         std::fs::write(&ignore, ".DS_Store\n*.tmp\n").map_err(|err| err.to_string())?;
     }
     // What tasks hand over as pictures, videos and other generated files stays
-    // out of the folder's history from the start (`design::captures::OUTPUTS`).
+    // out of the folder's history from the start (`design::captures::OUTPUTS`),
+    // and so does their machine output (`design::captures::raw`).
     let outputs = dir.join(crate::design::captures::OUTPUTS.ignore_path);
     if !outputs.exists() {
-        std::fs::write(&outputs, crate::design::captures::OUTPUTS.with_block("")).map_err(|err| err.to_string())?;
+        let text = crate::design::captures::raw::with_block(&crate::design::captures::OUTPUTS.with_block(""));
+        std::fs::write(&outputs, text).map_err(|err| err.to_string())?;
     }
     git(&dir, &["init", "-q", "-b", "main"])?;
     // Its own name, so it works without the person's git setup and its history never carries theirs.
@@ -525,6 +527,7 @@ mod tests {
         // Hand-in pictures stay out of its history from the start.
         let ignore = std::fs::read_to_string(dir.join("outputs/.gitignore")).unwrap();
         assert!(ignore.contains("*.[pP][nN][gG]") && ignore.contains("*.[mM][pP][44]"), "{ignore}");
+        assert!(ignore.contains("\nraw/\n") && ignore.contains("*.[jJ][sS][oO][nN]"), "machine output too: {ignore}");
         assert!(git(&dir, &["ls-files", "outputs/.gitignore"]).unwrap().contains("outputs/.gitignore"));
         assert_eq!(squad_of(&home, &dir.join("notes")).as_deref(), Some("acme"));
         assert_eq!(squad_of(&home, &home.join("squads/acme/members")), None);

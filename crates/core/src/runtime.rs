@@ -4197,6 +4197,9 @@ runbooks and reports live there, and work across the projects or on running them
         if kept.handed_in_kept_out > 0 {
             shown.push(say!(self, "news.handed_in_kept_out", id = ticket.id, count = kept.handed_in_kept_out, size = size(kept.handed_in_bytes)));
         }
+        if kept.raw_kept_out > 0 {
+            shown.push(say!(self, "news.handed_in_raw", id = ticket.id, count = kept.raw_kept_out, size = size(kept.raw_bytes), days = crate::design::captures::raw::RAW_KEPT_DAYS));
+        }
         for heavy in &kept.heavy {
             shown.push(say!(self, "news.captures_heavy", id = ticket.id, size = size(heavy.bytes), commit = &heavy.commit[..heavy.commit.len().min(10)]));
         }
@@ -11030,6 +11033,22 @@ activity, so equipe moved you here."
                         Err(err) => crate::daemon_log!("equipe: {} still tracks {}: {err}", repo.display(), scope.what),
                     }
                 }
+                // Of a squad's hand-ins, git keeps what people read; machine output stays on disk a while.
+                match crate::design::captures::raw::migrate(repo) {
+                    Ok(Some(m)) => crate::daemon_log!(
+                        "equipe: {} stopped tracking {} files of {} ({}) in {}",
+                        repo.display(),
+                        m.untracked,
+                        crate::design::captures::raw::WHAT,
+                        crate::design::captures::size_words(m.bytes),
+                        m.commit
+                    ),
+                    Ok(None) => {}
+                    Err(err) => crate::daemon_log!("equipe: {} still tracks {}: {err}", repo.display(), crate::design::captures::raw::WHAT),
+                }
+                for line in crate::design::captures::raw::sweep(repo) {
+                    crate::daemon_log!("equipe: {line}");
+                }
                 for line in crate::design::captures::gc(repo) {
                     crate::daemon_log!("equipe: {line}");
                 }
@@ -11306,7 +11325,9 @@ fn work_prompt(
         if let Some(sandbox) = sandbox {
             out.push_str(&format!(
                 " You work in a copy of the squad's folder of your own, {}: leave what you produce under \
-`outputs/T-{} …/` (or `notes/` for findings worth keeping). When the person accepts, it goes into the squad's folder.",
+`outputs/T-{} …/` (or `notes/` for findings worth keeping): a README.md that says what you found and names its \
+evidence, a few small key files, and bulk machine output (probe dumps, logs, generated scripts) under its `raw/`, kept on \
+disk only. When the person accepts, it goes into the squad's folder.",
                 sandbox.path.display(),
                 ticket.id
             ));
