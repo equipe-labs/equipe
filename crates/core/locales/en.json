@@ -870,5 +870,17 @@
   "design_session.no_page": "Name the page or screen the design session is on.",
   "design_session.use_title": "Build {page} from the picked prototype",
   "design_session.use_title_variant": "Build {page} from prototype {variant}",
-  "design_session.use_intro": "Picked in a design session with \"Use this\": build this prototype in the product."
+  "design_session.use_intro": "Picked in a design session with \"Use this\": build this prototype in the product.",
+  "deploy.live_on": "Live now on {host}:",
+  "deploy.live": "Live now in {project}:",
+  "deploy.on_main": "On main in {project} (no deploy seen):",
+  "deploy.yours_live_on": "What you asked for is live on {host}:",
+  "deploy.yours_live": "What you asked for is live in {project}:",
+  "deploy.yours_on_main": "What you asked for is on main in {project}:",
+  "deploy.more.one": "+{count} more",
+  "deploy.more.other": "+{count} more",
+  "deploy.internal.one": "· +{count} internal change",
+  "deploy.internal.other": "· +{count} internal changes",
+  "deploy.only_internal.one": "only internal changes ({count}).",
+  "deploy.only_internal.other": "only internal changes ({count})."
 }

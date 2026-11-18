@@ -870,5 +870,17 @@
   "design_session.no_page": "Nenne die Seite oder den Screen der Design-Session.",
   "design_session.use_title": "{page} nach dem gewählten Prototyp bauen",
   "design_session.use_title_variant": "{page} nach Prototyp {variant} bauen",
-  "design_session.use_intro": "In einer Design-Session mit „Das nehmen“ gewählt: Diesen Prototyp im Produkt bauen."
+  "design_session.use_intro": "In einer Design-Session mit „Das nehmen“ gewählt: Diesen Prototyp im Produkt bauen.",
+  "deploy.live_on": "Jetzt live auf {host}:",
+  "deploy.live": "Jetzt live in {project}:",
+  "deploy.on_main": "Auf main in {project} (kein Deploy gesehen):",
+  "deploy.yours_live_on": "Was du wolltest, ist live auf {host}:",
+  "deploy.yours_live": "Was du wolltest, ist live in {project}:",
+  "deploy.yours_on_main": "Was du wolltest, ist auf main in {project}:",
+  "deploy.more.one": "+{count} weiteres",
+  "deploy.more.other": "+{count} weitere",
+  "deploy.internal.one": "· +{count} interne Änderung",
+  "deploy.internal.other": "· +{count} interne Änderungen",
+  "deploy.only_internal.one": "nur interne Änderungen ({count}).",
+  "deploy.only_internal.other": "nur interne Änderungen ({count})."
 }

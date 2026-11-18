@@ -861,5 +861,14 @@
   "design_session.no_page": "請寫明設計會話要做的頁面或畫面。",
   "design_session.use_title": "依選定的原型實作{page}",
   "design_session.use_title_variant": "依原型 {variant} 實作{page}",
-  "design_session.use_intro": "在設計工作階段中以「就用這個」選定的原型：請在產品中實作它。"
+  "design_session.use_intro": "在設計工作階段中以「就用這個」選定的原型：請在產品中實作它。",
+  "deploy.live_on": "已上線 {host}:",
+  "deploy.live": "已在 {project} 上線:",
+  "deploy.on_main": "已進入 {project} 的 main(未見部署):",
+  "deploy.yours_live_on": "你要的已上線 {host}:",
+  "deploy.yours_live": "你要的已在 {project} 上線:",
+  "deploy.yours_on_main": "你要的已進入 {project} 的 main:",
+  "deploy.more.other": "另外 {count} 項",
+  "deploy.internal.other": "· 內部變更 {count} 項",
+  "deploy.only_internal.other": "只有內部變更({count} 項)。"
 }
