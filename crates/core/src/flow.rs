@@ -168,6 +168,51 @@ pub fn baton_refusal(ticket: &Ticket, holder: &str, to: &str) -> Option<String> 
     None
 }
 
+/// How many times a ticket may change hands between hand-ins. Past it the
+/// baton has become a loop — two roles checking each other while the
+/// checklist grows — and the holder hands in what it has instead.
+pub const MAX_BATONS: usize = 8;
+
+/// How many items a ticket's checklist may grow to. A checklist that keeps
+/// growing is scope that belongs to the PM, not to the ticket's holders.
+pub const MAX_STEPS: usize = 16;
+
+/// How many times the ticket whose record is `kinds` (oldest first) changed
+/// hands since it was last handed in or sent back.
+pub fn batons_since_hand_in<'a>(kinds: impl IntoIterator<Item = &'a str>) -> usize {
+    let mut passes = 0;
+    for kind in kinds {
+        match kind {
+            crate::lead_time::BATON => passes += 1,
+            "handed in" | "sent back" | "design QA: changes" => passes = 0,
+            _ => {}
+        }
+    }
+    passes
+}
+
+/// Why `pass_baton` stops a loop: after `passes` hand-overs since the last
+/// hand-in, the holder hands in what it has.
+pub fn baton_loop(ticket: TicketId, passes: usize) -> Option<String> {
+    (passes >= MAX_BATONS).then(|| {
+        format!(
+            "T-{ticket} has changed hands {passes} times since it was last handed in: passing it on again is a loop, not progress. \
+Hand it in now with `submit_for_review`: say what is done and what is left (with its evidence) in the summary. The PM decides \
+whether what is left is worth more work, as a narrower ticket."
+        )
+    })
+}
+
+/// Why `check_steps` refuses to add `adding` items to a checklist of `has`.
+pub fn steps_overflow(ticket: TicketId, has: usize, adding: usize) -> Option<String> {
+    (adding > 0 && has + adding > MAX_STEPS).then(|| {
+        format!(
+            "T-{ticket}'s checklist would grow past {MAX_STEPS} items: that is new scope, not this ticket. Finish or tick what is there and \
+hand it in; name what else you found in the summary for the PM."
+        )
+    })
+}
+
 /// The note the next holder starts with ([`BATON_FROM`]).
 pub fn baton_note(from: &str, note: &str) -> String {
     format!("{BATON_FROM}{from}: {}", note.trim())
@@ -434,6 +479,28 @@ pub fn prefer_finishing(ready: usize, capacity: usize, running: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_baton_passed_back_and_forth_past_its_limit_is_a_loop_and_a_hand_in_resets_it() {
+        let mut kinds = vec!["created", "assigned"];
+        kinds.extend(std::iter::repeat_n(crate::lead_time::BATON, MAX_BATONS - 1));
+        assert_eq!(batons_since_hand_in(kinds.iter().copied()), MAX_BATONS - 1);
+        assert!(baton_loop(7, MAX_BATONS - 1).is_none(), "under the limit it passes");
+        kinds.push(crate::lead_time::BATON);
+        let passes = batons_since_hand_in(kinds.iter().copied());
+        let why = baton_loop(7, passes).expect("at the limit it stops");
+        assert!(why.contains("submit_for_review") && why.contains("T-7"), "{why}");
+        // Handed in and sent back: the count starts again.
+        kinds.extend(["handed in", "sent back", crate::lead_time::BATON]);
+        assert_eq!(batons_since_hand_in(kinds.iter().copied()), 1);
+    }
+
+    #[test]
+    fn a_checklist_stops_growing_past_its_limit() {
+        assert!(steps_overflow(3, MAX_STEPS - 1, 1).is_none());
+        assert!(steps_overflow(3, MAX_STEPS, 0).is_none(), "ticking is always fine");
+        assert!(steps_overflow(3, MAX_STEPS, 1).is_some_and(|w| w.contains("T-3")));
+    }
     use super::*;
     use crate::i18n::{Lang, core};
     use equipe_protocol::TicketStatus;

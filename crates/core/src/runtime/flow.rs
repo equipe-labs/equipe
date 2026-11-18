@@ -89,6 +89,11 @@ impl Runtime {
         if let Some(why) = rules::baton_refusal(&ticket, &holder, &to) {
             return Err(why);
         }
+        let passes = self.journal(squad).and_then(|j| j.ticket_entries(on).ok()).map(|entries| rules::batons_since_hand_in(entries.iter().map(|e| e.kind.as_str()))).unwrap_or(0);
+        if let Some(why) = rules::baton_loop(on, passes) {
+            crate::daemon_log!("equipe: {squad}: T-{on}'s baton stopped after {passes} hand-overs since its last hand-in: its holder hands it in");
+            return Err(why);
+        }
         let staffed = self.member_id(squad, &to).is_some() || self.team(squad).iter().any(|(_, _, role)| *role == to);
         if !staffed {
             return Err(format!("Nobody on the squad is {to}. Pass it to a role the squad has, or hand it in."));
@@ -137,6 +142,9 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
             return Err(format!("T-{ticket} is {} — its checklist is closed.", found.status.label()));
         }
         let mut flow = found.flow.as_deref().cloned().unwrap_or_default();
+        if let Some(why) = rules::steps_overflow(ticket, flow.steps.len(), added.len()) {
+            return Err(why);
+        }
         let said = rules::tick(&mut flow, done, added, by)?;
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
         journal.set_ticket_flow(ticket, Some(&flow)).map_err(|e| e.to_string())?;
