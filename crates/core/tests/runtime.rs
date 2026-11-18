@@ -5807,6 +5807,11 @@ async fn designer_pictures(started: &[Event]) {
 /// A squad of a PM, a frontend and a designer, with T-1 handed in by the
 /// frontend as changing screens: it waits in review on design QA T-2, which
 /// the designer has picked up.
+/// The squad's design QA run per ticket: every screen change gets a designer's turn, precheck or not.
+fn per_ticket_design_qa(home: &Path) {
+    Journal::for_squad(home, "acme").unwrap().set_design_qa_mode(equipe_core::design_qa::Mode::PerTicket).unwrap();
+}
+
 async fn screens_in_design_qa(recorded: &Path, handle: &Handle, events: &mut UnboundedReceiver<Event>, site: &Path) -> Ticket {
     add(handle, events, 1, member(site, "pm")).await;
     add(handle, events, 2, member(site, "frontend")).await;
@@ -5872,6 +5877,7 @@ async fn a_design_qa_ticket_closed_by_the_designers_verdict_clears_its_lane_tmp_
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
     let lane = home.join("tmp").join("acme").join("t2");
@@ -5902,6 +5908,7 @@ async fn changed_screens_pass_design_qa_before_the_person_reviews_them() {
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
@@ -5939,6 +5946,7 @@ async fn screens_that_need_changes_go_back_to_their_engineer() {
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     let held = screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
@@ -5962,6 +5970,7 @@ async fn the_person_taking_a_ticket_over_drops_its_design_qa() {
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
 
@@ -6144,8 +6153,12 @@ async fn in_risk_batch_a_definite_failure_is_refused_to_its_engineer_and_a_waive
     let call = latest_call(&recorded, |p| p.contains("button.save")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("text-clipped") && prompt.contains("waive_findings"), "the engineer gets what failed and how to waive it: {prompt}");
-    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
-    assert_eq!((run.mode.as_deref(), run.route.as_deref(), run.verdict.as_deref(), run.verdict_by.as_deref()), (Some("risk_batch"), Some("refused"), Some("refused"), Some("equipe")));
+    // No design QA ticket was made for it: its precheck ran held on the change itself.
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert!(journal.ticket(2).unwrap().is_none(), "no standalone design QA ticket");
+    let run = journal.design_qa_run(1).unwrap();
+    assert_eq!((run.checked, run.mode.as_deref(), run.route.as_deref(), run.verdict.as_deref(), run.verdict_by.as_deref()), (1, Some("risk_batch"), Some("refused"), Some("refused"), Some("equipe")));
+    drop(journal);
     assert_eq!(Journal::for_squad(&home, "acme").unwrap().send_backs(1, equipe_core::protocol::tiers::SendBackReason::Correctness).unwrap(), 0, "a lint, not a send-back: no model escalation");
 
     // Handed in again with the findings waived: a designer judges them, in a light session.
@@ -6157,12 +6170,18 @@ async fn in_risk_batch_a_definite_failure_is_refused_to_its_engineer_and_a_waive
         "waive_findings": "The clipped label is a decorative badge; its full text is in aria-label.",
     })).await;
     assert!(!waived.is_error, "{waived:?}");
-    let qa = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 3, .. })).await;
+    // A designer is needed now: only now its design QA ticket, with the run and report moved to it.
+    let qa = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
     assert!(matches!(qa.last(), Some(Event::WorkStarted { of: Some(3), .. })), "{qa:#?}");
-    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(3).unwrap();
-    assert_eq!((run.route.as_deref(), run.risk.as_deref(), run.lite), (Some("per_ticket"), Some("waived"), true));
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    let run = journal.design_qa_run(2).unwrap();
+    assert_eq!((run.checked, run.round, run.route.as_deref(), run.risk.as_deref(), run.lite), (1, 2, Some("per_ticket"), Some("waived"), true));
+    assert!(journal.design_qa_run(1).is_none(), "moved, not copied");
+    assert!(run.report.as_deref().is_some_and(|r| r.ends_with("T-2") && Path::new(r).join("report.json").is_file()), "{run:?}");
+    assert_eq!(journal.ticket(1).unwrap().unwrap().design_qa, Some(2));
+    drop(journal);
     // T-1's turns, sent back, run beside it and may have made more calls since.
-    let call = any_call(&recorded, |p| p.contains("You're on T-3")).await;
+    let call = any_call(&recorded, |p| p.contains("You're on T-2")).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("decorative badge") && prompt.contains("The precheck's report") && prompt.contains("Finish with design_qa"), "{prompt}");
     assert!(!prompt.contains("worktree of your own") && !prompt.contains("start the preview"), "no checkout to be told about: {prompt}");
@@ -6182,34 +6201,41 @@ async fn in_risk_batch_a_low_risk_change_skips_the_designer_and_the_daily_review
         j.set_design_qa_sample(100).unwrap();
     })
     .await;
-    // Low risk: closed by equipe, on to review, no designer turn.
-    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
+    // Held on itself while prechecked: no design QA ticket, the change marked as waiting.
+    let held = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
+    assert_eq!(ticket_changed(&held).pop().map(|t| t.design_qa), Some(Some(1)), "held on itself, not ready for review yet");
+    // Low risk: on to review, no designer turn and no design QA ticket ever made.
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review && ticket.design_qa.is_none())).await;
     assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn");
-    let told = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("daily design review"))).await;
-    assert!(!told.is_empty());
+    assert!(!ticket_changed(&seen).iter().any(|t| t.id == 2), "no standalone design QA ticket");
     let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert!(journal.ticket(2).unwrap().is_none());
     let checked = journal.ticket(1).unwrap().unwrap();
     assert_eq!((checked.status, checked.design_qa), (TicketStatus::Review, None), "on to the person");
-    let run = journal.design_qa_run(2).unwrap();
-    assert_eq!((run.route.as_deref(), run.verdict.as_deref(), run.batch), (Some("batch"), Some("batched"), None));
+    let run = journal.design_qa_run(1).unwrap();
+    assert_eq!((run.checked, run.route.as_deref(), run.verdict.as_deref(), run.batch), (1, Some("batch"), Some("batched"), None));
     assert_eq!(journal.design_qa_waiting_for_batch().len(), 1);
+    assert_eq!(journal.design_qa_skipped_since(0), 1, "counted as a change that skipped its own design QA");
+    let recorded_on_it = journal.ticket_entries(1).unwrap();
+    assert!(recorded_on_it.iter().any(|e| e.kind == "precheck"), "the precheck's result is on the change itself: {recorded_on_it:#?}");
     drop(journal);
 
     // The minute's look: one review of it, and its audit, for the designer.
     handle.minute_now().await;
-    let review = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 3 | 4, .. })).await;
+    let review = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2 | 3, .. })).await;
     let made = ticket_changed(&review);
-    assert!(made.iter().any(|t| t.id == 3 && t.title.contains("1")), "{made:#?}");
+    assert!(made.iter().any(|t| t.id == 2 && t.title.contains("1")), "{made:#?}");
     let journal = Journal::for_squad(&home, "acme").unwrap();
-    assert_eq!(journal.design_qa_run(2).unwrap().batch, Some(3));
-    assert_eq!(journal.design_qa_run(2).unwrap().audit, Some(4), "a 100% sample audits it");
-    assert_eq!(journal.design_qa_batch(4).unwrap().kind, "audit");
+    assert_eq!(journal.design_qa_run(1).unwrap().batch, Some(2));
+    assert_eq!(journal.design_qa_run(1).unwrap().audit, Some(3), "a 100% sample audits it");
+    assert_eq!(journal.design_qa_batch(3).unwrap().kind, "audit");
     drop(journal);
     let first = match review.last() { Some(Event::WorkStarted { ticket, .. }) => *ticket, _ => unreachable!() };
     // The other review's turns run beside it and may have made several calls since.
     let call = any_call(&recorded, |p| p.contains(&format!("You're on T-{first}"))).await;
     let prompt = arg(&call, "-p").unwrap();
     assert!(prompt.contains("T-1 Settings screen") && prompt.contains("design_review"), "{prompt}");
+    assert!(prompt.contains("don't start a preview or shoot anything again") && prompt.contains("tool calls"), "reuses the precheck's pictures, on a budget: {prompt}");
     // Every change needs its entry.
     // From the run of that review, as its board server calls: a call naming no run is only
     // for a member with exactly one, and the other review may have started by now.
@@ -6220,16 +6246,166 @@ async fn in_risk_batch_a_low_risk_change_skips_the_designer_and_the_daily_review
         "items": [{ "ticket": 1, "blockers": ["Save is cut off at 390 dark."], "polish": ["Gap 12px; the scale says 16."] }],
     })).await;
     assert!(!done.is_error, "{done:?}");
-    let filed = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.title.contains("T-1") && ticket.kind == equipe_core::protocol::TicketKind::Code && ticket.id > 4)).await;
-    let fix = ticket_changed(&filed).into_iter().rev().find(|t| t.id > 4 && t.kind == equipe_core::protocol::TicketKind::Code).unwrap();
+    let filed = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.title.contains("T-1") && ticket.kind == equipe_core::protocol::TicketKind::Code && ticket.id > 3)).await;
+    let fix = ticket_changed(&filed).into_iter().rev().find(|t| t.id > 3 && t.kind == equipe_core::protocol::TicketKind::Code).unwrap();
     assert!(fix.body.contains("Save is cut off at 390 dark.") && fix.owner.as_deref() == Some("frontend"), "{fix:#?}");
     let journal = Journal::for_squad(&home, "acme").unwrap();
     let batch = journal.design_qa_batch(first).unwrap();
     assert_eq!((batch.blockers, batch.fixes, batch.polish), (Some(1), Some(1), Some(1)));
-    if first == 4 {
-        assert_eq!(journal.design_qa_run(2).unwrap().audit_verdict.as_deref(), Some("miss"), "an S1/S2 the audit found is a miss");
+    if first == 3 {
+        assert_eq!(journal.design_qa_run(1).unwrap().audit_verdict.as_deref(), Some("miss"), "an S1/S2 the audit found is a miss");
         assert_eq!(journal.design_qa_audits(0, 20), [true]);
     }
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_design_qa_whose_precheck_a_restart_cut_short_waits_for_it_and_never_starts_before() {
+    let site = repo();
+    let (claude, _recorded) = recording_claude(&answering("looking"));
+    let home = squad_home(&[&site]);
+    // A precheck that takes a few seconds, then writes its report.
+    let fixture = home.join("precheck-report.json");
+    std::fs::write(&fixture, precheck_report(true, serde_json::json!([])).to_string()).unwrap();
+    let bin = home.join("bin").join("equipe");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::fs::write(
+        &bin,
+        format!(
+            "#!/bin/sh\n[ \"$1 $2\" = \"design precheck\" ] || exit 0\nout=\"\"\nwhile [ $# -gt 0 ]; do [ \"$1\" = \"--out\" ] && out=\"$2\"; shift; done\nsleep 4\nmkdir -p \"$out\" && cp '{}' \"$out/report.json\"\n",
+            fixture.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    {
+        // As a restart leaves it: T-1 waits on design QA T-2, whose precheck the journal says runs.
+        let journal = Journal::for_squad(&home, "acme").unwrap();
+        let ticket = |title: &str, status, kind, owner: &str| Ticket {
+            id: 0,
+            title: title.into(),
+            body: "-".into(),
+            status,
+            owner: Some(owner.into()),
+            assignee: None,
+            project: Some(site.clone()),
+            depends_on: Vec::new(),
+            branch: None,
+            worktree: None,
+            execution: None,
+            merged: None,
+            off_main: None,
+            design_qa: None, landing: false,
+            plan: None,
+            model: None,
+            flow: None,
+            kind,
+            created_by: "pm".into(),
+            note: None,
+            asks: vec![],
+            label: None, remaining: Vec::new(),
+            images: Vec::new(),
+            updated_at: None,
+            priority: Default::default(),
+            rank: 0,
+        };
+        let checked = journal.create_ticket(&ticket("Settings screen", TicketStatus::Review, equipe_core::protocol::TicketKind::Code, "frontend")).unwrap();
+        journal.set_ticket_work(checked, &journal::TicketWork { base: None, worktree: Some(site.clone()), engine_session: None }).unwrap();
+        let qa = journal.create_ticket(&ticket("Design QA of T-1", TicketStatus::Todo, equipe_core::protocol::TicketKind::Task, "designer")).unwrap();
+        let mut held = journal.ticket(checked).unwrap().unwrap();
+        held.design_qa = Some(qa);
+        journal.save_ticket(&held).unwrap();
+        journal.set_design_qa_gate(equipe_core::design_qa::GateMode::Shadow).unwrap();
+        journal.start_design_qa_run(qa, checked, 1, "shadow", "running").unwrap();
+    }
+    let (handle, mut events) = runtime::start(Config { equipe_binary: Some(bin), ..config(&claude, &home, false) });
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 3, member(&site, "designer")).await;
+    // The minute's look finds nothing running it and starts it again; meanwhile no designer turn.
+    handle.minute_now().await;
+    let quiet = within(&mut events, 1500).await;
+    assert!(!quiet.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn while its precheck is under way: {quiet:#?}");
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap().precheck, "running");
+    // Its result in, the designer takes it, with the report.
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    assert!(!started.is_empty());
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap().precheck, "done");
+    handle.shutdown().await;
+}
+
+/// As an older daemon left it: T-1 in review, held by an open per-change
+/// design QA ticket T-2 made under risk-based routing for `risk`.
+fn held_by_an_open_design_qa(home: &Path, site: &Path, risk: &str) {
+    let journal = Journal::for_squad(home, "acme").unwrap();
+    let ticket = |title: &str, status, kind, owner: &str| Ticket {
+        id: 0,
+        title: title.into(),
+        body: "-".into(),
+        status,
+        owner: Some(owner.into()),
+        assignee: None,
+        project: Some(site.to_owned()),
+        depends_on: Vec::new(),
+        branch: None,
+        worktree: None,
+        execution: None,
+        merged: None,
+        off_main: None,
+        design_qa: None, landing: false,
+        plan: None,
+        model: None,
+        flow: None,
+        kind,
+        created_by: "pm".into(),
+        note: None,
+        asks: vec![],
+        label: None, remaining: Vec::new(),
+        images: Vec::new(),
+        updated_at: None,
+        priority: Default::default(),
+        rank: 0,
+    };
+    let checked = journal.create_ticket(&ticket("Settings screen", TicketStatus::Review, equipe_core::protocol::TicketKind::Code, "frontend")).unwrap();
+    let qa = journal.create_ticket(&ticket("Design QA of T-1", TicketStatus::Todo, equipe_core::protocol::TicketKind::Task, "designer")).unwrap();
+    let mut held = journal.ticket(checked).unwrap().unwrap();
+    held.design_qa = Some(qa);
+    journal.save_ticket(&held).unwrap();
+    journal.start_design_qa_run(qa, checked, 1, "on", "done").unwrap();
+    journal.set_design_qa_mode_of(qa, "risk_batch", None).unwrap();
+    journal.set_design_qa_route(qa, "per_ticket", risk, true).unwrap();
+}
+
+#[tokio::test]
+async fn an_open_per_change_design_qa_no_longer_holds_its_change_after_an_upgrade() {
+    let site = repo();
+    let (claude, _recorded) = recording_claude(&answering("looking"));
+    let home = squad_home(&[&site]);
+    held_by_an_open_design_qa(&home, &site, "broad");
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 3, member(&site, "designer")).await;
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.design_qa.is_none())).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn on it");
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    assert_eq!(journal.ticket(2).unwrap().unwrap().status, TicketStatus::Done);
+    let run = journal.design_qa_run(2).unwrap();
+    assert_eq!((run.route.as_deref(), run.verdict.as_deref(), run.batch), (Some("batch"), Some("batched"), None), "into the daily review");
+    assert_eq!(journal.design_qa_waiting_for_batch().len(), 1);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn an_open_design_qa_for_new_screens_still_holds_its_change() {
+    let site = repo();
+    let (claude, _recorded) = recording_claude(&answering("looking"));
+    let home = squad_home(&[&site]);
+    held_by_an_open_design_qa(&home, &site, "new_screens");
+    let (handle, mut events) = runtime::start(config(&claude, &home, false));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 3, member(&site, "designer")).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    assert_eq!(Journal::for_squad(&home, "acme").unwrap().ticket(1).unwrap().unwrap().design_qa, Some(2), "held for a designer before it lands");
     handle.shutdown().await;
 }
 
@@ -7474,6 +7650,7 @@ async fn a_designers_findings_keep_their_lineage_go_together_and_stop_at_the_bac
     let site = repo();
     let (claude, recorded) = recording_claude(&screenshot_turn());
     let home = squad_home(&[&site]);
+    per_ticket_design_qa(&home);
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     screens_in_design_qa(&recorded, &handle, &mut events, &site).await;
     let journal = Journal::for_squad(&home, "acme").unwrap();
@@ -7542,10 +7719,10 @@ async fn a_polish_follow_up_is_shown_where_its_findings_are_and_gets_no_designer
     let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     let held = ticket_changed(&seen).into_iter().rev().find(|t| t.id == 1).unwrap();
     assert_eq!(held.design_qa, None, "not held for a designer");
-    let qa = journal.ticket(2).unwrap().unwrap();
-    assert_eq!(qa.status, TicketStatus::Done, "{qa:?}");
-    let run = journal.design_qa_run(2).unwrap();
-    assert_eq!((run.route.as_deref(), run.verdict.as_deref()), (Some("batch"), Some("batched")));
+    assert!(journal.ticket(2).unwrap().is_none(), "no design QA ticket made for it");
+    let run = journal.design_qa_run(1).unwrap();
+    assert_eq!((run.checked, run.route.as_deref(), run.verdict.as_deref()), (1, Some("batch"), Some("batched")));
+    assert_eq!(journal.design_qa_waiting_for_batch().len(), 1, "into the daily review");
     assert!(within(&mut events, 1_500).await.iter().all(|e| !matches!(e, Event::WorkStarted { ticket: 2, .. })), "the designer never takes it");
     handle.shutdown().await;
 }

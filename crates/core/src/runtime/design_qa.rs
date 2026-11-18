@@ -25,6 +25,20 @@
 //! (`super::design_review`); only a high-risk one gets a designer turn of
 //! its own, in a light session when the report shows enough.
 //!
+//! In `risk_batch` with a precheck to run, no design QA ticket is made at
+//! hand-in: the change holds itself (its `design_qa` names its own id) while
+//! its screens are prechecked, the result is recorded on it, and only a
+//! change that needs a designer now gets a design QA ticket; the rest go on
+//! into the daily review, counted (`Journal::design_qa_skipped_since`).
+//!
+//! A designer never starts on a change whose precheck is still under way —
+//! not even after a restart, which starts it again. A precheck that couldn't
+//! render on a loaded machine runs again later, waiting longer each time;
+//! only after [`PRECHECK_TRIES`] such tries does a designer look, at the main
+//! width and the changed states only. A design QA turn has a budget
+//! ([`QA_TURN_CALLS`], [`QA_TURN_SECS`]): when it runs out the designer is
+//! told to finish with what it has.
+//!
 //! Design QA stays one level deep: a designer's polish follow-up, or any
 //! follow-up of a follow-up (`super::follow_ups`), goes into the daily
 //! review instead of a designer turn of its own; its precheck still refuses
@@ -63,6 +77,87 @@ const PRECHECK_LIMIT: Duration = Duration::from_secs(25 * 60);
 /// How many days a squad's precheck reports are kept.
 const PRECHECK_KEPT_DAYS: u64 = 30;
 
+/// How many prechecks may fail to render on a loaded machine before a
+/// designer looks anyway — at the main width and the changed states only.
+pub(super) const PRECHECK_TRIES: u32 = 3;
+
+/// The wait before a precheck runs again after it couldn't render on a
+/// loaded machine; each next try waits twice as long, at most an hour.
+const PRECHECK_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
+
+/// How long a precheck waits for an overloaded machine to calm down before it runs anyway.
+const PRECHECK_CALM_AT_MOST: Duration = Duration::from_secs(10 * 60);
+
+/// How often a running precheck looks whether the machine is overloaded.
+const PRECHECK_LOAD_EVERY: Duration = Duration::from_secs(30);
+
+/// What a precheck stopped at [`PRECHECK_LIMIT`] says.
+const PRECHECK_TIMED_OUT: &str = "ran past";
+
+/// A design QA turn's budget: tool calls, and seconds. Past either, the
+/// designer is told to finish with what it has.
+pub(super) const QA_TURN_CALLS: u32 = 30;
+pub(super) const QA_TURN_SECS: u64 = 15 * 60;
+/// A daily design review's or audit's: one look over many changes.
+pub(super) const REVIEW_TURN_CALLS: u32 = 60;
+pub(super) const REVIEW_TURN_SECS: u64 = 30 * 60;
+
+/// The wait before precheck try `tries` + 1 (`tries` failed so far).
+pub(super) fn retry_delay(tries: u32) -> Duration {
+    (PRECHECK_RETRY_AFTER * 2u32.saturating_pow(tries.saturating_sub(1))).min(Duration::from_secs(60 * 60))
+}
+
+/// Whether a precheck saw too little because the machine was loaded: it
+/// gave no report or rendered (almost) nothing, and either the machine was
+/// overloaded while it ran (or it waited for calm in vain) or it was stopped
+/// at its time limit. Such a precheck runs again later instead of handing the
+/// change to a designer.
+pub(super) fn unseen_under_load(report: Option<&precheck::Report>, result: &Result<(), String>, loaded: bool) -> bool {
+    use crate::design_qa::Judgment;
+    let unseen = matches!(crate::design_qa::gate(report).judgment, Some(Judgment::NotRendered | Judgment::PrecheckFailed));
+    let timed_out = result.as_ref().err().is_some_and(|why| why.contains(PRECHECK_TIMED_OUT));
+    unseen && (loaded || timed_out)
+}
+
+/// What a designer looks at once the precheck couldn't render after
+/// [`PRECHECK_TRIES`] tries: the main width, light, and the states the
+/// change touched — not every width, scheme and text size.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Narrowed {
+    pub width: u32,
+    pub states: Vec<String>,
+    pub files: Vec<String>,
+}
+
+impl Narrowed {
+    /// Read from the last report, if any: its widest condition, its touched
+    /// states and changed UI files off the map.
+    pub fn of(report: Option<&precheck::Report>) -> Narrowed {
+        let width = report
+            .and_then(|r| r.conditions.iter().filter_map(|c| precheck::Condition::parse(c)).map(|c| c.width).max())
+            .unwrap_or(precheck::WIDTHS[precheck::WIDTHS.len() - 1]);
+        let states = report.map(|r| r.touched.clone()).unwrap_or_default();
+        let files = report.map(|r| r.unmapped.clone()).unwrap_or_default();
+        Narrowed { width, states, files }
+    }
+}
+
+/// The pictures of a precheck worth reusing: those that rendered, of the
+/// states it flags or the change changed first, at most `max`.
+pub(super) fn reusable_pictures(report: &precheck::Report, max: usize) -> Vec<String> {
+    let changed = report.changed();
+    let mut out: Vec<String> = report.flagged();
+    for s in report.shots.iter().filter(|s| s.error.is_none() && changed.contains(&s.key)) {
+        if let Some(p) = &s.picture
+            && !out.contains(p)
+        {
+            out.push(p.clone());
+        }
+    }
+    out.truncate(max);
+    out
+}
+
 /// Where design QA ticket `qa`'s precheck keeps its report and pictures:
 /// beside the squad's journal, in no repository.
 pub(super) fn precheck_dir(home: &Path, squad: &str, qa: TicketId) -> PathBuf {
@@ -70,11 +165,18 @@ pub(super) fn precheck_dir(home: &Path, squad: &str, qa: TicketId) -> PathBuf {
 }
 
 /// What a designer on a design QA ticket is given of its precheck.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct PrecheckBrief {
     pub dir: PathBuf,
     pub summary: String,
+    /// Its pictures to reuse instead of shooting them again.
+    pub pictures: Vec<String>,
+    /// It couldn't render after [`PRECHECK_TRIES`] tries: what to look at instead.
+    pub narrowed: Option<Narrowed>,
 }
+
+/// Pictures of the precheck a design QA brief names to reuse.
+const BRIEF_PICTURES: usize = 8;
 
 /// How a design QA hand-in ends: the designer's word on the screens.
 #[derive(Clone, Debug)]
@@ -96,14 +198,77 @@ enum GateEnd {
     Batched,
 }
 
+/// A design QA, review or audit turn's spend against its budget.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Budget {
+    /// Tool calls so far this turn.
+    pub calls: u32,
+    /// Its budget: tool calls, seconds; `None`: not a design check.
+    pub cap: Option<(u32, u64)>,
+    /// Told to finish already.
+    pub told: bool,
+}
+
+/// Whether a turn `secs` in with `calls` tool calls is past `cap`.
+pub(super) fn over_budget(calls: u32, secs: u64, (max_calls, max_secs): (u32, u64)) -> bool {
+    calls >= max_calls || secs >= max_secs
+}
+
 impl Runtime {
+    /// A tool call of `id`'s turn: on a design QA ticket, a daily review or
+    /// an audit, counted against its budget — once past it, the member is
+    /// told, once, to finish now with what it has (read at its next step).
+    pub(super) fn watch_qa_budget(&mut self, id: SessionId) {
+        let Some((squad, ticket, began, name)) = self.sessions.get(&id).and_then(|s| Some((s.squad.clone()?, s.work.as_ref()?.ticket, s.turn_began, s.name()?.to_owned()))) else { return };
+        if !self.qa_budgets.contains_key(&id) {
+            let cap = if self.checked_by(&squad, ticket).is_some() {
+                Some((QA_TURN_CALLS, QA_TURN_SECS))
+            } else if self.design_batch_kind(&squad, ticket).is_some() {
+                Some((REVIEW_TURN_CALLS, REVIEW_TURN_SECS))
+            } else {
+                None
+            };
+            self.qa_budgets.insert(id, Budget { cap, ..Budget::default() });
+        }
+        let Some(budget) = self.qa_budgets.get_mut(&id) else { return };
+        let Some(cap) = budget.cap else { return };
+        budget.calls += 1;
+        let secs = began.map_or(0, |at| now_secs().saturating_sub(at));
+        if budget.told || !over_budget(budget.calls, secs, cap) {
+            return;
+        }
+        budget.told = true;
+        let (calls, minutes) = (cap.0, cap.1 / 60);
+        let tool = if cap.0 == QA_TURN_CALLS { board::DESIGN_QA } else { board::DESIGN_REVIEW };
+        crate::daemon_log!("equipe: {squad}: {name}'s design check of T-{ticket} used its budget ({} tool calls, {}s): told to finish", budget.calls, secs);
+        let prompt = format!(
+            "[equipe: this check has used its budget ({calls} tool calls or {minutes} minutes). Stop looking further: finish now with `{tool}` on \
+what you have — say in findings what you couldn't look at — then end your turn.]"
+        );
+        let notice = say!(self, "notice.design_qa_budget", calls = calls.to_string(), minutes = minutes.to_string(), name = name);
+        self.publish(Event::Notice { undo: None, session: id, text: notice });
+        match self.sessions.get(&id).and_then(|s| s.steer.clone()) {
+            Some(steer) => {
+                let _ = steer.send(prompt);
+            }
+            None => self.leave_memo(id, prompt),
+        }
+    }
+
     /// Whether `squad` has a designer to check screens.
     pub(super) fn has_designer(&self, squad: &str) -> bool {
         self.team(squad).iter().any(|(_, _, role)| role == DESIGNER)
     }
 
-    /// The ticket design QA ticket `qa` checks, while it waits on it.
+    /// The ticket design QA ticket `qa` checks, while it waits on it. A
+    /// change held on itself for its precheck is no design QA ticket.
     pub(super) fn checked_by(&mut self, squad: &str, qa: TicketId) -> Option<Ticket> {
+        self.tickets(squad).iter().find(|t| t.design_qa == Some(qa) && t.id != qa).cloned()
+    }
+
+    /// The change waiting on design QA run `qa`: the one its design QA ticket
+    /// checks, or the change itself while held for its precheck.
+    pub(super) fn waiting_on(&mut self, squad: &str, qa: TicketId) -> Option<Ticket> {
         self.tickets(squad).iter().find(|t| t.design_qa == Some(qa)).cloned()
     }
 
@@ -239,70 +404,61 @@ screen_checks value; missing: {}. Then hand in again.",
     /// `ticket`, just handed in with changed screens, gets its design QA: a
     /// task for the squad's designer, which it waits on in review.
     pub(super) fn ask_design_qa(&mut self, squad: &str, ticket: &mut Ticket, engineer: &str, waived: Option<&str>) -> Option<TicketId> {
-        let qa = Ticket {
-            id: 0,
-            title: say!(self, "ticket.design_qa_title", id = ticket.id, title = ticket.title),
-            body: say!(self, "ticket.design_qa_body", id = ticket.id, name = engineer),
-            status: TicketStatus::Todo,
-            kind: TicketKind::Task,
-            owner: Some(DESIGNER.to_owned()),
-            assignee: None,
-            project: ticket.project.clone(),
-            depends_on: Vec::new(),
-            branch: None,
-            worktree: None,
-            execution: None,
-            merged: None,
-            off_main: None,
-            design_qa: None, landing: false, plan: None, model: None,
-            flow: None,
-            created_by: "equipe".to_owned(),
-            note: None,
-            asks: Vec::new(),
-            label: None, remaining: Vec::new(),
-            images: Vec::new(),
-            updated_at: None,
-            priority: ticket.priority,
-            rank: 0,
-        };
+        let qa = self.design_qa_ticket(ticket, engineer);
         let can_run = self.config.equipe_binary.is_some();
         let journal = self.journal(squad)?;
+        let gate = journal.design_qa_gate();
+        let mode = journal.design_qa_settings().mode;
+        let runs = gate != GateMode::Off && can_run && ticket.worktree.as_deref().is_some_and(Path::exists) && ticket.project.is_some();
+        // Risk-based with a precheck to run: no design QA ticket yet. The change holds itself while
+        // its screens are prechecked; a design QA ticket is made only if a designer is needed now.
+        if mode == Mode::RiskBatch && runs {
+            let round = journal.design_qa_rounds(ticket.id).unwrap_or(0) + 1;
+            if let Err(err) = journal.start_held_design_qa_run(ticket.id, round, gate.code(), "running") {
+                crate::daemon_log!("equipe: {squad}: T-{}'s design QA run not kept: {err}", ticket.id);
+            }
+            let _ = journal.set_design_qa_mode_of(ticket.id, mode.code(), waived);
+            ticket.design_qa = Some(ticket.id);
+            self.start_precheck(squad, ticket.id, ticket, Duration::ZERO);
+            return Some(ticket.id);
+        }
+        // Risk-based with no precheck to run: nothing is known of the change, and nothing holds it
+        // before landing — the daily review looks at it with main's precheck. Only tightened routing
+        // still gives it a designer's full look first; a quiet follow-up never.
+        let quiet = journal.follow_up(ticket.id).is_some_and(|f| f.quiet_qa());
+        let tight = journal.design_qa_settings().tight;
+        if mode == Mode::RiskBatch && !runs && (quiet || !tight) {
+            let round = journal.design_qa_rounds(ticket.id).unwrap_or(0) + 1;
+            if let Err(err) = journal.start_held_design_qa_run(ticket.id, round, gate.code(), "skipped") {
+                crate::daemon_log!("equipe: {squad}: T-{}'s design QA run not kept: {err}", ticket.id);
+            }
+            let _ = journal.set_design_qa_mode_of(ticket.id, mode.code(), waived);
+            let risk = if quiet { "" } else { crate::design_qa::Risk::Unverified.code() };
+            let _ = journal.set_design_qa_route(ticket.id, Route::Batch.code(), risk, false);
+            let _ = journal.set_design_qa_verdict(ticket.id, "batched", PRECHECK_BY);
+            let note = if quiet { "A follow-up's polish: no designer turn of its own; it goes into the daily design review." } else { "No precheck could run: nothing holds it; it goes into the daily design review." };
+            let _ = journal.ticket_event(ticket.id, PRECHECK_BY, "precheck", note);
+            let week = journal.design_qa_skipped_since(now_secs() as i64 - 7 * 24 * 60 * 60);
+            crate::daemon_log!("equipe: {squad}: T-{} skipped its own design QA (no precheck could run; into the daily review) — {week} skipped in the last 7 days", ticket.id);
+            ticket.design_qa = None;
+            return None;
+        }
         let qa_id = journal.create_ticket(&qa).ok()?;
         let _ = journal.ticket_event(qa_id, "equipe", "created", &format!("design QA of T-{}", ticket.id));
         ticket.design_qa = Some(qa_id);
         let made = journal.ticket(qa_id).ok().flatten().unwrap_or(Ticket { id: qa_id, ..qa });
         // Its precheck first, unless the squad has it off or there is nothing to run it on.
-        let gate = journal.design_qa_gate();
         let round = journal.design_qa_rounds(ticket.id).unwrap_or(1).max(1);
-        let runs = gate != GateMode::Off && can_run && ticket.worktree.as_deref().is_some_and(Path::exists) && ticket.project.is_some();
         if let Err(err) = journal.start_design_qa_run(qa_id, ticket.id, round, gate.code(), if runs { "running" } else { "skipped" }) {
             crate::daemon_log!("equipe: {squad}: T-{qa_id}'s design QA run not kept: {err}");
         }
-        let mode = journal.design_qa_settings().mode;
         let _ = journal.set_design_qa_mode_of(qa_id, mode.code(), waived);
-        // A polish follow-up, or a follow-up of a follow-up, gets no designer turn of its own.
-        let quiet = journal.follow_up(ticket.id).is_some_and(|f| f.quiet_qa());
-        // In risk_batch without a precheck nothing is known of the change: a designer's full look —
-        // unless it is a quiet follow-up, which the daily review sees with main's precheck.
-        if mode == Mode::RiskBatch && !runs && quiet {
-            let _ = journal.set_design_qa_route(qa_id, Route::Batch.code(), "", false);
-            let note = "A follow-up's polish: no designer turn of its own; it goes into the daily design review.".to_owned();
-            let mut closed = made;
-            closed.status = TicketStatus::Done;
-            closed.note = Some(note.clone());
-            let _ = journal.save_ticket(&closed);
-            let _ = journal.ticket_event(qa_id, PRECHECK_BY, "design QA passed", &note);
-            let _ = journal.set_design_qa_verdict(qa_id, "batched", PRECHECK_BY);
-            ticket.design_qa = None;
-            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: closed });
-            return None;
-        }
         if mode == Mode::RiskBatch && !runs {
             let _ = journal.set_design_qa_route(qa_id, Route::PerTicket.code(), crate::design_qa::Risk::Unverified.code(), false);
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: made });
         if runs {
-            self.start_precheck(squad, qa_id, ticket);
+            self.start_precheck(squad, qa_id, ticket, Duration::ZERO);
         }
         Some(qa_id)
     }
@@ -312,29 +468,122 @@ screen_checks value; missing: {}. Then hand in again.",
         self.prechecks.keys().any(|(q, t)| q == squad && *t == ticket)
     }
 
+    /// Open design QA tickets nobody has started that no longer hold their
+    /// change under relaxed risk-based routing — made before it, or for a
+    /// risk that now waits for the daily review: closed into the batch, their
+    /// change on to landing. Those for new screens, waived S1/S2 findings or
+    /// a look the person asked for stay. Before each dispatch, so no designer
+    /// takes one first.
+    pub(super) fn release_design_qa(&mut self, squad: &str) {
+        let Some(journal) = self.journal(squad) else { return };
+        let settings = journal.design_qa_settings();
+        if settings.mode != Mode::RiskBatch || settings.tight {
+            return;
+        }
+        let open: Vec<Ticket> = self.tickets(squad).iter().filter(|t| t.status == TicketStatus::Todo && t.kind == TicketKind::Task && t.owner.as_deref() == Some(DESIGNER)).cloned().collect();
+        for qa in open {
+            if self.prechecking(squad, qa.id) || self.worker_on(squad, qa.id).is_some() || self.checked_by(squad, qa.id).is_none() {
+                continue;
+            }
+            let Some(journal) = self.journal(squad) else { return };
+            // Only those made under risk-based routing: a squad's per-ticket design QA stays as it was.
+            let Some(run) = journal.design_qa_run(qa.id).filter(|r| r.mode.as_deref() == Some(Mode::RiskBatch.code())) else { continue };
+            if run.precheck == "running" || run.risk.as_deref().is_some_and(crate::design_qa::Risk::codes_need_designer_now) {
+                continue;
+            }
+            let risk = run.risk.clone().unwrap_or_default();
+            let _ = journal.set_design_qa_route(qa.id, Route::Batch.code(), &risk, false);
+            crate::daemon_log!("equipe: {squad}: design QA T-{} no longer holds its change: into the daily design review", qa.id);
+            let findings = "**No longer held for a designer before landing: its screens go into the daily design review.**".to_owned();
+            self.precheck_verdict(squad, qa, Verdict { passed: true, findings }, GateEnd::Batched);
+        }
+    }
+
+    /// The design QA runs of `squad` whose precheck is under way by the
+    /// journal — held off the board even when this daemon didn't start it
+    /// (a restart ended the one that ran).
+    pub(super) fn prechecks_pending(&mut self, squad: &str) -> HashSet<TicketId> {
+        let mut out: HashSet<TicketId> = self.prechecks.keys().filter(|(q, _)| q == squad).map(|(_, t)| *t).collect();
+        if let Some(journal) = self.journal(squad) {
+            out.extend(journal.design_qa_prechecks_running().into_iter().map(|r| r.qa));
+        }
+        out
+    }
+
+    /// Prechecks the journal says are under way but nothing runs — a restart
+    /// ended them: started again while their change still waits on them, else
+    /// put down as failed. On the minute tick.
+    pub(super) fn resume_prechecks(&mut self) {
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        let can_run = self.config.equipe_binary.is_some();
+        for squad in squads {
+            let Some(journal) = self.journal(&squad) else { continue };
+            let orphans: Vec<journal::DesignQaRun> = journal.design_qa_prechecks_running();
+            for run in orphans {
+                if self.prechecking(&squad, run.qa) {
+                    continue;
+                }
+                let Some(journal) = self.journal(&squad) else { break };
+                let checked = journal.ticket(run.checked).ok().flatten().filter(|c| c.design_qa == Some(run.qa) && c.status == TicketStatus::Review);
+                // A design QA ticket of its own must still be open; a change held on itself waits in review.
+                let open = run.qa == run.checked || journal.ticket(run.qa).ok().flatten().is_some_and(|t| t.status == TicketStatus::Todo);
+                match checked.filter(|_| open) {
+                    Some(c) if can_run && c.worktree.as_deref().is_some_and(Path::exists) && c.project.is_some() => {
+                        crate::daemon_log!("equipe: {squad}: design QA T-{}'s precheck was cut short (a restart); it runs again", run.qa);
+                        self.start_precheck(&squad, run.qa, &c, Duration::ZERO);
+                    }
+                    Some(_) => {
+                        // Nothing to run it on any more: on as a precheck that failed.
+                        let _ = self.internal.send(Internal::Prechecked { squad: squad.clone(), qa: run.qa, result: Err("it was cut short and can't run again".into()), secs: 0, loaded: false });
+                        self.prechecks.insert((squad.clone(), run.qa), std::time::Instant::now());
+                    }
+                    None => {
+                        let mut gone = run.clone();
+                        gone.precheck = "failed".into();
+                        let _ = journal.set_design_qa_precheck(&gone);
+                    }
+                }
+            }
+        }
+    }
+
     /// `equipe design precheck` on `checked`'s worktree, off the loop, for
     /// design QA ticket `qa`, held off the board until it ends
     /// ([`Internal::Prechecked`]) — stopped, with what it started, after
     /// [`PRECHECK_LIMIT`].
-    fn start_precheck(&mut self, squad: &str, qa: TicketId, checked: &Ticket) {
+    fn start_precheck(&mut self, squad: &str, qa: TicketId, checked: &Ticket, after: Duration) {
         let (Some(bin), Some(worktree), Some(project)) = (self.config.equipe_binary.clone(), checked.worktree.clone(), checked.project.clone()) else { return };
         let dir = precheck_dir(&self.config.home, squad, qa);
         self.prechecks.insert((squad.to_owned(), qa), std::time::Instant::now());
         let (internal, squad, id, busy) = (self.internal.clone(), squad.to_owned(), checked.id, self.machine.busy.clone());
-        crate::daemon_log!("equipe: {squad}: prechecking T-{id}'s screens for design QA T-{qa}");
+        crate::daemon_log!("equipe: {squad}: prechecking T-{id}'s screens for design QA T-{qa}{}", if after.is_zero() { String::new() } else { format!(" in {} min", after.as_secs() / 60) });
         tokio::spawn(async move {
-            // Its browsers wait for an overloaded machine to calm down; the QA ticket stays held meanwhile.
-            super::machine::wait_for_calm(&busy).await;
+            tokio::time::sleep(after).await;
+            // Its browsers wait a while for an overloaded machine to calm down — not long: the change
+            // waits on it, and a precheck that can't render under load lands it for the daily review.
+            super::machine::wait_for_calm(&busy, PRECHECK_CALM_AT_MOST).await;
             let started = std::time::Instant::now();
-            let result = run_precheck(&bin, &worktree, &project, &dir, id).await;
-            let _ = internal.send(Internal::Prechecked { squad, qa, result, secs: started.elapsed().as_secs() });
+            // Whether the machine was overloaded at any time it ran: a picture that timed out then says nothing of the change.
+            let mut loaded = busy.load(std::sync::atomic::Ordering::Relaxed);
+            let run = run_precheck(&bin, &worktree, &project, &dir, id);
+            tokio::pin!(run);
+            let result = loop {
+                tokio::select! {
+                    result = &mut run => break result,
+                    () = tokio::time::sleep(PRECHECK_LOAD_EVERY) => loaded |= busy.load(std::sync::atomic::Ordering::Relaxed),
+                }
+            };
+            loaded |= busy.load(std::sync::atomic::Ordering::Relaxed);
+            let _ = internal.send(Internal::Prechecked { squad, qa, result, secs: started.elapsed().as_secs(), loaded });
         });
     }
 
     /// A precheck ended: its report kept with the run and on the design QA
-    /// ticket's record, and — when the squad's gate is on and the ticket
-    /// still waits — acted on; else the designer takes it, with the report.
-    pub(super) async fn on_prechecked(&mut self, squad: &str, qa: TicketId, result: Result<(), String>, secs: u64) {
+    /// ticket's record (or the change's, held on itself), and — when the
+    /// squad's gate is on and the ticket still waits — acted on; else the
+    /// designer takes it, with the report. One that couldn't render on a
+    /// loaded machine runs again later instead ([`unseen_under_load`]).
+    pub(super) async fn on_prechecked(&mut self, squad: &str, qa: TicketId, result: Result<(), String>, secs: u64, loaded: bool) {
         self.prechecks.remove(&(squad.to_owned(), qa));
         let dir = precheck_dir(&self.config.home, squad, qa);
         let report = match &result {
@@ -344,11 +593,32 @@ screen_checks value; missing: {}. Then hand in again.",
                 None
             }
         };
+        // The change waiting on it: through its design QA ticket, or held on itself (`risk_batch`).
+        let checked_now = self.waiting_on(squad, qa);
+        let held = checked_now.as_ref().is_some_and(|c| c.id == qa);
+        // Relaxed risk-based routing lands what the precheck couldn't see and leaves it to the daily
+        // review: trying again would only hold the change back. Else (a designer would get it) again later.
+        let relaxed = self.journal(squad).is_some_and(|j| j.design_qa_run(qa).is_some_and(|r| r.mode.as_deref() == Some(Mode::RiskBatch.code())) && !j.design_qa_settings().tight);
+        if let Some(c) = checked_now.as_ref().filter(|_| !relaxed && unseen_under_load(report.as_ref(), &result, loaded)) {
+            let tries = self.journal(squad).and_then(|j| j.add_design_qa_precheck_try(qa).ok()).unwrap_or(PRECHECK_TRIES);
+            let waiting = held || (self.journal(squad).and_then(|j| j.ticket(qa).ok().flatten()).is_some_and(|t| t.status == TicketStatus::Todo) && self.worker_on(squad, qa).is_none());
+            if tries < PRECHECK_TRIES && waiting {
+                let after = retry_delay(tries);
+                let why = result.as_ref().err().cloned().unwrap_or_else(|| "it rendered too little".to_owned());
+                crate::daemon_log!("equipe: {squad}: design QA T-{qa}'s precheck couldn't render on a loaded machine ({why}); again in {} min (try {} of {PRECHECK_TRIES})", after.as_secs() / 60, tries + 1);
+                if let Some(journal) = self.journal(squad) {
+                    let line = format!("The precheck couldn't render on a loaded machine ({why}); it runs again in {} min, when the machine is calm (try {} of {PRECHECK_TRIES}).", after.as_secs() / 60, tries + 1);
+                    let _ = journal.ticket_event(qa, "equipe", "precheck", &line);
+                }
+                let c = c.clone();
+                self.start_precheck(squad, qa, &c, after);
+                return;
+            }
+        }
         // Built from a live prototype the person picked — or one UI slice, its prototype
         // and build on one branch (`crate::flow`): the precheck alone decides, whatever the squad's gate.
-        let checked_now = self.checked_by(squad, qa);
         let slice = checked_now.as_ref().is_some_and(|c| c.flow.as_ref().is_some_and(|f| f.slice));
-        let picked = checked_now.and_then(|c| self.approved_prototype(squad, c.id));
+        let picked = checked_now.as_ref().and_then(|c| self.approved_prototype(squad, c.id));
         let prototype = picked.clone().or_else(|| slice.then(String::new));
         let call = if prototype.is_some() { crate::design_qa::gate_prototype(report.as_ref()) } else { crate::design_qa::gate(report.as_ref()) };
         let Some(journal) = self.journal(squad) else { return };
@@ -357,15 +627,16 @@ screen_checks value; missing: {}. Then hand in again.",
         let tight = journal.design_qa_settings().tight;
         let recheck = journal.design_qa_before(run.checked, qa).is_some_and(|(verdict, by)| verdict.as_deref() == Some("changes") && by.as_deref().is_some_and(|b| b != PRECHECK_BY));
         let risk_batch = run.mode.as_deref() == Some(Mode::RiskBatch.code());
-        let open = journal.ticket(qa).ok().flatten().filter(|t| t.status == TicketStatus::Todo);
-        let checked = self.checked_by(squad, qa);
-        let free = open.is_some() && checked.is_some() && self.worker_on(squad, qa).is_none();
+        let open = if held { checked_now.clone() } else { journal.ticket(qa).ok().flatten().filter(|t| t.status == TicketStatus::Todo) };
+        let checked = self.waiting_on(squad, qa);
+        let free = open.is_some() && checked.is_some() && (held || self.worker_on(squad, qa).is_none());
         // In risk_batch the route decides: refused, a designer now, or the daily review.
         let routed: Option<RouteCall> = match (risk_batch && prototype.is_none(), &checked) {
             (true, Some(c)) => {
                 let spec = self.spec_of(c);
                 let follow_up = self.follow_up_of(squad, c.id).is_some_and(|f| f.quiet_qa());
-                Some(crate::design_qa::route(&crate::design_qa::RouteAsk { report: report.as_ref(), waived: run.waived.is_some(), spec, recheck, tight, follow_up }))
+                let asked = crate::design_qa::person_asked(&c.created_by, c.label);
+                Some(crate::design_qa::route(&crate::design_qa::RouteAsk { report: report.as_ref(), waived: run.waived.is_some(), spec, recheck, tight, follow_up, asked }))
             }
             _ => None,
         };
@@ -406,9 +677,15 @@ screen_checks value; missing: {}. Then hand in again.",
             None => crate::daemon_log!("equipe: {squad}: design QA T-{qa} precheck: {} ({}, {secs}s)", call.decision.code(), if act { "acted" } else { mode.code() }),
         }
         let checked_id = checked.as_ref().map(|c| c.id);
-        let (Some(mut qa_ticket), Some(_)) = (open, checked) else { return };
-        // What it flags, shown on the design QA ticket.
-        if !flagged.is_empty() {
+        let (Some(mut qa_ticket), Some(checked)) = (open, checked) else { return };
+        // Held on itself and a designer is needed now: only now its design QA ticket.
+        if held && !act {
+            self.promote_held(squad, checked, flagged);
+            self.dispatch(squad).await;
+            return;
+        }
+        // What it flags, shown on the design QA ticket (never over the change's own pictures).
+        if !flagged.is_empty() && !held {
             qa_ticket.images = flagged.iter().take(crate::visuals::HAND_IN).cloned().collect();
             if let Some(journal) = self.journal(squad) {
                 let _ = journal.save_ticket(&qa_ticket);
@@ -449,6 +726,67 @@ truncation with the whole text available), hand in again with `waive_findings` s
         self.dispatch(squad).await;
     }
 
+    /// A change held on itself for its precheck needs a designer now: its
+    /// design QA ticket is made, its run and report move to it, and the change
+    /// waits on it as on any design QA. The new ticket, if made.
+    fn promote_held(&mut self, squad: &str, mut checked: Ticket, flagged: Vec<String>) -> Option<TicketId> {
+        let engineer = checked.assignee.clone().or_else(|| checked.owner.clone()).unwrap_or_default();
+        let mut qa = self.design_qa_ticket(&checked, &engineer);
+        qa.images = flagged.into_iter().take(crate::visuals::HAND_IN).collect();
+        let home = self.config.home.clone();
+        let journal = self.journal(squad)?;
+        let qa_id = journal.create_ticket(&qa).ok()?;
+        let _ = journal.ticket_event(qa_id, "equipe", "created", &format!("design QA of T-{} after its precheck", checked.id));
+        let _ = journal.rekey_design_qa_run(checked.id, qa_id);
+        let (from, to) = (precheck_dir(&home, squad, checked.id), precheck_dir(&home, squad, qa_id));
+        move_precheck(&from, &to);
+        if let Some(mut run) = journal.design_qa_run(qa_id).filter(|r| r.report.is_some()) {
+            run.report = Some(to.to_string_lossy().into_owned());
+            let _ = journal.set_design_qa_precheck(&run);
+        }
+        checked.design_qa = Some(qa_id);
+        let _ = journal.save_ticket(&checked);
+        let _ = journal.ticket_event(checked.id, "equipe", "design QA", &format!("Its precheck asks for a designer: T-{qa_id}."));
+        let made = journal.ticket(qa_id).ok().flatten().unwrap_or(Ticket { id: qa_id, ..qa });
+        crate::daemon_log!("equipe: {squad}: T-{} needs a designer after its precheck: design QA T-{qa_id}", checked.id);
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: checked.clone() });
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: made });
+        let line = format!("T-{}'s precheck asks for a designer: the designer checks its screens on T-{qa_id} before the person reviews it", checked.id);
+        let shown = say!(self, "news.design_qa_asked", name = engineer, id = checked.id, to = DESIGNER, title = checked.title);
+        self.brief_pm(squad, line, Some(shown));
+        Some(qa_id)
+    }
+
+    /// A design QA ticket for `ticket`, which `engineer` handed in, not yet on the board.
+    fn design_qa_ticket(&self, ticket: &Ticket, engineer: &str) -> Ticket {
+        Ticket {
+            id: 0,
+            title: say!(self, "ticket.design_qa_title", id = ticket.id, title = ticket.title),
+            body: say!(self, "ticket.design_qa_body", id = ticket.id, name = engineer),
+            status: TicketStatus::Todo,
+            kind: TicketKind::Task,
+            owner: Some(DESIGNER.to_owned()),
+            assignee: None,
+            project: ticket.project.clone(),
+            depends_on: Vec::new(),
+            branch: None,
+            worktree: None,
+            execution: None,
+            merged: None,
+            off_main: None,
+            design_qa: None, landing: false, plan: None, model: None,
+            flow: None,
+            created_by: "equipe".to_owned(),
+            note: None,
+            asks: Vec::new(),
+            label: None, remaining: Vec::new(),
+            images: Vec::new(),
+            updated_at: None,
+            priority: ticket.priority,
+            rank: 0,
+        }
+    }
+
     /// The pictures the precheck took of `ticket`'s built screens, on the
     /// ticket when it has none of its own: its review shows the result.
     fn show_built_screens(&mut self, squad: &str, ticket: TicketId, report: &precheck::Report) {
@@ -466,13 +804,20 @@ truncation with the whole text available), hand in again with `waive_findings` s
     /// The gate's verdict on design QA ticket `qa`, without a designer turn:
     /// it closes, and the ticket it checked goes on as a designer's verdict
     /// would send it — to the person's review, or back to its engineer.
+    /// A change held on itself (`qa` is the change) has no design QA ticket
+    /// to close: the verdict is recorded on the change alone.
     fn precheck_verdict(&mut self, squad: &str, mut qa: Ticket, verdict: Verdict, how: GateEnd) {
-        qa.status = TicketStatus::Done;
-        qa.note = Some(verdict.findings.clone());
+        let held = qa.design_qa == Some(qa.id);
+        if !held {
+            qa.status = TicketStatus::Done;
+            qa.note = Some(verdict.findings.clone());
+        }
         let event = if verdict.passed { "design QA passed" } else { "design QA: changes" };
         if let Some(journal) = self.journal(squad) {
-            let _ = journal.save_ticket(&qa);
-            let _ = journal.ticket_event(qa.id, PRECHECK_BY, event, &verdict.findings);
+            if !held {
+                let _ = journal.save_ticket(&qa);
+                let _ = journal.ticket_event(qa.id, PRECHECK_BY, event, &verdict.findings);
+            }
             // Its own verdict first: the first one kept stays.
             match how {
                 GateEnd::Refused => {
@@ -480,29 +825,35 @@ truncation with the whole text available), hand in again with `waive_findings` s
                 }
                 GateEnd::Batched => {
                     let _ = journal.set_design_qa_verdict(qa.id, "batched", PRECHECK_BY);
+                    // Counted, to weigh later what skipping a designer's own look cost.
+                    let week = journal.design_qa_skipped_since(now_secs() as i64 - 7 * 24 * 60 * 60);
+                    crate::daemon_log!("equipe: {squad}: T-{} skipped its own design QA (low risk by its precheck; into the daily review) — {week} skipped in the last 7 days", qa.id);
                 }
                 GateEnd::Passed | GateEnd::SentBack => {}
             }
         }
-        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: qa.clone() });
+        if !held {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: qa.clone() });
+        }
         // A self-check refusal is a lint, not a send-back: it never raises the engineer's model.
         let Some((checked, engineer)) = self.design_qa_checked(squad, &qa, PRECHECK_BY, &verdict, how != GateEnd::Refused) else { return };
         let first = verdict.findings.lines().next().unwrap_or_default();
+        let on = if held { "its own precheck".to_owned() } else { format!("T-{}", qa.id) };
         let (line, shown) = match how {
             GateEnd::Passed => (
-                format!("equipe's precheck passed the design QA of T-{} (T-{}): no screen changed and nothing new was found; it is ready for the person's review", checked.id, qa.id),
+                format!("equipe's precheck passed the design QA of T-{} ({on}): no screen changed and nothing new was found; it is ready for the person's review", checked.id),
                 say!(self, "news.design_qa_precheck_passed", id = checked.id, title = checked.title),
             ),
             GateEnd::SentBack => (
-                format!("equipe's precheck sent T-{} back to {engineer} without a designer turn (design QA T-{}): {first}", checked.id, qa.id),
+                format!("equipe's precheck sent T-{} back to {engineer} without a designer turn ({on}): {first}", checked.id),
                 say!(self, "news.design_qa_precheck_changes", id = checked.id, title = checked.title, to = engineer),
             ),
             GateEnd::Refused => (
-                format!("equipe's self-check refused T-{}'s hand-in back to {engineer} without a designer turn (T-{}): {first}", checked.id, qa.id),
+                format!("equipe's self-check refused T-{}'s hand-in back to {engineer} without a designer turn ({on}): {first}", checked.id),
                 say!(self, "news.design_qa_refused", id = checked.id, title = checked.title, to = engineer),
             ),
             GateEnd::Batched => (
-                format!("T-{}'s screens are low risk by equipe's precheck (T-{}): no designer turn now, it goes into the daily design review; it is ready for the person's review", checked.id, qa.id),
+                format!("T-{}'s screens are low risk by equipe's precheck ({on}): no designer turn now, it goes into the daily design review; it is ready for the person's review", checked.id),
                 say!(self, "news.design_qa_batched", id = checked.id, title = checked.title),
             ),
         };
@@ -522,27 +873,42 @@ truncation with the whole text available), hand in again with `waive_findings` s
     /// What the designer on design QA ticket `qa` is given of its precheck:
     /// its report's summary, when there is one.
     pub(super) fn precheck_brief(&mut self, squad: &str, qa: TicketId) -> Option<PrecheckBrief> {
-        let run = self.journal(squad)?.design_qa_run(qa)?;
-        let dir = PathBuf::from(run.report?);
-        let summary = std::fs::read_to_string(dir.join(precheck::REPORT_MD)).ok()?;
-        Some(PrecheckBrief { dir, summary })
+        let home = self.config.home.clone();
+        let journal = self.journal(squad)?;
+        let run = journal.design_qa_run(qa)?;
+        let tries = journal.design_qa_precheck_tries(qa);
+        let dir = run.report.as_deref().map_or_else(|| precheck_dir(&home, squad, qa), PathBuf::from);
+        let report = run.report.as_ref().and_then(|_| precheck::read(&dir));
+        let summary = run.report.as_ref().and_then(|_| std::fs::read_to_string(dir.join(precheck::REPORT_MD)).ok());
+        // It couldn't render after its tries: a narrowed look instead of the whole matrix.
+        let unseen = run.precheck == "failed" || run.judgment.as_deref().and_then(crate::design_qa::Judgment::parse).is_some_and(|j| matches!(j, crate::design_qa::Judgment::NotRendered | crate::design_qa::Judgment::PrecheckFailed));
+        let narrowed = (unseen && tries >= PRECHECK_TRIES).then(|| Narrowed::of(report.as_ref()));
+        if summary.is_none() && narrowed.is_none() {
+            return None;
+        }
+        let pictures = report.as_ref().map(|r| reusable_pictures(r, BRIEF_PICTURES)).unwrap_or_default();
+        Some(PrecheckBrief { dir, summary: summary.unwrap_or_default(), pictures, narrowed })
     }
 
     /// Design QA ticket `qa`'s tier as the squad's policy reads it, for
-    /// `member` (of `role`, on `engine`): the top tier for a redesign, a
-    /// second round or more, or a precheck that left judgment to the
-    /// designer (none at all included); below the member's own model only
-    /// where the person set none for it.
+    /// `member` (of `role`, on `engine`): the cheap tier for routine QA; the
+    /// top tier for a redesign, a third round or more, S1/S2 findings the
+    /// precheck leaves to the designer's judgment, or no precheck at all;
+    /// below the member's own model only where the person set none for it.
     pub(super) fn qa_tier(&mut self, squad: &str, qa: &Ticket, member: &str, role: &str, engine: Engine) -> Option<crate::tiers::QaTier> {
         let checked = self.checked_by(squad, qa.id);
         let journal = self.journal(squad)?;
         let policy = journal.design_qa_tiers();
         let run = journal.design_qa_run(qa.id);
         let round = run.as_ref().map(|r| r.round).or_else(|| checked.as_ref().and_then(|c| journal.design_qa_rounds(c.id).ok())).unwrap_or(1);
-        // The top tier for what leaves too little seen; what only left some states unseen stays cheap.
-        // A small change (copy, a label, a tweak) with no report is still a small look; the top tier waits for what a designer must really judge.
+        // Where a precheck ran, the top tier only for S1/S2 findings it leaves to a designer's judgment
+        // (a waiver, a send-back the gate didn't act on): what it couldn't render is a narrowed look, not
+        // a harder one. With no precheck at all, a change that isn't small (copy, a label, a tweak) still
+        // gets the top tier: nothing was measured for it.
         let small = checked.as_ref().is_some_and(|c| crate::tiers::small_change(&c.title));
-        let judgment = run.as_ref().is_some_and(|r| r.judgment.as_deref().is_some_and(crate::design_qa::Judgment::text_needs_top)) || (run.as_ref().is_none_or(|r| r.precheck != "done") && !small);
+        let prechecked = run.as_ref().is_some_and(|r| matches!(r.precheck.as_str(), "done" | "failed"));
+        let flagged = run.as_ref().and_then(|r| r.report.as_deref()).and_then(|d| precheck::read(Path::new(d))).is_some_and(|r| !r.new_blockers().is_empty());
+        let judgment = if prechecked { flagged } else { !small };
         let person = journal.person_models().iter().any(|m| m == member) || journal.role_models().iter().any(|r| r.role == role && r.engine == engine && r.model.is_some());
         // A light per-ticket session: the cheap tier, the top one from a third round on.
         if run.as_ref().is_some_and(|r| r.lite) {
@@ -567,13 +933,15 @@ truncation with the whole text available), hand in again with `waive_findings` s
     /// goes on to the person's review, or back to its engineer. The ticket as
     /// it now is, and who had it.
     pub(super) fn design_qa_checked(&mut self, squad: &str, qa: &Ticket, designer: &str, verdict: &Verdict, escalate: bool) -> Option<(Ticket, String)> {
-        let mut checked = self.checked_by(squad, qa.id)?;
+        let mut checked = self.waiting_on(squad, qa.id)?;
         checked.design_qa = None;
         let engineer = checked.assignee.clone().or_else(|| checked.owner.clone()).unwrap_or_default();
         let findings = verdict.findings.trim();
+        // Held on itself, the change has no design QA ticket to name.
+        let on = if qa.id == checked.id { String::new() } else { format!(" (T-{})", qa.id) };
         let event = if verdict.passed {
             let summary = checked.note.take().unwrap_or_default();
-            checked.note = Some(format!("{summary}\n\nDesign QA by {designer} (T-{}): passed.\n{findings}", qa.id).trim().to_owned());
+            checked.note = Some(format!("{summary}\n\nDesign QA by {designer}{on}: passed.\n{findings}").trim().to_owned());
             // The designer's pictures follow the engineer's.
             for image in &qa.images {
                 if !checked.images.contains(image) && checked.images.len() < crate::visuals::HAND_IN {
@@ -585,7 +953,7 @@ truncation with the whole text available), hand in again with `waive_findings` s
             // Back to its engineer, on the same branch and worktree, like the person's send-back.
             checked.owner = checked.assignee.take().or(checked.owner);
             checked.status = TicketStatus::Todo;
-            checked.note = Some(format!("Design QA by {designer} (T-{}): {findings}", qa.id));
+            checked.note = Some(format!("Design QA by {designer}{on}: {findings}"));
             checked.images.clear();
             "design QA: changes"
         };
@@ -616,6 +984,12 @@ truncation with the whole text available), hand in again with `waive_findings` s
             let _ = journal.set_design_qa_verdict(qa, "cancelled", "you");
         }
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
+        // Held on itself for its precheck: no design QA ticket to close, and
+        // the change, sent back meanwhile, isn't held off the board by it.
+        if qa == ticket {
+            self.prechecks.remove(&(squad.to_owned(), ticket));
+            return;
+        }
         let Some(open) = self.journal(squad).and_then(|j| j.ticket(qa).ok().flatten()).filter(|t| !t.status.is_closed()) else {
             return;
         };
@@ -679,6 +1053,32 @@ truncation with the whole text available), hand in again with `waive_findings` s
     }
 }
 
+/// A precheck's folder moved from `from` to `to`, the paths its report
+/// names moved with it.
+fn move_precheck(from: &Path, to: &Path) {
+    if !from.is_dir() {
+        return;
+    }
+    let _ = std::fs::remove_dir_all(to);
+    if let Some(parent) = to.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if std::fs::rename(from, to).is_err() {
+        return;
+    }
+    let (a, b) = (from.to_string_lossy().into_owned(), to.to_string_lossy().into_owned());
+    let quoted = |p: &str| serde_json::to_string(p).map(|q| q.trim_matches('"').to_owned()).unwrap_or_default();
+    for name in [precheck::REPORT_JSON, precheck::REPORT_MD] {
+        let path = to.join(name);
+        let Ok(mut text) = std::fs::read_to_string(&path) else { continue };
+        for sep in ["/", "\\"] {
+            text = text.replace(&format!("{a}{sep}"), &format!("{b}{sep}"));
+            text = text.replace(&format!("{}{}", quoted(&a), quoted(sep)), &format!("{}{}", quoted(&b), quoted(sep)));
+        }
+        let _ = std::fs::write(&path, text);
+    }
+}
+
 /// `equipe design precheck` for the ticket `id` checked out at `worktree`
 /// (of the repository `project`), writing into `dir`; what it says goes to
 /// `dir/precheck.log`. `Ok` once its report is there.
@@ -728,7 +1128,7 @@ pub(super) async fn precheck_process(bin: &Path, worktree: &Path, dir: &Path, id
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 crate::group::end(pid, crate::group::Signal::Kill);
             }
-            return Err(format!("it ran past {} minutes and was stopped", PRECHECK_LIMIT.as_secs() / 60));
+            return Err(format!("it {PRECHECK_TIMED_OUT} {} minutes and was stopped", PRECHECK_LIMIT.as_secs() / 60));
         }
     }
     if dir.join(precheck::REPORT_JSON).is_file() { Ok(()) } else { Err(format!("it wrote no report{}", precheck::log_head(&dir.join("precheck.log")))) }
@@ -780,7 +1180,23 @@ the changed screens beside the references of their patterns in the project's `de
 findings whether they stand in their tier — a gap the build opened against its spec is a blocker, one the spec itself has is \
 polish and one design ticket to raise it. Run your `ui-review` skill's checklists on them too: the kind checklist, and \
 the checklist of each part they change (forms, tables and charts, motion, copy).";
-    match precheck {
+    let budget = format!(
+        " Your budget for this check is about {QA_TURN_CALLS} tool calls and {} minutes: spend it on what only you can judge, and \
+when it runs out finish with design_qa on what you have, saying in findings what you couldn't look at.",
+        QA_TURN_SECS / 60
+    );
+    if let Some(n) = precheck.and_then(|b| b.narrowed.as_ref()) {
+        let states = if n.states.is_empty() { "the pages its changed files show".to_owned() } else { n.states.join(", ") };
+        let files = if n.files.is_empty() { String::new() } else { format!(" (changed UI files no screen lists: {})", n.files.join(", ")) };
+        out.push_str(&format!(
+            "\nequipe's precheck couldn't render this change after {PRECHECK_TRIES} tries on a loaded machine, so your look is narrowed: \
+don't shoot every width, scheme and text size. Start its preview from its worktree as its project starts one (another port than \
+anyone's, change no file there) and render only the main width, light — `equipe design render http://localhost:<port>/<page> \
+--widths {}` — of the states it touched: {states}{files}. Add one more condition only where a state needs it to be judged.",
+            n.width
+        ));
+    }
+    match precheck.filter(|b| !b.summary.trim().is_empty()) {
         Some(brief) => out.push_str(&format!(
             "\nequipe's precheck already rendered the screens this change touches — each width, light and dark, at normal size, \
 with text at 200% and zoomed to 200% — measured them (text cut off, text over text, sideways scroll, axe-core's WCAG rules) and \
@@ -794,9 +1210,20 @@ to see: start the preview from its worktree as its project starts one (another p
 `equipe design render http://localhost:<port>/<page> --widths 390,768,1280 --dark`. Its pictures count as your own in `images`. \
 {blockers} Put the changed screens beside their spec at the same width; leave any comparison sheets under `outputs/T-{qa} …/`. \
 Then finish with design_qa, not submit_for_review: a pass needs at least two pictures in images (the precheck's or yours), \
-`compared`, what you `checked`, and no blocker.",
+`compared`, what you `checked`, and no blocker.{reuse}{budget}",
             dir = brief.dir.display(),
             summary = brief.summary.trim(),
+            reuse = if brief.pictures.is_empty() {
+                String::new()
+            } else {
+                format!(" Its pictures to reuse — Read these instead of shooting them again, and name them in `images`:\n- {}\n", brief.pictures.join("\n- "))
+            },
+        )),
+        // Narrowed: only what was said above, put beside its spec.
+        None if precheck.is_some_and(|b| b.narrowed.is_some()) => out.push_str(&format!(
+            "\nPut each picture beside the spec or mockup it was built from, at the same width, and judge whether it matches \
+what the ticket asked and its states hold up. {blockers} Then finish with design_qa, not submit_for_review: a pass needs at \
+least two of your own pictures in images, `compared`, what you `checked`, and no blocker.{budget}"
         )),
         None => out.push_str(&format!(
             "\nCheck it like a company designer, on the built screens themselves — the engineer's screenshots are where to \
@@ -808,7 +1235,7 @@ colour, every state (empty, loading, error, long text, hover, focus), light and 
 computed, not guessed; focus; touch size). Where you truly can't run it, ask {engineer} with comment for what you \
 need — don't pass without it. {blockers} Leave your comparison sheets under `outputs/T-{qa} …/`. Then finish with \
 design_qa, not submit_for_review: a pass needs at least two of your own pictures in images, `compared`, what you \
-`checked`, and no blocker."
+`checked`, and no blocker.{budget}"
         )),
     }
     out
@@ -816,8 +1243,70 @@ design_qa, not submit_for_review: a pass needs at least two of your own pictures
 
 #[cfg(test)]
 mod tests {
-    use super::{PrecheckBrief, outside_design, qa_prompt};
+    use super::{Narrowed, PrecheckBrief, QA_TURN_CALLS, QA_TURN_SECS, move_precheck, outside_design, over_budget, qa_prompt, retry_delay, reusable_pictures, unseen_under_load};
+    use crate::design::precheck::{self, Report, Shot};
     use equipe_protocol::{Ticket, TicketKind, TicketStatus};
+    use std::time::Duration;
+
+    fn shot(key: &str, condition: &str, picture: Option<&str>, error: bool) -> Shot {
+        Shot { key: key.into(), condition: condition.into(), picture: picture.map(str::to_owned), error: error.then(|| "timed out".into()), ..Shot::default() }
+    }
+
+    #[test]
+    fn a_precheck_that_saw_nothing_on_a_loaded_machine_runs_again_later_waiting_longer_each_time() {
+        let failed = Report { touched: vec!["app/home".into()], shots: vec![shot("app/home/default", "390.light.normal", None, true), shot("app/home/default", "1280.light.normal", None, true)], ..Report::default() };
+        // Nothing rendered while the machine was overloaded, or stopped at its limit: again later.
+        assert!(unseen_under_load(Some(&failed), &Ok(()), true));
+        assert!(unseen_under_load(None, &Err("it ran past 25 minutes and was stopped".into()), false));
+        // The same on a calm machine says something about the change or its setup: no retry.
+        assert!(!unseen_under_load(Some(&failed), &Ok(()), false));
+        assert!(!unseen_under_load(None, &Err("it stopped (exit 1)".into()), false));
+        // Rendered fine under load: nothing to retry.
+        let seen = Report { touched: vec!["app/home".into()], shots: vec![shot("app/home/default", "390.light.normal", Some("/p/a.png"), false)], ..Report::default() };
+        assert!(!unseen_under_load(Some(&seen), &Ok(()), true));
+        assert_eq!((retry_delay(1), retry_delay(2)), (Duration::from_secs(5 * 60), Duration::from_secs(10 * 60)));
+        assert_eq!(retry_delay(9), Duration::from_secs(60 * 60), "never more than an hour");
+    }
+
+    #[test]
+    fn after_its_tries_a_designer_looks_at_the_main_width_and_the_touched_states_only() {
+        let report = Report { touched: vec!["app/home".into()], unmapped: vec!["src/Hero.tsx".into()], conditions: vec!["390.light.normal".into(), "1280.dark.normal".into()], ..Report::default() };
+        assert_eq!(Narrowed::of(Some(&report)), Narrowed { width: 1280, states: vec!["app/home".into()], files: vec!["src/Hero.tsx".into()] });
+        assert_eq!(Narrowed::of(None).width, 1280);
+    }
+
+    #[test]
+    fn the_precheck_pictures_of_flagged_and_changed_states_are_reused() {
+        let changed = Shot { diff: Some(precheck::Diff { changed: true, share: 0.2, ..precheck::Diff::default() }), ..shot("app/home/default", "390.light.normal", Some("/p/home.png"), false) };
+        let same = Shot { diff: Some(precheck::Diff::default()), ..shot("app/about/default", "390.light.normal", Some("/p/about.png"), false) };
+        let report = Report { shots: vec![changed, same], ..Report::default() };
+        assert_eq!(reusable_pictures(&report, 8), ["/p/home.png"]);
+    }
+
+    #[test]
+    fn a_design_check_past_its_calls_or_its_time_is_over_budget() {
+        let cap = (QA_TURN_CALLS, QA_TURN_SECS);
+        assert!(!over_budget(QA_TURN_CALLS - 1, QA_TURN_SECS - 1, cap));
+        assert!(over_budget(QA_TURN_CALLS, 10, cap) && over_budget(3, QA_TURN_SECS, cap));
+    }
+
+    #[test]
+    fn a_precheck_moved_to_its_design_qa_ticket_takes_the_paths_its_report_names_along() {
+        let root = std::env::temp_dir().join(format!("equipe-move-precheck-{}", std::process::id()));
+        let (from, to) = (root.join("T-7"), root.join("T-12"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&from).unwrap();
+        let pic = format!("{}/shots/home.png", from.display());
+        let other = format!("{}0/shots/x.png", from.display());
+        std::fs::write(from.join(precheck::REPORT_JSON), serde_json::json!({ "pictures": [pic, other] }).to_string()).unwrap();
+        std::fs::write(from.join(precheck::REPORT_MD), format!("- {pic}\n")).unwrap();
+        move_precheck(&from, &to);
+        assert!(!from.exists() && to.is_dir());
+        let json = std::fs::read_to_string(to.join(precheck::REPORT_JSON)).unwrap();
+        assert!(json.contains(&format!("{}/shots/home.png", to.display())) && json.contains(&other), "only its own folder's paths move: {json}");
+        assert!(std::fs::read_to_string(to.join(precheck::REPORT_MD)).unwrap().contains(&format!("{}/shots/home.png", to.display())));
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn a_designer_with_a_precheck_report_starts_from_it_instead_of_shooting_everything() {
@@ -852,10 +1341,24 @@ mod tests {
         };
         let plain = qa_prompt(9, &checked, None);
         assert!(plain.contains("shoot it yourself") && plain.contains("S1/S2") && !plain.contains("precheck"), "{plain}");
-        let brief = PrecheckBrief { dir: "/h/squads/acme/design-qa/T-9".into(), summary: "# Design QA precheck\n\n- Changed states: pricing/plans/default".into() };
+        let brief = PrecheckBrief {
+            dir: "/h/squads/acme/design-qa/T-9".into(),
+            summary: "# Design QA precheck\n\n- Changed states: pricing/plans/default".into(),
+            pictures: vec!["/h/squads/acme/design-qa/T-9/shots/plans.png".into()],
+            narrowed: None,
+        };
         let given = qa_prompt(9, &checked, Some(&brief));
         assert!(given.contains("/h/squads/acme/design-qa/T-9") && given.contains("Changed states: pricing/plans/default"), "{given}");
         assert!(given.contains("don't shoot every condition") && given.contains("count as your own"), "{given}");
+        assert!(given.contains("instead of shooting them again") && given.contains("T-9/shots/plans.png"), "its pictures are reused: {given}");
+        for text in [&plain, &given] {
+            assert!(text.contains(&format!("about {QA_TURN_CALLS} tool calls")), "a budget: {text}");
+        }
+        // The precheck couldn't render after its tries: a narrowed look, not the whole matrix.
+        let narrowed = PrecheckBrief { narrowed: Some(super::Narrowed { width: 1280, states: vec!["pricing/plans".into()], files: vec![] }), ..PrecheckBrief::default() };
+        let narrow = qa_prompt(9, &checked, Some(&narrowed));
+        assert!(narrow.contains("--widths 1280`") && narrow.contains("pricing/plans") && narrow.contains("narrowed"), "{narrow}");
+        assert!(!narrow.contains("390,768,1280 --dark"), "not every width and scheme: {narrow}");
         assert!(given.contains("never a reason to send it back"), "polish never blocks");
         for text in [&plain, &given] {
             assert!(text.contains("`design-references`") && text.contains("stand in their tier") && text.contains("a gap the build opened against its spec is a blocker"), "the quality bar: {text}");

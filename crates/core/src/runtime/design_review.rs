@@ -223,11 +223,15 @@ Look at them together, in one pass, and file only what is real: an S1/S2 becomes
                 out.push_str(&format!("\n  Hand-in: {}", clip(note.lines().next().unwrap_or_default(), 200)));
             }
         }
-        out.push_str(
-            "\n\nAsk `qa_pictures` for a state or condition you need and weren't given. Finish with design_review: `findings` in a few \
-lines, and one entry in `items` for every change above — `ticket` (its number), `blockers` (S1/S2 only: where, what is wrong, \
-what it should be) and `polish` (S3/S4). Then end your turn.",
-        );
+        out.push_str(&format!(
+            "\n\nJudge from the precheck's pictures — they are already taken: don't start a preview or shoot anything again. Ask \
+`qa_pictures` for a state or condition you need and weren't given. Your budget is about {} tool calls and {} minutes; when it runs \
+out, finish with what you have. Finish with design_review: `findings` in a few lines, and one entry in `items` for every change \
+above — `ticket` (its number), `blockers` (S1/S2 only: where, what is wrong, what it should be; each change with any gets one fix \
+ticket) and `polish` (S3/S4, kept in one backlog note). Then end your turn.",
+            design_qa::REVIEW_TURN_CALLS,
+            design_qa::REVIEW_TURN_SECS / 60
+        ));
         out
     }
 
