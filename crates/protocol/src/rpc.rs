@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn requests_and_responses_pair_by_id() {
-        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false, web_view: false, runs: false });
+        let req = Message::request(7, HELLO, HelloParams { version: "1".into(), squad: "acme".into(), lang: None, browser_panel: false, phone: false, web_view: false, runs: false, remote: false });
         let res = Message::response(7, Hello { version: "1".into(), snapshot: Default::default() });
         assert_eq!(req.id, res.id);
         assert!(res.result_as::<Hello>().is_some());
