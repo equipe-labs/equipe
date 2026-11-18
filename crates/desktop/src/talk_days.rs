@@ -99,7 +99,7 @@ mod tests {
     const NOW: u64 = 20_400 * DAY + 15 * 3600;
 
     fn lane(session: u64, active: u64, title: Option<&str>) -> Lane {
-        Lane { session, of: 1, project: None, presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: title.map(str::to_owned), active, pinned: false }
+        Lane { session, of: 1, project: None, presence: Presence::Ready, verb: Verb::Thinking, kept: true, title: title.map(str::to_owned), active, pinned: false, pinned_at: 0 }
     }
 
     #[test]

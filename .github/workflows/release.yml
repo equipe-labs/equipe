@@ -415,10 +415,13 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          # The history back to the previous release, for the pull requests it brings.
+          fetch-depth: 0
       # The CLI archives, and the app's disk images, appcasts and deltas (not
       # the bare desktop-bin-* binaries, which aren't for people).
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
@@ -451,6 +454,51 @@ jobs:
           done
           ls -l dist/equipe.dmg dist/appcast.xml
           ls -l dist/appcast-*.xml 2>/dev/null || true
+      # What the release brings people, in their words (`equipe release-notes`,
+      # crates/core/src/release_notes.rs): each pull request merged since the
+      # previous release gives the lines under its `## For users` heading, else
+      # its title; internal work gives none. They head the release's notes, and
+      # release-notes.json — the latest releases' notes, beside the appcasts —
+      # is what the app reads to say what an update brings. Notes that can't be
+      # made never hold the release back: it goes out with GitHub's own.
+      - name: Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p notes
+          : > notes/release-notes.md
+          previous="$(gh release view --repo "${GITHUB_REPOSITORY}" --json tagName -q .tagName 2>/dev/null || true)"
+          if [ -n "$previous" ]; then
+            gh release download "$previous" --repo "${GITHUB_REPOSITORY}" -D notes/previous --pattern release-notes.json 2>/dev/null || true
+            range="${previous}..${GITHUB_REF_NAME}"
+          else
+            range="${GITHUB_REF_NAME}"
+          fi
+          echo "pull requests in ${range}:"
+          git log --merges --format=%s "$range" | sed -n 's/^Merge pull request #\([0-9][0-9]*\) .*/\1/p' | sort -un > notes/numbers || true
+          cat notes/numbers
+          {
+            echo '['
+            first=1
+            while read -r n; do
+              pr="$(gh pr view "$n" --repo "${GITHUB_REPOSITORY}" --json number,title,body,labels 2>/dev/null)" || continue
+              [ "$first" = 1 ] || echo ','
+              printf '%s\n' "$pr"
+              first=0
+            done < notes/numbers
+            echo ']'
+          } > notes/prs.json
+          previous_feed=""
+          if [ -f notes/previous/release-notes.json ]; then previous_feed="--previous notes/previous/release-notes.json"; fi
+          # shellcheck disable=SC2086 # empty or one flag and its path
+          if tar -xzf dist/equipe-x86_64-unknown-linux-musl.tar.gz -C notes &&
+            notes/equipe-x86_64-unknown-linux-musl/equipe release-notes --version "${GITHUB_REF_NAME}" --prs notes/prs.json $previous_feed --out notes/out; then
+            cp notes/out/release-notes.md notes/release-notes.md
+            cp notes/out/release-notes.json dist/
+            cat notes/release-notes.md
+          else
+            echo "::warning::The release notes for people weren't made; the release goes out with GitHub's own"
+          fi
       - name: Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -459,8 +507,9 @@ jobs:
           (cd dist && cat ./*.sha256 > SHA256SUMS)
           prerelease=""
           case "${GITHUB_REF_NAME}" in *-*) prerelease="--prerelease" ;; esac
+          # The notes for people first; GitHub's list of pull requests after them.
           gh release create "${GITHUB_REF_NAME}" dist/* \
-            --title "equipe ${GITHUB_REF_NAME}" --generate-notes --verify-tag $prerelease
+            --title "equipe ${GITHUB_REF_NAME}" --notes-file notes/release-notes.md --generate-notes --verify-tag $prerelease
 
   # Run by hand: check the tap token can still push, without publishing.
   tap-access:

@@ -5,7 +5,9 @@
 //! The first line out is an `attached` notification ([`rpc::Attached`]): which
 //! equipe answered and which daemon it reached. After it, the bytes go both
 //! ways untouched — the same JSON-RPC lines a screen on the daemon's own
-//! machine reads from `~/.equipe/equipe.sock`. See docs/DESKTOP.md, "Remote".
+//! machine reads from `~/.equipe/equipe.sock` — but for one line the bridge
+//! adds ahead of the screen's: `bridged`, so the daemon knows the person's
+//! screen is on another machine (docs/REMOTE.md). See docs/DESKTOP.md, "Remote".
 
 use std::io;
 use std::process::ExitCode;
@@ -57,6 +59,8 @@ async fn bridge(no_start: bool) -> io::Result<()> {
     };
     let stream = UnixStream::connect(&socket).await?;
     let (mut from_daemon, mut to_daemon) = stream.into_split();
+    // Before the screen's first line: this connection comes from another machine.
+    to_daemon.write_all(Message::notification(rpc::BRIDGED, serde_json::json!({})).to_line().as_bytes()).await?;
 
     let mut stdout = tokio::io::stdout();
     stdout.write_all(Message::notification(rpc::ATTACHED, &attached).to_line().as_bytes()).await?;

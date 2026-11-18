@@ -441,6 +441,7 @@
   "notice.profile_separation": "🔐 Dein Google Workspace verlangt für jedes Arbeitskonto ein eigenes Chrome-Profil, deshalb hat equipes Browser eines pro angemeldetem Konto. Die Mitglieder arbeiten als {account}, und die Anmeldungen bei allen anderen Websites bleiben dort. Damit sie als anderes Konto arbeiten: `equipe browser profile`. Optional – equipe funktioniert so oder so: Dein Workspace-Admin kann unter Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation \"Suggest profile separation\" / \"Disable profile separation\" wählen, dann legt Chrome nicht mehr pro Konto ein Profil an (https://support.google.com/chrome/a/answer/11198768).",
   "notice.view_didnt_carry": "🖥 Die Anmeldung in der Ansicht hat in {name}s Browser nicht gehalten ({site} fragt weiter), deshalb liegt {name}s eigener Browser jetzt im Panel in deinen Händen: Melde dich dort einmal an. Ab jetzt öffnet sich {site} direkt dort.",
   "notice.browser_on_screen": "🖥 Der Browser von {name} erscheint auf dem Bildschirm dieses Mac: {why}",
+  "notice.on_squad_mac": "Du bist an einem anderen Computer: Das erscheint auf dem Bildschirm von {host}. Öffne es dort mit der Bildschirmfreigabe.",
   "notice.browser_view": "🖥 Die Anmeldung von {name} öffnet sich in einer Anmeldeansicht in deinem Browser-Panel: {why}",
   "notice.browser_window": "🖥 Die Anmeldung von {name} öffnet sich in einem normalen Chrome-Fenster auf {host}: {why}",
   "notice.browser_window_no_chrome": "🖥 Google Chrome ist nicht dort installiert, wo equipe danach sucht; der Browser von {name} öffnet sich deshalb in deinem Browser-Panel. Das ist ein automatisierter Browser: Die Prüfung „Bestätige, dass du ein Mensch bist“ einer Seite lässt dort womöglich niemanden durch. {why}",
@@ -882,5 +883,17 @@
   "design_session.no_page": "Nenne die Seite oder den Screen der Design-Session.",
   "design_session.use_title": "{page} nach dem gewählten Prototyp bauen",
   "design_session.use_title_variant": "{page} nach Prototyp {variant} bauen",
-  "design_session.use_intro": "In einer Design-Session mit „Das nehmen“ gewählt: Diesen Prototyp im Produkt bauen."
+  "design_session.use_intro": "In einer Design-Session mit „Das nehmen“ gewählt: Diesen Prototyp im Produkt bauen.",
+  "deploy.live_on": "Jetzt live auf {host}:",
+  "deploy.live": "Jetzt live in {project}:",
+  "deploy.on_main": "Auf main in {project} (kein Deploy gesehen):",
+  "deploy.yours_live_on": "Was du wolltest, ist live auf {host}:",
+  "deploy.yours_live": "Was du wolltest, ist live in {project}:",
+  "deploy.yours_on_main": "Was du wolltest, ist auf main in {project}:",
+  "deploy.more.one": "+{count} weiteres",
+  "deploy.more.other": "+{count} weitere",
+  "deploy.internal.one": "· +{count} interne Änderung",
+  "deploy.internal.other": "· +{count} interne Änderungen",
+  "deploy.only_internal.one": "nur interne Änderungen ({count}).",
+  "deploy.only_internal.other": "nur interne Änderungen ({count})."
 }

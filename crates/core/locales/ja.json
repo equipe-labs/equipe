@@ -437,6 +437,7 @@
   "notice.profile_separation": "🔐 Google Workspace が仕事用アカウントごとに別の Chrome プロフィールを必須にしているため、equipe のブラウザもサインインしたアカウントごとにプロフィールを持っています。メンバーは {account} として作業し、ほかのサイトのサインインもそこに保管されます。別のアカウントで作業させるには `equipe browser profile`。任意です(どちらでも equipe は動きます): Workspace 管理者が Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation を \"Suggest profile separation\" / \"Disable profile separation\" にすると、Chrome はアカウントごとにプロフィールを作らなくなります (https://support.google.com/chrome/a/answer/11198768)。",
   "notice.view_didnt_carry": "🖥 ビューでのサインインが {name} のブラウザに引き継がれませんでした({site} がまだ求めています)。そのため {name} のブラウザそのものをパネルでお渡ししています。そこで一度だけサインインしてください。今後 {site} は直接そこで開きます。",
   "notice.browser_on_screen": "🖥 {name} のブラウザがこの Mac の画面に表示されます: {why}",
+  "notice.on_squad_mac": "別のコンピュータから見ています: これは {host} の画面に表示されます。画面共有で {host} に接続して開いてください。",
   "notice.browser_view": "🖥 {name} のサインインがブラウザパネルのサインインビューで開きます: {why}",
   "notice.browser_window": "🖥 {name} のサインインが {host} の通常の Chrome ウィンドウで開きます: {why}",
   "notice.browser_window_no_chrome": "🖥 equipe が探す場所に Google Chrome がないため、{name} のブラウザをブラウザパネルで開きます。自動化されたブラウザなので、サイトの「人間であることの確認」を通れないことがあります。{why}",
@@ -873,5 +874,14 @@
   "design_session.no_page": "デザインセッションで扱うページか画面の名前を入れてください。",
   "design_session.use_title": "選んだプロトタイプで{page}を実装",
   "design_session.use_title_variant": "プロトタイプ{variant}で{page}を実装",
-  "design_session.use_intro": "デザインセッションで「これにする」で選ばれたプロトタイプです。製品に実装してください。"
+  "design_session.use_intro": "デザインセッションで「これにする」で選ばれたプロトタイプです。製品に実装してください。",
+  "deploy.live_on": "{host} に公開されました:",
+  "deploy.live": "{project} に公開されました:",
+  "deploy.on_main": "{project} の main に入りました(デプロイは未確認):",
+  "deploy.yours_live_on": "ご依頼の作業が {host} に公開されました:",
+  "deploy.yours_live": "ご依頼の作業が {project} に公開されました:",
+  "deploy.yours_on_main": "ご依頼の作業が {project} の main に入りました:",
+  "deploy.more.other": "ほか {count} 件",
+  "deploy.internal.other": "· 内部の変更 {count} 件",
+  "deploy.only_internal.other": "内部の変更のみ({count} 件)。"
 }

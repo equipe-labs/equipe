@@ -78,6 +78,7 @@ mod design;
 mod design_session;
 mod revise;
 mod live_preview;
+mod shown;
 mod refcards;
 mod briefs;
 mod plans;
@@ -104,6 +105,7 @@ mod usage_digest;
 mod team;
 mod heartbeat;
 mod signals;
+mod deploys;
 mod tickets;
 mod compact;
 mod hygiene;
@@ -169,6 +171,9 @@ const SETTLE_EVERY: Duration = Duration::from_secs(10 * 60);
 /// and how many times before the PM is told to see to it.
 const MERGE_RETRY_AFTER: Duration = Duration::from_secs(5 * 60);
 const MERGE_TRIES: u32 = 6;
+/// Past [`MERGE_TRIES`], still tried this often: once what is in the way is
+/// cleared, accepted work lands on its own — nobody accepts it again.
+const MERGE_RETRY_SLOW: Duration = Duration::from_secs(30 * 60);
 /// A done ticket whose merge failed this lately is tried again after a restart.
 const MERGE_RETRY_WITHIN: u64 = 3 * 86_400;
 
@@ -361,9 +366,17 @@ pub struct Handle {
     requests: UnboundedSender<Request>,
     /// What the loop is on, for an answer when it doesn't answer.
     pulse: std::sync::Arc<watchdog::Pulse>,
+    /// The screens following each squad, and where they are ([`crate::screens`]).
+    screens: std::sync::Arc<crate::screens::Screens>,
 }
 
 impl Handle {
+    /// The screens following each squad: a screen takes a seat as it says
+    /// hello, and leaves with its connection.
+    pub fn screens(&self) -> &std::sync::Arc<crate::screens::Screens> {
+        &self.screens
+    }
+
     pub fn send(&self, command: Command) {
         let _ = self.requests.send(Request::Command(command));
     }
@@ -741,8 +754,11 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let logins = vault.logins.clone();
     let (never_offer, can_keep_logins) = (vault.never_offer.clone(), vault.can_keep());
     let telemetry = if config.persist { crate::telemetry::Telemetry::start(&config.home, &config.client_version) } else { crate::telemetry::Telemetry::off() };
+    let screens = std::sync::Arc::new(crate::screens::Screens::default());
     let mut runtime = Runtime {
         telemetry,
+        screens: screens.clone(),
+        remote_told: HashMap::new(),
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
         never_offer,
@@ -842,6 +858,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         tmp_budget_told: HashSet::new(),
         tidied_at: None,
         signals_running: std::collections::HashSet::new(),
+        deploys_looking: HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
@@ -903,7 +920,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let pulse = watchdog::Pulse::new();
     watchdog::watch(&pulse);
     tokio::spawn(CORE_LOOP.scope((), watchdog::scoped(pulse.clone(), run(runtime, req_rx, internal_rx, host_rx, pulse.clone()))));
-    let handle = Handle { requests: req_tx, pulse };
+    let handle = Handle { requests: req_tx, pulse, screens };
     // Memos for a turn the restart ended go in first, as if just sent.
     for (session, text) in memos {
         handle.send(Command::Submit { session, text, about: None });
@@ -1290,6 +1307,9 @@ enum Internal {
     AuthRecheck(Engine),
     /// A signal's command ran off the loop: its reading.
     SignalRead { squad: String, key: String, reading: crate::signals::Reading },
+    /// A squad's projects were looked at off the loop for what went live:
+    /// each project's watch now, and what the look found.
+    DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)> },
     /// Where the engines stand, as just looked at off the loop.
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
@@ -1401,6 +1421,12 @@ struct Runtime {
     /// Anonymous usage events, after the person's yes (docs/TELEMETRY.md):
     /// the daemon's only, never a terminal's own runtime.
     telemetry: crate::telemetry::Telemetry,
+    /// The screens following each squad, and where they are: the person's
+    /// screen on this Mac or another ([`crate::screens`]).
+    screens: std::sync::Arc<crate::screens::Screens>,
+    /// Where each member's conversation was last told the person looks from
+    /// (`true`: another machine), so it hears again only when that changes.
+    remote_told: HashMap<SessionId, bool>,
     /// Every attached screen, with the squad it follows (`None`: everything).
     /// Closed ones drop out on the next event.
     subscribers: Vec<(Option<String>, UnboundedSender<Event>)>,
@@ -1545,6 +1571,8 @@ struct Runtime {
     tidied_at: Option<std::time::Instant>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
+    /// Squads whose projects are being looked at for what went live (`deploys`).
+    deploys_looking: HashSet<String>,
     /// Decisions in the person's words waiting on them (`words`).
     words: words::Words,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
@@ -1807,6 +1835,7 @@ impl Wake {
             Wake::Internal(Internal::TurnEndsDue) => Borrowed("a paused run's time"),
             Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
+            Wake::Internal(Internal::DeploysLooked { .. }) => Borrowed("a look at what went live"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
@@ -2029,9 +2058,18 @@ impl Runtime {
                         event => {
                             // A build that failed for want of room says so plainly.
                             let no_room = room::says_no_room(&event).then(|| event.session()).flatten();
+                            // A page a member showed the person: served for their screen, before
+                            // the screen reads it; the member hears at once if nobody can see it.
+                            let shown = match &event {
+                                Event::ToolResult { session, outcome, .. } => self.member_showed(*session, outcome).map(|note| (*session, note)),
+                                _ => None,
+                            };
                             self.publish(event);
                             if let Some(id) = no_room {
                                 self.member_out_of_room(id);
+                            }
+                            if let Some((id, note)) = shown {
+                                self.set_going(id, format!("[equipe: {note}]")).await;
                             }
                         }
                     }
@@ -2078,6 +2116,7 @@ impl Runtime {
                 Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
+                Internal::DeploysLooked { squad, looks } => self.deploys_looked(&squad, looks),
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::LaneTmpLooked(look) => self.lane_tmp_looked(*look),
                 Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
@@ -2217,6 +2256,8 @@ impl Runtime {
         self.wake_idle_pms().await;
         pulse.step("minute tick: signals");
         self.run_due_signals();
+        pulse.step("minute tick: deploys");
+        self.deploys_tick();
         pulse.step("minute tick: engines");
         self.engines_tick().await;
         pulse.step("minute tick: calls");
@@ -2329,9 +2370,11 @@ impl Runtime {
         }
         // A ticket waiting for the person carries what it asks, item by item
         // (kept in its note); any other, nothing.
-        if let Event::TicketChanged { ticket, .. } = &mut event {
+        if let Event::TicketChanged { squad, ticket } = &mut event {
             ticket.asks = Vec::new();
             ticket.asks = ticket.asks();
+            // On its way to main: the screens say so rather than "not in main".
+            ticket.landing = self.landing(squad, ticket);
             // It changed now: the screens know when it finished.
             ticket.updated_at = Some(now_secs());
         }
@@ -3787,6 +3830,7 @@ impl Runtime {
         self.accepts_declined.remove(squad);
         self.design_watch.remove(squad);
         self.signals_running.retain(|(q, _)| q != squad);
+        self.deploys_looking.remove(squad);
         // Its checks waiting in line: none will run. One running ends on its own.
         for queue in self.gates.values_mut() {
             let mut at = 0;
@@ -4291,13 +4335,22 @@ runbooks and reports live there, and work across the projects or on running them
     /// It is about the project of the ticket it names (none named: the whole
     /// squad); a turn under way about another goes on about its own after it.
     fn show_news(&mut self, pm: SessionId, text: String) {
+        self.show_news_about(pm, text, None);
+    }
+
+    /// [`Runtime::show_news`], about `project` when it is given — else the
+    /// project of the ticket the news names.
+    fn show_news_about(&mut self, pm: SessionId, text: String, project: Option<String>) {
         // Not into a conversation the person opened: those are theirs.
         let at = self.sessions.iter().find(|(_, s)| !s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
         let desk = self.sessions.get(&at).filter(|s| s.work.is_none()).map(|s| (scope::current(s.transcript.entries()).flatten(), s.is_working(), s.squad.clone()));
         let Some((now, working, Some(squad))) = desk else {
             return self.publish(Event::Notice { undo: None, session: at, text });
         };
-        let about = self.news_project(&squad, &text);
+        let about = match project {
+            Some(project) => Some(project),
+            None => self.news_project(&squad, &text),
+        };
         if about == now {
             return self.publish(Event::Notice { undo: None, session: at, text });
         }
@@ -5435,6 +5488,12 @@ for one project goes to it as tickets for its owners, with that project — and 
         let brief = self.engines.brief_for(id).or_else(|| member.and_then(|m| self.engines.brief_for(m)));
         let prompt = match brief {
             Some(brief) => format!("{brief}\n\n{prompt}"),
+            None => prompt,
+        };
+        // Where the person looks from, when that changed since it was last told:
+        // from another machine, nothing of this Mac's is theirs to open.
+        let prompt = match self.screens_note(id) {
+            Some(note) => format!("[equipe: {note}]\n\n{prompt}"),
             None => prompt,
         };
         // The squad's memory as its files say now — the person's edits in Finder
@@ -8067,6 +8126,19 @@ with what else waits.]"
         self.dispatch(squad).await;
     }
 
+    /// Whether `ticket`, accepted and not on main, is on its way there now:
+    /// its landing is in line or under way ([`Runtime::merge`]).
+    pub(super) fn landing(&self, squad: &str, ticket: &Ticket) -> bool {
+        ticket.not_on_main() && self.merging.contains(&(squad.to_owned(), ticket.id))
+    }
+
+    /// Its landing just went in line: every screen shows it on its way to main.
+    pub(super) fn show_landing(&mut self, squad: &str, ticket: TicketId) {
+        if let Some(t) = self.journal(squad).and_then(|j| j.ticket(ticket).ok().flatten()) {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: t });
+        }
+    }
+
     /// The person merges a done ticket's branch into main — their gate, never a
     /// member's — and pushes main when they said so. A conflict merges nothing.
     /// The merge and the push are worked out off the loop (a push talks to a
@@ -8093,11 +8165,16 @@ with what else waits.]"
         if !self.merging.insert((squad.to_owned(), ticket)) {
             return;
         }
+        self.show_landing(squad, ticket);
         let message = format!("equipe: merge T-{ticket} {}\n\nAccepted; merged from {branch}.", found.title);
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
-            let result = worktree::merge_into_main(&repo, &branch, &message)
-                .map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
+            // In line with the repository's other landings: merged and pushed as one.
+            let result = landing_tries(|| {
+                worktree::one_landing_at_a_time(&repo, || {
+                    worktree::merge_into_main(&repo, &branch, &message).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))))
+                })
+            });
             let kept = crate::design::captures::take_report(&repo, &branch);
             let _ = internal.send(Internal::Merged { squad, ticket, result, kept, push });
         });
@@ -8145,7 +8222,7 @@ with what else waits.]"
                     Some(owner) => {
                         let branch = found.branch.clone().unwrap_or_else(|| "its branch".into());
                         let line = format!(
-                            "T-{ticket} couldn't be merged into main: {err}. In the ticket's worktree, merge main into {branch}, resolve the conflict keeping what both sides meant, run the tests and commit. Then say it's ready: the person merges it again from the board."
+                            "T-{ticket} couldn't be merged into main: {err}. In the ticket's worktree, merge main into {branch}, resolve the conflict keeping what both sides meant, run the tests and commit. Then tell the PM it's ready: it is accepted already, and lands again with `accept_work` — nobody accepts it twice."
                         );
                         let shown = say!(self, "news.merge_conflict_owner", id = ticket);
                         self.brief_member(squad, &owner, &line, &shown);
@@ -8207,17 +8284,22 @@ with what else waits.]"
         let failed = before.map_or(1, |b| b.failed + 1);
         let ticket = t.id;
         if failed > MERGE_TRIES {
-            crate::daemon_log!("equipe: {squad}: T-{ticket} still isn't merged after {MERGE_TRIES} tries: {err}");
-            self.brief_pm(
-                squad,
-                format!(
-                    "T-{ticket} · {} is accepted but still not on main: equipe tried to merge it {MERGE_TRIES} times and stopped ({err}). It stays \
-\"accepted, not on main\" on the board. Find out what is in the way — usually uncommitted changes in the project's main checkout — and \
-tell the person; once it is cleared, the person merges it from the board.",
-                    t.title
-                ),
-                None,
-            );
+            // Said once; tried again every half hour from here, so it lands once cleared.
+            if failed == MERGE_TRIES + 1 {
+                crate::daemon_log!("equipe: {squad}: T-{ticket} still isn't merged after {MERGE_TRIES} tries: {err}");
+                self.brief_pm(
+                    squad,
+                    format!(
+                        "T-{ticket} · {} is accepted but still not on main after {MERGE_TRIES} tries ({err}). It stays \"accepted, not on main\" \
+on the board. Find out what is in the way — usually uncommitted changes in the project's main checkout — and get it cleared. It is accepted \
+already: equipe keeps trying on its own and lands it once it can, or land it at once with `accept_work` — never put it to the person again.",
+                        t.title
+                    ),
+                    None,
+                );
+            }
+            let next = std::time::Instant::now() + MERGE_RETRY_SLOW;
+            self.merge_retries.insert((squad.to_owned(), ticket), MergeRetry { push, failed, next, running: false });
             return;
         }
         if failed == 1 {
@@ -8626,10 +8708,17 @@ It starts when {owner} is free."
             if self.window_mode() {
                 match self.begin_window_handoff(&call, url.as_deref(), &why).await {
                     Ok(view) => {
+                        // A window on this Mac while the person is on another: said where, and how to reach it.
+                        let far = (!view).then(|| self.on_this_screen(&call.squad)).flatten();
                         if let Some(id) = self.caller_id(&call) {
                             let text = if view { say!(self, "notice.browser_view", name = call.member, why = why) } else { self.window_notice(&call.member, &why) };
+                            let text = match &far {
+                                Some((_, person)) => format!("{text}\n{person}"),
+                                None => text,
+                            };
                             self.publish(Event::Notice { undo: None, session: id, text });
                         }
+                        let far = far.map(|(member, _)| member).unwrap_or_default();
                         let _ = reply.send(ToolResult {
                             text: if view {
                                 "A sign-in view is opening on the person's screen at that page: an ordinary web view, not your browser — they sign in there \
@@ -8641,7 +8730,8 @@ a real browser of theirs, not yours: your browser tools are off until they press
 isn't yours to look at. Say in one line what they should do there, then end your turn. When they're done you get a message and \
 carry on by yourself — don't ask them to tell you."
                             }
-                            .into(),
+                            .to_owned()
+                                + &far,
                             is_error: false,
                             image: None,
                         });
@@ -8672,14 +8762,21 @@ and hand it back you get a message and carry on by yourself — don't ask them t
                 self.show_url.insert((call.squad.clone(), call.member.clone()), url);
             }
             self.show_browser(&call.squad, Some(call.member.clone()), true);
+            // On this Mac's screen while the person is on another: said where, and how to reach it.
+            let far = self.on_this_screen(&call.squad);
             if let Some(id) = self.caller_id(&call) {
                 let text = say!(self, "notice.browser_on_screen", name = call.member, why = why);
+                let text = match &far {
+                    Some((_, person)) => format!("{text}\n{person}"),
+                    None => text,
+                };
                 self.publish(Event::Notice { undo: None, session: id, text });
             }
             let _ = reply.send(ToolResult {
                 text: "Your browser comes up on the person's screen when this turn ends, at that page. Tell them what to do \
 there, end your turn, and carry on when they say they're done."
-                    .into(),
+                    .to_owned()
+                    + &far.map(|(member, _)| member).unwrap_or_default(),
                 is_error: false,
                 image: None,
             });
@@ -10102,7 +10199,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     execution: None,
                     merged: None,
                     off_main: None,
-                    design_qa: None,
+                    design_qa: None, landing: false,
                     // Read and checked off the loop before it gets here (`cut_from_plan`).
                     plan: board::arg_str(&args, "plan").map(str::to_owned),
                     model: None,
@@ -10573,12 +10670,16 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         watchdog::mark("snapshot: board");
         let projects = self.projects(squad);
         let mut tickets = self.tickets(squad);
+        for t in &mut tickets {
+            t.landing = self.landing(squad, t);
+        }
         // Open tickets, and the latest closed ones.
         let recent_closed: Vec<TicketId> =
             tickets.iter().rev().filter(|t| t.status.is_closed()).map(|t| t.id).take(CLOSED_TICKETS_SHOWN).collect();
         tickets.retain(|t| !t.status.is_closed() || recent_closed.contains(&t.id));
         watchdog::mark("snapshot: members");
         let marks = self.journals.get(squad).and_then(|j| j.conversation_marks().ok()).unwrap_or_default();
+        let pins = self.journals.get(squad).and_then(|j| j.conversation_pins().ok()).unwrap_or_default();
         let mut sessions: Vec<SessionInfo> = self
             .sessions
             .iter()
@@ -10608,7 +10709,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                     queued_in: s.memo_threads.clone(),
                     steering: s.steering.clone(),
                     steering_in: s.steer_threads.clone(),
-                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept, active: marks.get(&id).map_or(0, |m| m.0), pinned: marks.get(&id).is_some_and(|m| m.1) }),
+                    lane: s.lane.clone().map(|(of, project)| equipe_protocol::Lane { of, project, kept: s.kept, active: marks.get(&id).map_or(0, |m| m.0), pinned: marks.get(&id).is_some_and(|m| m.1), pinned_at: pins.get(&id).copied().unwrap_or(0) }),
                     run: s.run_of.zip(s.work.as_ref()).map(|(of, w)| equipe_protocol::RunOf { of, ticket: w.ticket, generation: w.execution_generation }),
                     estimate: s.estimate.clone().filter(|e| !e.is_empty()),
                     work: s.work.as_ref().map(|w| WorkInfo {
@@ -10659,6 +10760,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
         let subagents_at_once = self.subagents_at_once(Some(squad));
         let signals = self.signal_views(squad);
+        let deploys = self.deploy_views(squad);
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
         let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
@@ -10667,6 +10769,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         let hand_overs = self.hand_overs(squad);
         Snapshot {
             signals,
+            deploys,
             reviews,
             put_away,
             routines,
@@ -11911,6 +12014,30 @@ fn work_before(tickets: &[Ticket], ticket: &Ticket) -> Vec<(String, String)> {
         .filter_map(|id| tickets.iter().find(|t| t.id == *id && t.status == TicketStatus::Done && t.kind.in_home() == ticket.kind.in_home()))
         .filter_map(|t| Some((format!("T-{}", t.id), t.branch.clone()?)))
         .collect()
+}
+
+/// How many times a landing that failed only for a moment — another git
+/// holding the main checkout's lock, main moved on — is tried again at once,
+/// and how long apart: in seconds, not at the next retry minutes away.
+const LANDING_TRIES: u32 = 6;
+const LANDING_AGAIN_AFTER: Duration = Duration::from_secs(10);
+
+/// `land` (a landing, merged and pushed), tried again after a moment while
+/// it fails for a passing cause ([`worktree::passing`]) — the ticket stays
+/// "landing" meanwhile. What still fails is for someone to see to: the
+/// retries minutes apart and the PM take it from there. Blocking.
+pub(super) fn landing_tries(mut land: impl FnMut() -> MergeResult) -> MergeResult {
+    let mut tries = 1;
+    loop {
+        match land() {
+            Err(err) if worktree::passing(&err) && tries < LANDING_TRIES => {
+                crate::daemon_log!("equipe: a landing waits a moment and goes again: {err}");
+                std::thread::sleep(LANDING_AGAIN_AFTER);
+                tries += 1;
+            }
+            landed => return landed,
+        }
+    }
 }
 
 /// The message a task's or action's work lands in the squad's folder with.

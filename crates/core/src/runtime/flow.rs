@@ -255,6 +255,7 @@ run the tests, and hand it in. Then, if the change is still wanted, fix it on a 
             execution: None,
             merged: None,
             off_main: None,
+            landing: false,
             created_by: member.to_owned(),
             note: None,
             asks: Vec::new(),

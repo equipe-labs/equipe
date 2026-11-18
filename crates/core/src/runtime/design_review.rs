@@ -60,7 +60,7 @@ fn equipe_ticket(title: String, body: String, kind: TicketKind, owner: Option<St
         execution: None,
         merged: None,
         off_main: None,
-        design_qa: None,
+        design_qa: None, landing: false,
         plan: None,
         model: None,
         flow: None,

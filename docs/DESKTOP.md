@@ -69,7 +69,9 @@ Screen design: the squad's `outputs/T-54 desktop screen design/spec.md`.
 
 The desktop runs on the laptop; the daemon may run on another Mac (a Mac mini)
 that the laptop reaches with `ssh`. The app then speaks the same protocol, only
-through SSH instead of the socket file.
+through SSH instead of the socket file. The daemon knows the person's screen is
+on another machine and makes what it shows, and what members tell them, work
+from there: docs/REMOTE.md.
 
 ```
  laptop                                       mini (the daemon's machine)

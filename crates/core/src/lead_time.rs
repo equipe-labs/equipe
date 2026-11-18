@@ -18,9 +18,11 @@
 //! one of its tickets, its design follow-ups and its design QA join it. The
 //! report says which way it was read ([`Report::source`]).
 //!
-//! **Production** is a deploy ticket of the request done, when it has one;
-//! otherwise the moment its last ticket was finished — code merged into main,
-//! other work done — with nothing of it left open.
+//! **Production** is when the last of a request's code went live by a deploy
+//! signal equipe saw (a production deployment or a deploy workflow on main,
+//! `crate::deploys`); else a deploy ticket of the request done; otherwise
+//! the moment its last ticket was finished — code merged into main, other
+//! work done — with nothing of it left open.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
@@ -102,6 +104,9 @@ pub struct Input {
     pub person_said: Vec<u64>,
     /// `None`: the journal keeps no requests.
     pub requests: Option<Vec<RequestRow>>,
+    /// When each ticket's work first went live by a deploy signal (a
+    /// production deployment, a deploy workflow) — not merely on main.
+    pub live: HashMap<u64, u64>,
 }
 
 /// A median and a 90th percentile, of durations (seconds) or counts.
@@ -160,7 +165,7 @@ pub struct Report {
     pub to_first_merge: Stat,
     /// Request → production (see the module's words).
     pub to_production: Stat,
-    /// How many of `to_production` were a deploy ticket done (the rest: last merge).
+    /// How many of `to_production` were a deploy — signal or ticket (the rest: last merge).
     pub production_by_deploy: usize,
     /// Every ticket of a request, its checks too.
     pub tickets_per_request: Stat,
@@ -335,7 +340,11 @@ pub fn summarize(input: &Input, since: u64, until: u64) -> Report {
         let start = work.iter().filter_map(|id| started_at(events_of(*id))).min();
         let first_merge = ids.iter().filter_map(|id| merged_at(events_of(*id))).min();
         // Production: a deploy ticket done, else everything of it finished.
-        let deploy = work.iter().filter_map(|id| tickets.get(id)).filter(|t| t.label.as_deref() == Some("deploy") && t.status == "done").map(|t| t.updated_at).min();
+        let deploy_ticket = work.iter().filter_map(|id| tickets.get(id)).filter(|t| t.label.as_deref() == Some("deploy") && t.status == "done").map(|t| t.updated_at).min();
+        // Every piece of its code live by a deploy signal: the last of them.
+        let code: Vec<u64> = work.iter().copied().filter(|id| tickets.get(id).is_some_and(|t| t.kind == "code" && t.status == "done" && t.merged == Some(true))).collect();
+        let signalled = (!code.is_empty() && code.iter().all(|id| input.live.contains_key(id))).then(|| code.iter().filter_map(|id| input.live.get(id).copied()).max()).flatten();
+        let deploy = signalled.or(deploy_ticket);
         let finished = work.iter().all(|id| tickets.get(id).is_none_or(|t| closed(&t.status) && (t.kind != "code" || t.status == "cancelled" || t.merged == Some(true))))
             && work.iter().any(|id| tickets.get(id).is_some_and(|t| t.status == "done"));
         let live = if deploy.is_some() {
@@ -518,6 +527,16 @@ fn select(conn: &Connection, since: u64, until: u64) -> rusqlite::Result<Input> 
         }
         input.requests = Some(rows);
     }
+    // What went live by a deploy signal (`crate::deploys`, kept in `meta`).
+    if let Ok(json) = conn.query_row("SELECT value FROM meta WHERE key = 'deploys'", [], |r| r.get::<_, String>(0)) {
+        let deploys: Vec<equipe_protocol::deploys::Deploy> = serde_json::from_str(&json).unwrap_or_default();
+        for d in deploys.iter().filter(|d| d.source.is_live()) {
+            for t in &d.tickets {
+                let at = input.live.entry(*t as u64).or_insert(d.at);
+                *at = (*at).min(d.at);
+            }
+        }
+    }
     // An older journal: the person's words, for working its requests out.
     if input.requests.as_ref().is_none_or(Vec::is_empty) {
         let mut stmt = conn.prepare("SELECT at, body FROM entries WHERE at >= ?1 AND at <= ?2 AND body LIKE '{\"kind\":\"user\"%'")?;
@@ -653,6 +672,18 @@ mod tests {
         let r = summarize(&input, 0, 24 * H);
         assert_eq!(r.to_production.median, Some(300 * M));
         assert_eq!(r.production_by_deploy, 1);
+    }
+
+    #[test]
+    fn a_deploy_signal_for_every_piece_of_its_code_is_production() {
+        let mut input = relay();
+        input.live = HashMap::from([(1, 10 * H + 70 * M), (3, 10 * H + 200 * M)]);
+        let r = summarize(&input, 0, 24 * H);
+        assert_eq!(r.to_production.median, Some(200 * M));
+        assert_eq!(r.production_by_deploy, 1);
+        // One piece not seen live: as before, its last merge.
+        input.live.remove(&3);
+        assert_eq!(summarize(&input, 0, 24 * H).to_production.median, Some(185 * M));
     }
 
     #[test]

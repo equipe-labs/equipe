@@ -19,6 +19,7 @@ pub mod by_words;
 pub mod call;
 pub mod decide;
 pub mod deeplink;
+pub mod deploys;
 pub mod disk;
 pub mod metrics;
 pub mod plan_use;
@@ -225,6 +226,10 @@ pub struct Lane {
     /// The person pinned it: equipe never puts it away by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub pinned: bool,
+    /// When the person pinned it (unix seconds; 0 where not known): the pinned
+    /// ones are listed in the order they were pinned, the latest first.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub pinned_at: u64,
 }
 
 /// A session that runs one ticket for a member: the member's own session
@@ -411,6 +416,11 @@ pub struct Ticket {
     /// it on its branch, or merging it failed. `None` otherwise (and once merged).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub off_main: Option<OffMain>,
+    /// Accepted and on its way to main right now: in line behind the
+    /// repository's other landings, or being merged. Only ever on what the
+    /// daemon sends — never kept: a daemon that restarts has nothing landing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub landing: bool,
     /// `you`, or the member who wrote it.
     pub created_by: String,
     /// The latest word on it: a hand-in summary, why it was reopened.
@@ -736,10 +746,16 @@ impl Ticket {
         self.kind == TicketKind::Code && self.status == TicketStatus::Done && self.branch.is_some() && self.merged == Some(false)
     }
 
+    /// Accepted and on its way to main now ([`Ticket::landing`]): nothing
+    /// for the person to do about it.
+    pub fn landing_now(&self) -> bool {
+        self.landing && self.not_on_main()
+    }
+
     /// Accepted, not on main, and still the person's call — not left on its
     /// branch by their choice. What the inbox lists.
     pub fn waits_to_merge(&self) -> bool {
-        self.not_on_main() && self.off_main != Some(OffMain::Kept)
+        self.not_on_main() && self.off_main != Some(OffMain::Kept) && !self.landing
     }
 }
 
@@ -3394,6 +3410,13 @@ pub enum Event {
     /// The squad's signals now, each with its latest readings: on a new
     /// reading, one turned on or off, or paused.
     SignalsChanged { squad: SquadName, signals: Vec<signals::SignalView> },
+    /// What went live lately in the squad's projects, the newest first
+    /// ([`deploys::Deploy`]): a deploy found, or folded into one close before.
+    DeploysChanged { squad: SquadName, deploys: Vec<deploys::Deploy> },
+    /// A deploy's news, once: `line` says what is live now, in the person's
+    /// language. For a notification; the line itself is in the PM's
+    /// conversation and in those the work was asked in, as [`Event::Notice`]s.
+    Deployed { squad: SquadName, deploy: deploys::Deploy, line: String },
     /// A squad was deleted ([`Command::DeleteSquad`]): told every screen. A
     /// screen on it moves to `next` — the squad to open now, as the daemon's
     /// machine remembers it — or, with none left, to starting a new one.
@@ -3612,6 +3635,8 @@ impl Event {
             | Event::ModelChoiceChanged { squad, .. }
             | Event::DesignReviewerChanged { squad, .. }
             | Event::SignalsChanged { squad, .. }
+            | Event::DeploysChanged { squad, .. }
+            | Event::Deployed { squad, .. }
             | Event::PutAwayChanged { squad, .. }
             | Event::Design { squad, .. }
             | Event::DesignSessionStarted { squad, .. }
@@ -3735,6 +3760,8 @@ impl Event {
             | Event::ModelChoiceChanged { .. }
             | Event::DesignReviewerChanged { .. }
             | Event::SignalsChanged { .. }
+            | Event::DeploysChanged { .. }
+            | Event::Deployed { .. }
             | Event::Logins { .. }
             | Event::Autopilot { .. }
             | Event::MailboxConnect { .. }
@@ -4184,6 +4211,9 @@ pub struct Snapshot {
     /// The squad's signals, each with its latest readings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<signals::SignalView>,
+    /// What went live lately in its projects, the newest first ([`deploys`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deploys: Vec<deploys::Deploy>,
     /// How many extra members of a role equipe may bring in when its work waits.
     #[serde(default)]
     pub scale: Option<usize>,
@@ -4332,7 +4362,7 @@ mod tests {
             execution: None,
             merged: None,
             off_main: None,
-            design_qa: None, plan: None, model: None,
+            design_qa: None, landing: false, plan: None, model: None,
             flow: None,
             kind: TicketKind::Code,
             created_by: "pm".into(),
@@ -4740,6 +4770,7 @@ mod tests {
             requests: Vec::new(),
             stops: Vec::new(),
             decided: Vec::new(),
+            deploys: Vec::new(),
             resting: vec!["qa".into()],
             put_away: vec![PutAway { session: 51, project: Some("web".into()), title: Some("the pricing page".into()), at: 1_760_000_000, auto: false }],
             words: None,

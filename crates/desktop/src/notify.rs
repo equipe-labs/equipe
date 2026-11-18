@@ -61,6 +61,10 @@ pub enum Alert {
     /// A request of the person's reached a milestone (`equipe_core::requests`):
     /// `line`, where all of it stands — told in its conversation too.
     Request { request: u64, title: String, session: Option<SessionId>, member: Option<String>, line: String },
+    /// The person's work went out in a project (`protocol::deploys`): `live`
+    /// for its users (a deployment, a deploy workflow), or only onto main
+    /// where the project has neither. `line` says what, in their words.
+    Live { deploy: u64, project: String, live: bool, line: String },
     /// Merging an accepted ticket's work failed — `conflict` with main, or
     /// otherwise; nothing was merged.
     MergeFailed { ticket: TicketId, conflict: bool, project: Option<String> },
@@ -82,7 +86,7 @@ impl Alert {
     /// News rather than something waiting: told one by one, never folded into
     /// "n things wait for you".
     fn is_news(&self) -> bool {
-        matches!(self, Alert::Reply { .. } | Alert::Merged { .. } | Alert::Request { .. } | Alert::Escalated { .. } | Alert::UpdateFound { .. } | Alert::Update { .. })
+        matches!(self, Alert::Reply { .. } | Alert::Merged { .. } | Alert::Request { .. } | Alert::Live { .. } | Alert::Escalated { .. } | Alert::UpdateFound { .. } | Alert::Update { .. })
     }
 }
 
@@ -103,6 +107,10 @@ impl Pings {
             Alert::Merged { .. } => self.merged,
             // News of what they asked for: as a reply to them is.
             Alert::Request { .. } => self.replies,
+            // Live for people: its own kind, on by default. Only on main (a
+            // project with no deploy to see): as a merge is.
+            Alert::Live { live: true, .. } => self.live,
+            Alert::Live { live: false, .. } => self.merged,
             Alert::UpdateFound { .. } | Alert::Update { .. } => self.update,
         }
     }
@@ -263,7 +271,7 @@ pub fn thread(alert: &Alert, squad: &str) -> String {
         Alert::Review { by, .. } | Alert::Waiting { by, .. } => by.as_deref().map_or_else(|| squad_thread(squad), |b| member_thread(squad, b)),
         Alert::Failed { member, .. } | Alert::Decision { member, .. } | Alert::Browser { member, .. } | Alert::Reply { member, .. } => member_thread(squad, member),
         Alert::Request { member: Some(member), .. } => member_thread(squad, member),
-        Alert::Merged { .. } | Alert::MergeFailed { .. } | Alert::Request { .. } | Alert::Escalated { .. } => squad_thread(squad),
+        Alert::Merged { .. } | Alert::MergeFailed { .. } | Alert::Request { .. } | Alert::Live { .. } | Alert::Escalated { .. } => squad_thread(squad),
         Alert::UpdateFound { .. } | Alert::Update { .. } => "equipe/update".into(),
     }
 }
@@ -331,6 +339,11 @@ fn toast(alert: &Alert, squad: &str, titles: bool) -> Toast {
         }
         // What they asked for, and where all of it stands: a click opens its conversation.
         Alert::Request { title, session, line, .. } => (t!("notify.request_title", title = title), line.clone(), session.map_or(Go::Board, Go::Member)),
+        // Where, and what the person can see now: the board, where it was done.
+        Alert::Live { project, live, line, .. } => {
+            let title = if *live { t!("notify.live_title", project = project) } else { t!("notify.on_main_title", project = project) };
+            (title, line.clone(), Go::Board)
+        }
         Alert::MergeFailed { ticket, conflict, project } => {
             let why = if *conflict { t!("notify.merge_conflict") } else { t!("notify.merge_failed") };
             let project = project.as_deref().map(|p| format!(" · {p}")).unwrap_or_default();
@@ -718,6 +731,21 @@ mod tests {
         assert_eq!((update[0].title.as_str(), update[0].body.as_str(), update[0].go), ("새 버전이 준비됐어요", "다시 시작해 업데이트 · 0.48.0", Go::Update));
         assert_eq!(update[0].category(), CATEGORY_UPDATE);
         assert_eq!(merged[0].category(), CATEGORY_OPEN);
+    }
+
+    #[test]
+    fn what_went_live_is_told_on_its_own_and_only_on_main_as_a_merge() {
+        let live = Alert::Live { deploy: 3, project: "web".into(), live: true, line: "example.com에 배포됐어요: 새 입력창".into() };
+        let main = Alert::Live { deploy: 4, project: "app".into(), live: false, line: "app main에 들어갔어요: 오프라인 배너".into() };
+        let toast = &toasts(std::slice::from_ref(&live), "acme", true)[0];
+        assert_eq!((toast.title.as_str(), toast.body.as_str(), toast.go), ("배포됨 · web", "example.com에 배포됐어요: 새 입력창", Go::Board));
+        assert_eq!(toasts(std::slice::from_ref(&main), "acme", true)[0].title, "main에 들어감 · app");
+        let pings = Pings::default();
+        assert!(pings.wants(&live), "live for people: told by default");
+        assert!(!pings.wants(&main), "only on main: as merges are, off by default");
+        assert_eq!(thread(&live, "acme"), "squad/acme");
+        // News, one by one: never folded into "n things wait for you".
+        assert_eq!(toasts(&[live.clone(), main.clone(), live], "acme", true).len(), 3);
     }
 
     #[test]

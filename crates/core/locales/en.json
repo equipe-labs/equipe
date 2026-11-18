@@ -441,6 +441,7 @@
   "notice.profile_separation": "🔐 Your Google Workspace requires a separate Chrome profile for each work account, so equipe's browser keeps one per account you signed in to. Members work as {account}, and every other site's sign-in is kept there. To have them work as another account: `equipe browser profile`. Optional — equipe works either way: your Workspace admin can stop Chrome from making a profile per account in Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation: \"Suggest profile separation\" / \"Disable profile separation\" (https://support.google.com/chrome/a/answer/11198768).",
   "notice.view_didnt_carry": "🖥 The sign-in made in the view didn't hold in {name}'s browser ({site} still asks), so {name}'s own browser is in your hands in the panel now: sign in there, once. From now on {site} opens there directly.",
   "notice.browser_on_screen": "🖥 {name}'s browser comes up on this Mac's screen: {why}",
+  "notice.on_squad_mac": "You're on another computer: this is on {host}'s own screen. Open it there with Screen Sharing.",
   "notice.browser_view": "🖥 {name}'s sign-in opens in a sign-in view in your browser panel: {why}",
   "notice.browser_window": "🖥 {name}'s sign-in opens in a normal Chrome window on {host}: {why}",
   "notice.browser_window_no_chrome": "🖥 Google Chrome isn't installed where equipe looks for it, so {name}'s browser opens in the person's browser panel instead. It is an automated browser: a site's \"verify you are human\" check may not let anyone through there. {why}",
@@ -882,5 +883,17 @@
   "design_session.no_page": "Name the page or screen the design session is on.",
   "design_session.use_title": "Build {page} from the picked prototype",
   "design_session.use_title_variant": "Build {page} from prototype {variant}",
-  "design_session.use_intro": "Picked in a design session with \"Use this\": build this prototype in the product."
+  "design_session.use_intro": "Picked in a design session with \"Use this\": build this prototype in the product.",
+  "deploy.live_on": "Live now on {host}:",
+  "deploy.live": "Live now in {project}:",
+  "deploy.on_main": "On main in {project} (no deploy seen):",
+  "deploy.yours_live_on": "What you asked for is live on {host}:",
+  "deploy.yours_live": "What you asked for is live in {project}:",
+  "deploy.yours_on_main": "What you asked for is on main in {project}:",
+  "deploy.more.one": "+{count} more",
+  "deploy.more.other": "+{count} more",
+  "deploy.internal.one": "· +{count} internal change",
+  "deploy.internal.other": "· +{count} internal changes",
+  "deploy.only_internal.one": "only internal changes ({count}).",
+  "deploy.only_internal.other": "only internal changes ({count})."
 }

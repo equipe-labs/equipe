@@ -179,15 +179,22 @@ Get main fixed first (put it on the board), then accept T-{ticket} again."
         self.publish(Event::Notice { undo: None, session: gate.session, text });
     }
 
-    /// Land `merge` on main off the loop — only while main is where it was
-    /// worked out — and push when asked; [`Runtime::on_merged`] takes it from there.
+    /// Land `merge` on main off the loop — worked out again at once should
+    /// main have moved on meanwhile ([`worktree::land_checked`]) — and push
+    /// when asked; [`Runtime::on_merged`] takes it from there.
     fn land_checked(&mut self, squad: &str, ticket: TicketId, repo: PathBuf, branch: String, merge: worktree::MergeCommit, push: bool) {
         if !self.merging.insert((squad.to_owned(), ticket)) {
             return;
         }
+        self.show_landing(squad, ticket);
         let (internal, squad) = (self.internal.clone(), squad.to_owned());
         tokio::task::spawn_blocking(move || {
-            let result = worktree::land(&repo, &merge).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))));
+            // Landed and pushed as one, in line with the repository's other landings.
+            let result = landing_tries(|| {
+                worktree::one_landing_at_a_time(&repo, || {
+                    worktree::land_checked(&repo, &branch, &merge).map(|main| (main, push.then(|| worktree::push_main(&repo).map(|_| ()))))
+                })
+            });
             // What landing kept out of git, from when the merge was worked out.
             let kept = crate::design::captures::take_report(&repo, &branch);
             let _ = internal.send(Internal::Merged { squad, ticket, result, kept, push });

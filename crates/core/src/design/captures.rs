@@ -1164,6 +1164,32 @@ pub fn migrate_in(scope: &Scope, repo: &Path) -> Result<Option<Migrated>> {
             manifest.entries.insert(rel.to_owned(), scope.entry(rel, id, *size, made, None));
         }
     }
+    // Main moves from here on: in line with the repository's landings, and
+    // only from the tip all of the above was read at (the copies into the
+    // store, the slow part, are made outside the line: a save waiting on it
+    // may be on the daemon's loop).
+    worktree::one_landing_at_a_time(repo, || {
+        if worktree::git(repo, &["rev-parse", &format!("refs/heads/{main}")]).ok().as_deref() != Some(tip.as_str()) {
+            return Err(format!("{main} moved on meanwhile: tried again later"));
+        }
+        untrack_on_main(scope, repo, &main, &tip, &tracked, &ignore, &manifest, checkout.as_deref(), &store)
+    })
+}
+
+/// The end of [`migrate_in`], in line with the repository's landings: one
+/// commit on main untracking `tracked`, the checkout following.
+#[allow(clippy::too_many_arguments)]
+fn untrack_on_main(
+    scope: &Scope,
+    repo: &Path,
+    main: &str,
+    tip: &str,
+    tracked: &[(String, String, u64)],
+    ignore: &str,
+    manifest: &Manifest,
+    checkout: Option<&Path>,
+    store: &Store,
+) -> Result<Option<Migrated>> {
     let tree = worktree::git(repo, &["rev-parse", &format!("{tip}^{{tree}}")])?;
     let paths: Vec<String> = tracked.iter().map(|(p, ..)| p.clone()).collect();
     let new_tree = edit_tree(repo, &tree, |index| {
@@ -1185,11 +1211,11 @@ pub fn migrate_in(scope: &Scope, repo: &Path) -> Result<Option<Migrated>> {
         scope.dir,
         scope.manifest_path
     );
-    let commit = worktree::with_identity(repo, &["commit-tree", &new_tree, "-p", &tip, "-m", &message])?;
+    let commit = worktree::with_identity(repo, &["commit-tree", &new_tree, "-p", tip, "-m", &message])?;
     // A fast-forward deletes the files main stops tracking: each is held by
     // a second link meanwhile and put back.
-    let held = checkout.as_ref().map(|c| hold(&store, c, &paths)).unwrap_or_default();
-    let moved = worktree::move_main_within(repo, &main, &tip, &commit, "untracked", MIGRATE_TIMEOUT);
+    let held = checkout.map(|c| hold(store, c, &paths)).unwrap_or_default();
+    let moved = worktree::move_main_within(repo, main, tip, &commit, "untracked", MIGRATE_TIMEOUT);
     for (path, at) in held {
         if std::fs::symlink_metadata(&path).is_err() {
             if let Some(parent) = path.parent() {

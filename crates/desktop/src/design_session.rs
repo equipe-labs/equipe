@@ -93,6 +93,42 @@ pub fn shown(entries: &[Entry], since: usize) -> Shown {
     out
 }
 
+/// The `file://` pages among what is shown — the live page and the
+/// variants, from a designer whose command couldn't reach the daemon, or an
+/// older equipe — which the daemon serves for this screen at a loopback
+/// address (`prototype_url`): a `file://` page opens on the daemon's
+/// machine only, and never in the live preview or side by side.
+pub fn file_pages(shown: &Shown) -> Vec<String> {
+    let live = match &shown.live {
+        Some(Live::Page(url)) => Some(url),
+        _ => None,
+    };
+    let mut out: Vec<String> = Vec::new();
+    for url in live.into_iter().chain(shown.variants.iter().map(|(_, u)| u)) {
+        if url.starts_with("file://") && !out.contains(url) {
+            out.push(url.clone());
+        }
+    }
+    out
+}
+
+/// `shown` with each `file://` page the daemon serves (`served`: by the
+/// page's `file://` address) at the address it serves it at.
+pub fn with_served(mut shown: Shown, served: &std::collections::HashMap<String, String>) -> Shown {
+    let at = |url: &mut String| {
+        if let Some(served) = served.get(url.as_str()) {
+            *url = served.clone();
+        }
+    };
+    if let Some(Live::Page(url)) = shown.live.as_mut() {
+        at(url);
+    }
+    for (_, url) in &mut shown.variants {
+        at(url);
+    }
+    shown
+}
+
 /// The variant whose page is live, when it is one of them.
 pub fn variant_in_front(variants: &[(String, String)], live: Option<&Live>) -> Option<String> {
     let Some(Live::Page(url)) = live else { return None };
@@ -548,6 +584,25 @@ mod tests {
         let one = Shown { live: Some(Live::Page("http://localhost:3000/".into())), count: 1, ..Shown::default() };
         assert_eq!(picked(&one, None, false), Some((None, "http://localhost:3000/".into())));
         assert_eq!(picked(&Shown { live: Some(Live::Render("/w/r.png".into())), ..Shown::default() }, None, false), None, "a picture is no prototype");
+    }
+
+    #[test]
+    fn a_file_page_shown_goes_live_at_the_address_the_daemon_serves_it_at() {
+        let entries = vec![
+            tool("design-session: variant A file:///w/design/sessions/p/a.html", true),
+            tool("design-session: variant B file:///w/design/sessions/p/b%20b.html", true),
+            tool("design-session: show http://localhost:5173/", true),
+            tool("design-session: variant A file:///w/design/sessions/p/a.html", true),
+        ];
+        let raw = shown(&entries, 0);
+        assert_eq!(file_pages(&raw), ["file:///w/design/sessions/p/a.html", "file:///w/design/sessions/p/b%20b.html"], "each once, the live one first");
+        let mut served = std::collections::HashMap::new();
+        served.insert("file:///w/design/sessions/p/a.html".to_owned(), "http://127.0.0.1:61000/t/k/sessions/p/a.html".to_owned());
+        let got = with_served(raw.clone(), &served);
+        assert_eq!(got.live, Some(Live::Page("http://127.0.0.1:61000/t/k/sessions/p/a.html".into())));
+        assert_eq!(got.variants[0].1, "http://127.0.0.1:61000/t/k/sessions/p/a.html");
+        assert_eq!(got.variants[1].1, "file:///w/design/sessions/p/b%20b.html", "not served yet: as it was");
+        assert!(file_pages(&shown(&entries[2..3], 0)).is_empty(), "a page served on a port needs nothing");
     }
 
     #[test]
