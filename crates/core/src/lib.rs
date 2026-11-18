@@ -78,6 +78,7 @@ pub mod quality;
 pub mod references;
 pub mod requests;
 pub mod mock;
+pub mod image_diet;
 pub mod image_repeat;
 pub mod models;
 pub mod model_providers;

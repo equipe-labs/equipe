@@ -346,8 +346,10 @@ pub fn charter_note(servers: &[&McpServer]) -> Option<String> {
         .collect();
     Some(format!(
         "Outside MCP servers the squad connected for you: {}. Use them where they fit — a design library's server for \
-references instead of browsing its site. When one says it needs a sign-in or a key, say so in a line and carry on \
-without it: equipe has already put one card for it in front of the person.",
+references instead of browsing its site. Ask their tools for small result sets — a limit of 3 to 5, one page at a \
+time: every result, pictures included, stays in your conversation, and an answer keeps at most 4 pictures. When one \
+says it needs a sign-in or a key, say so in a line and carry on without it: equipe has already put one card for it \
+in front of the person.",
         each.join("; ")
     ))
 }

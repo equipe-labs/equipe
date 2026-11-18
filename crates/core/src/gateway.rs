@@ -521,6 +521,13 @@ async fn serve_client(
                 let out = out_tx.clone();
                 tokio::spawn(async move {
                     while let Some(message) = from_server.recv().await {
+                        // Pictures kept to what a member's conversation can carry, off the async threads.
+                        let message = if crate::image_diet::has_images(&message) {
+                            let kept = message.clone();
+                            tokio::task::spawn_blocking(move || crate::image_diet::tool_reply(message)).await.unwrap_or(kept)
+                        } else {
+                            message
+                        };
                         if out.send(Message::notification(rpc::MCP_PROXY_RECV, rpc::McpProxyMessage { message })).is_err() {
                             break;
                         }

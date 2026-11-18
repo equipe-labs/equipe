@@ -71,10 +71,12 @@ impl Runtime {
         let accepted = if gate.self_land { format!("Landed by {}, its gates passed", gate.by) } else { "Accepted by the PM".to_owned() };
         let message = format!("equipe: merge T-{} {}\n\n{accepted}; merged from {}.", gate.ticket, gate.title, gate.branch);
         let internal = self.internal.clone();
+        // A failing command's whole output, in the ticket's own temporary folder: the member sent back opens it there.
+        let keep = journal::lane_tmp_dir(&self.config.home, &gate.squad, Some(gate.ticket), "").join("checks-failed.log");
         tokio::task::spawn_blocking(move || {
             let _ = std::fs::create_dir_all(&builds);
             let label = format!("t{}", gate.ticket);
-            let outcome = checks::Run { repo: &gate.repo, branch: &gate.branch, message: &message, scratch: &scratch, label: &label, env: &env }.run();
+            let outcome = checks::Run { repo: &gate.repo, branch: &gate.branch, message: &message, scratch: &scratch, label: &label, env: &env, keep: Some(&keep) }.run();
             let _ = internal.send(Internal::Checked(Box::new(gate), outcome));
         });
     }

@@ -364,12 +364,19 @@ pub fn render(tickets: &[Ticket]) -> String {
 /// characters (always at least one). What is left out is counted, with the
 /// call that lists it.
 pub fn render_page(tickets: &[Ticket], status: Option<&str>, after: Option<TicketId>, max: usize) -> String {
-    let wanted = |t: &&Ticket| !t.status.is_closed() && status.is_none_or(|s| t.status.label().eq_ignore_ascii_case(s.trim()));
+    // Kept ideas wait quietly, often dozens of them: listed when asked for by
+    // their status, counted otherwise.
+    let wanted = |t: &&Ticket| {
+        !t.status.is_closed() && status.map_or(t.status != TicketStatus::Idea, |s| t.status.label().eq_ignore_ascii_case(s.trim()))
+    };
     let open: Vec<&Ticket> = tickets.iter().filter(wanted).collect();
+    let ideas = if status.is_none() { tickets.iter().filter(|t| t.status == TicketStatus::Idea).count() } else { 0 };
+    let ideas_line = (ideas > 0).then(|| format!("[{ideas} kept idea(s) not listed — `board` with `status: idea` lists them.]\n"));
     if open.is_empty() {
-        return match status {
-            Some(s) => format!("No open ticket is {}.", s.trim()),
-            None => "The board is empty.".into(),
+        return match (status, ideas_line) {
+            (Some(s), _) => format!("No open ticket is {}.", s.trim()),
+            (None, Some(line)) => format!("No open ticket but kept ideas.\n{line}"),
+            (None, None) => "The board is empty.".into(),
         };
     }
     let from = after.and_then(|id| open.iter().position(|t| t.id == id)).map_or(0, |at| at + 1);
@@ -392,6 +399,9 @@ pub fn render_page(tickets: &[Ticket], status: Option<&str>, after: Option<Ticke
             from + shown,
             open.len()
         ));
+    }
+    if let Some(line) = ideas_line {
+        out.push_str(&line);
     }
     out
 }
@@ -1886,6 +1896,20 @@ mod tests {
         let last = render_ticket(&long, Some(&whole), &[], TICKET_NOTE_PAGE * 2);
         assert!(!last.contains("from: ") && last.contains(&format!("of {})", whole.chars().count())), "{last}");
         assert!(render_ticket(&short, short.note.as_deref(), &[], 0).contains("note:\nReopened: the header overlaps"));
+    }
+
+    #[test]
+    fn kept_ideas_are_counted_on_the_board_and_listed_by_their_status() {
+        let mut idea = ticket(3, "pm");
+        idea.status = TicketStatus::Idea;
+        idea.title = "Dark mode someday".into();
+        let todo = ticket(4, "frontend");
+        let board = render(&[idea.clone(), todo.clone()]);
+        assert!(board.contains("T-4 [todo]") && !board.contains("Dark mode someday"), "{board}");
+        assert!(board.contains("[1 kept idea(s) not listed — `board` with `status: idea` lists them.]"), "{board}");
+        let ideas = render_page(&[idea.clone(), todo], Some("idea"), None, usize::MAX);
+        assert!(ideas.contains("T-3 [idea] Dark mode someday") && !ideas.contains("T-4"), "{ideas}");
+        assert!(render(&[idea]).starts_with("No open ticket but kept ideas."));
     }
 
     #[test]
