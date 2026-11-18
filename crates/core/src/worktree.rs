@@ -667,6 +667,7 @@ fn repair_source(lock_dir: &Path, state: SourceState) -> Result<String> {
 
 /// Each link under `folder` whose target is an absolute path inside
 /// `source`, pointed at the same place inside `worktree`. How many.
+#[cfg(unix)]
 fn retarget_links(folder: &Path, source: &Path, worktree: &Path) -> usize {
     let roots = [source.to_owned(), source.canonicalize().unwrap_or_else(|_| source.to_owned())];
     let mut n = 0;
@@ -683,13 +684,18 @@ fn retarget_links(folder: &Path, source: &Path, worktree: &Path) -> usize {
             let real = target.canonicalize().unwrap_or_else(|_| target.clone());
             let Some(inside) = roots.iter().find_map(|r| target.strip_prefix(r).or_else(|_| real.strip_prefix(r)).ok()) else { continue };
             let new = worktree.join(inside);
-            #[cfg(unix)]
             if std::fs::remove_file(entry.path()).is_ok() && std::os::unix::fs::symlink(&new, entry.path()).is_ok() {
                 n += 1;
             }
         }
     }
     n
+}
+
+/// No folder is cloned here ([`CAN_CLONE`]): no link to point anywhere.
+#[cfg(not(unix))]
+fn retarget_links(_folder: &Path, _source: &Path, _worktree: &Path) -> usize {
+    0
 }
 
 /// A link under `folder` whose target is an absolute path inside `checkout`,
