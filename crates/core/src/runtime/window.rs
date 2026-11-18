@@ -96,21 +96,10 @@ fn tabs_profile(lane: &str) -> String {
 }
 
 /// This Mac's name, for telling the person where the window is (or the
-/// dialog that waits): asked once per process.
+/// dialog that waits): the one name every such line uses
+/// ([`crate::screens::machine_name`]).
 pub(super) fn this_mac() -> String {
-    static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    NAME.get_or_init(ask_this_mac).clone()
-}
-
-fn ask_this_mac() -> String {
-    std::process::Command::new("hostname")
-        .arg("-s")
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "this Mac".to_owned())
+    crate::screens::machine_name().to_owned()
 }
 
 impl Runtime {

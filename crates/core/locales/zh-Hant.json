@@ -429,6 +429,7 @@
   "notice.profile_separation": "🔐 你的 Google Workspace 要求每個工作帳號使用獨立的 Chrome 設定檔,所以 equipe 的瀏覽器為每個登入過的帳號各保留一個。成員以 {account} 工作,其他網站的登入也都保存在那裡。要讓他們用其他帳號工作:`equipe browser profile`。可選(兩種情況下 equipe 都能運作):Workspace 管理員可以在 Google Admin console › Devices › Chrome › Settings › User & browser settings › Sign-in settings › Enterprise profile separation 中設為 \"Suggest profile separation\" / \"Disable profile separation\",Chrome 就不會為每個帳號新增設定檔(https://support.google.com/chrome/a/answer/11198768)。",
   "notice.view_didnt_carry": "🖥 在檢視中完成的登入沒有在 {name} 的瀏覽器中生效({site} 仍在要求登入),所以現在把 {name} 自己的瀏覽器交到你手中,在面板裡登入一次即可。之後 {site} 會直接在那裡開啟。",
   "notice.browser_on_screen": "🖥 {name} 的瀏覽器出現在這台 Mac 的螢幕上：{why}",
+  "notice.on_squad_mac": "你正在另一台電腦上：這會出現在 {host} 的螢幕上。請用螢幕共享連到 {host} 打開它。",
   "notice.browser_view": "🖥 {name} 的登入在瀏覽器面板的登入檢視中開啟：{why}",
   "notice.browser_window": "🖥 {name} 的登入在 {host} 的一般 Chrome 視窗中開啟：{why}",
   "notice.browser_window_no_chrome": "🖥 equipe 尋找的位置沒有 Google Chrome，所以 {name} 的瀏覽器改在瀏覽器面板中開啟。那是自動化瀏覽器：網站的「驗證你是真人」檢查可能讓任何人都過不了。{why}",

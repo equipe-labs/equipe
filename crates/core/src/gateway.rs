@@ -317,6 +317,10 @@ async fn serve_client(
     let mut view_screen: Option<std::sync::Arc<crate::browser::Hub>> = None;
     // An outside MCP server's proxy on this connection: where its messages go.
     let mut proxy: Option<mpsc::UnboundedSender<serde_json::Value>> = None;
+    // Bridged from another machine by `equipe attach --stdio` (`rpc::BRIDGED`).
+    let mut bridged = false;
+    // This screen's seat among those following its squad, and where it is ([`crate::screens`]).
+    let mut seat: Option<crate::screens::Seat> = None;
     loop {
         // A screen let go for reading too slowly is done with, whatever it sends.
         let line = tokio::select! {
@@ -376,6 +380,9 @@ async fn serve_client(
                 };
                 let _ = out_tx.send(Message::response(id, Hello { version: version.clone(), snapshot }));
                 followed = Some(params.squad.clone());
+                // Where the person's screen is: what equipe shows them, and what members tell them, goes by it.
+                let place = crate::screens::Place::of(params.phone, params.remote, bridged);
+                seat = Some(core.screens().sit(&params.squad, place, params.browser_panel || params.web_view));
                 let out = out_tx.clone();
                 forwarder.replace(tokio::spawn(async move {
                     while let Some(event) = events.recv().await {
@@ -674,7 +681,15 @@ async fn serve_client(
                 tokio::spawn(async move {
                     let path = ask.path.clone();
                     let named = tokio::task::spawn_blocking(move || crate::prototype::named(&db, &path)).await.unwrap_or(false);
-                    let served = if named && !crate::prototype::is_address(&ask.path) { crate::prototype::url_of(Path::new(&ask.path)).await } else { Err(format!("{} isn't a prototype {} shows", ask.path, ask.squad)) };
+                    // Else a design session's page a member of the squad showed, served already (`runtime::shown`).
+                    let session_page = || crate::prototype::Server::now().and_then(|s| s.address_of(Path::new(&ask.path)));
+                    let served = if crate::prototype::is_address(&ask.path) {
+                        Err(format!("{} isn't a prototype {} shows", ask.path, ask.squad))
+                    } else if named {
+                        crate::prototype::url_of(Path::new(&ask.path)).await
+                    } else {
+                        session_page().ok_or_else(|| format!("{} isn't a prototype {} shows", ask.path, ask.squad))
+                    };
                     let _ = out.send(match served {
                         Ok(url) => Message::response(id, rpc::PrototypeServed { url }),
                         Err(why) => Message::failure(id, -32000, why),
@@ -773,6 +788,8 @@ async fn serve_client(
                 });
             }
             // The look this screen shows (`crate::looks`): kept for the squad it follows.
+            // From the bridge, ahead of the screen's own lines: this one is on another machine.
+            (Some(rpc::BRIDGED), None) => bridged = true,
             (Some(rpc::SCREEN_LOOK), None) => {
                 if let (Some(squad), Some(look)) = (followed.clone(), message.params_as::<equipe_protocol::look::ScreenLook>()) {
                     let home = home.clone();
@@ -870,6 +887,7 @@ async fn serve_client(
         }
     }
     // The screen left. Its agents keep working; only its view goes away.
+    drop(seat);
     if let Some(forwarder) = forwarder {
         forwarder.abort();
     }
@@ -1253,13 +1271,19 @@ impl Client {
     /// [`Client::connect`], saying the screen speaks `lang`: what the daemon
     /// says to the person is in it from now on.
     pub async fn connect_in(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>) -> io::Result<(Self, Hello)> {
-        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false, phone: false, web_view: false, runs: false }).await
+        Self::connect_from(socket, version, squad, lang, false).await
+    }
+
+    /// [`Client::connect_in`], saying whether the screen is on another
+    /// machine than the daemon (`remote`: a terminal over SSH).
+    pub async fn connect_from(socket: &Path, version: &str, squad: &str, lang: Option<crate::i18n::Lang>, remote: bool) -> io::Result<(Self, Hello)> {
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: lang.map(|l| l.code().to_owned()), browser_panel: false, phone: false, web_view: false, runs: false, remote }).await
     }
 
     /// [`Client::connect`] for a phone, through the relay: what the person
     /// sends from it reaches members marked as sent from a phone.
     pub async fn connect_phone(socket: &Path, version: &str, squad: &str) -> io::Result<(Self, Hello)> {
-        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: None, browser_panel: false, phone: true, web_view: false, runs: false }).await
+        Self::attach(socket, HelloParams { version: version.to_owned(), squad: squad.to_owned(), lang: None, browser_panel: false, phone: true, web_view: false, runs: false, remote: false }).await
     }
 
     async fn attach(socket: &Path, params: HelloParams) -> io::Result<(Self, Hello)> {
