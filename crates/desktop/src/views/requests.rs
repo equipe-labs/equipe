@@ -102,7 +102,13 @@ fn decided(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
     if open {
         for d in &shell.model.decided {
             let ticket = d.ticket;
-            let how = if d.accepted { t!("requests.decided_accepted") } else { t!("requests.decided_sent_back") };
+            // Landed by its own member, its gates passed: who, and one tap to undo it.
+            let landed = d.landed_by.clone();
+            let how: String = match (&landed, d.accepted) {
+                (Some(name), _) => t!("requests.decided_landed", name = name),
+                (None, true) => t!("requests.decided_accepted").to_owned(),
+                (None, false) => t!("requests.decided_sent_back").to_owned(),
+            };
             block = block.child(
                 v_flex()
                     .id(SharedString::from(format!("decided-{ticket}")))
@@ -120,7 +126,25 @@ fn decided(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
                             .gap_2()
                             .text_size(px(12.))
                             .child(div().flex_1().min_w_0().truncate().text_color(p.text).child(d.title.clone()))
-                            .child(div().flex_none().text_color(p.muted).child(format!("{how} · {}", crate::state::local_hm(d.at)))),
+                            .child(div().flex_none().text_color(p.muted).child(format!("{how} · {}", crate::state::local_hm(d.at))))
+                            .when(landed.is_some(), |r| {
+                                r.child(
+                                    div()
+                                        .id(SharedString::from(format!("decided-{ticket}-revert")))
+                                        .flex_none()
+                                        .px_2()
+                                        .rounded(px(5.))
+                                        .text_color(p.text2)
+                                        .cursor_pointer()
+                                        .hover(move |s| s.bg(p.wash).text_color(p.text))
+                                        .on_click(cx.listener(move |this, _, _, cx| {
+                                            cx.stop_propagation();
+                                            this.send_command(Command::RevertLanded { squad: this.model.squad.clone(), ticket });
+                                            cx.notify();
+                                        }))
+                                        .child(t!("requests.revert")),
+                                )
+                            }),
                     )
                     .when(!d.what.is_empty(), |r| r.child(div().text_size(px(12.)).text_color(p.muted).truncate().child(d.what.clone()))),
             );

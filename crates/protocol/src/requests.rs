@@ -252,4 +252,8 @@ pub struct Decided {
     pub accepted: bool,
     /// When (unix seconds).
     pub at: u64,
+    /// Landed by its own member, its gates passed — not by the PM's
+    /// acceptance: the member's name. Revert or follow up from the digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub landed_by: Option<String>,
 }

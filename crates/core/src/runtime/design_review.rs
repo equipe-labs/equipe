@@ -63,6 +63,7 @@ fn equipe_ticket(title: String, body: String, kind: TicketKind, owner: Option<St
         design_qa: None, landing: false,
         plan: None,
         model: None,
+        flow: None,
         created_by: by.to_owned(),
         note: None,
         asks: Vec::new(),
@@ -172,7 +173,7 @@ You work in {}.\n",
         } else {
             format!(
                 "[equipe] You're on T-{}: the daily design review — {} change(s) equipe's precheck let through without a designer turn because they looked low risk. \
-Look at them together, in one pass, and file only what is real: an S1/S2 becomes a fix ticket for its engineer; S3/S4 go into one polish ticket. You work in {}.\n",
+Look at them together, in one pass, and file only what is real: an S1/S2 becomes a fix ticket for its engineer; S3/S4 go into one backlog note for the person. You work in {}.\n",
                 batch.ticket,
                 items.len(),
                 dir.display()
@@ -392,7 +393,7 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
     }
 
     /// `design_review`: a designer's word on a daily review or audit — fix
-    /// tickets for each S1/S2, one polish ticket for the rest, an audit's
+    /// tickets for each S1/S2, one backlog note for the rest, an audit's
     /// misses counted — handed in when the turn ends.
     pub(super) fn finish_design_review(&mut self, squad: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let (on, designer) = {
@@ -452,8 +453,10 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
                 }
             }
         }
-        // S3/S4 go together into one polish ticket, for the PM to schedule —
-        // without what is of work the person stopped (`stops`).
+        // S3/S4 go together into one backlog note — an idea nothing starts, for
+        // the person to start when they want it, never a ticket run on its own
+        // (`crate::flow`'s meta-work budget) — without what is of work the person
+        // stopped (`stops`).
         let stops = self.stops_in_force(squad);
         if !stops.is_empty() {
             let of = |line: &str| -> bool {
@@ -474,7 +477,7 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
                 TicketKind::Code,
                 polish_owner,
                 None,
-                TicketStatus::Proposed,
+                TicketStatus::Idea,
                 crate::protocol::Priority::Low,
                 &designer,
             );
@@ -482,7 +485,7 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
                 && let Ok(pid) = journal.create_ticket(&polish)
             {
                 let _ = journal.ticket_event(pid, &designer, "created", &format!("design polish from T-{on}"));
-                self.keep_review_follow_up(squad, pid, on, rules::follow_up::Kind::Polish, rules::follow_up::Severity::S3);
+                self.keep_review_follow_up(squad, pid, on, rules::follow_up::Kind::Backlog, rules::follow_up::Severity::S3);
                 if let Some(made) = self.journal(squad).and_then(|j| j.ticket(pid).ok().flatten()) {
                     self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: made });
                 }
@@ -499,7 +502,7 @@ what it should be) and `polish` (S3/S4). Then end your turn.",
             "{}\n\n{} change(s) looked at: {blockers} S1/S2 finding(s), {fixes} fix ticket(s); {polish} polish point(s){}.",
             review.findings,
             review.items.len(),
-            if polish > 0 { " gathered into one polish ticket" } else { "" }
+            if polish > 0 { " kept in one backlog note for the person" } else { "" }
         );
         let work = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()).ok_or("You're not on a ticket.")?;
         work.handed_in = Some(report.clone());

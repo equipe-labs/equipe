@@ -30,7 +30,7 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
     }
     let Ticket {
         id, title, body: _, status, kind, label, owner, assignee, project, depends_on, branch, worktree, execution, merged, off_main, created_by, note: _, asks: _,
-        remaining: _, images: _, priority, rank, updated_at, design_qa, plan, model, landing,
+        remaining: _, images: _, priority, rank, updated_at, design_qa, plan, model, landing, flow: _,
     } = ticket;
     Ticket {
         id: *id,
@@ -60,6 +60,7 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
         plan: plan.clone(),
         model: model.clone(),
         landing: *landing,
+        flow: None,
     }
 }
 
@@ -577,7 +578,7 @@ pub fn lite_tools() -> Vec<Value> {
     tools.push(json!({
         "name": DESIGN_REVIEW,
         "description": "Designers, on a daily design review or a design QA audit: your word on every change it lists. Each S1/S2 in \
-`blockers` becomes a fix ticket for that change's engineer; `polish` (S3/S4) is gathered into one polish ticket for later. Give \
+`blockers` becomes a fix ticket for that change's engineer; `polish` (S3/S4) is kept in one backlog note for the person, not a ticket to run. Give \
 every change its entry, even when it is fine. Then end your turn.",
         "inputSchema": {
             "type": "object",
@@ -685,6 +686,23 @@ is checked, for whom. No ticket numbers or test codes (T-12, TP-3), no [bracket]
 The sort of work goes in `label`, not in the title.";
 
 /// The `label` argument of `create_ticket` and `update_ticket`.
+/// A checklist's items, as `create_ticket`, `check_steps` and the PM's
+/// `update_ticket` take them (`crate::flow::steps_arg`).
+static STEPS_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
+    json!({
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "text": { "type": "string", "description": "What is done, in the squad's language." },
+                "who": { "type": "string", "description": "The role or member that does it; left out, whoever holds the ticket." },
+            },
+            "required": ["text"],
+        },
+        "description": "Checklist items — the spec, the build, the checks — done on this one ticket and branch rather than as tickets of their own. Left out on the ticket that answers the person, equipe gives it the usual ones.",
+    })
+});
+
 static LABEL_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
     json!({
         "type": "string",
@@ -777,8 +795,35 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "idea": { "type": "boolean", "description": "The person's idea, kept for later rather than done now: it waits on the board as an idea, which nothing starts and nothing asks about, until the PM puts it to them when its time comes. Use it whenever they float something for someday — 'later', 'an idea', 'not now but' — and keep their own words in the body, with what led to it." },
                     "request": { "type": "integer", "description": "The person's request it serves (3 for R-3), when equipe wouldn't link it by itself. Left out, a ticket made in answer to the person, or while working on a request's ticket, joins that request." },
                     "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` names, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
+                    "steps": STEPS_SCHEMA.clone(),
+                    "separate_why": { "type": "string", "description": "Made while you hold a ticket of the person's request: why this is work of its own rather than the next item of that ticket's checklist (another repository, nothing on its branch). Without it, the next part of a request goes on the same ticket by `pass_baton`." },
                 },
                 "required": ["title", "body"],
+            },
+        }),
+        json!({
+            "name": crate::flow::PASS_BATON,
+            "description": "Pass the ticket you hold to another member — designer to frontend when the prototype is done, or to a helper for one step — on the same ticket, branch and worktree: no new ticket, no wait for the PM. Your changes are committed and they carry on from them with your note. Tick off what you finished in `done`. With `back`, the baton comes back to you when they are done with their part. Then end your turn.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "to": { "type": "string", "description": "Who takes it: a role (frontend) or a member's name." },
+                    "note": { "type": "string", "description": "What they need to know to carry on: what is done, where (the prototype's path), what is next — in the person's language." },
+                    "done": { "type": "array", "items": { "type": "integer" }, "description": "The checklist items you finished, by number." },
+                    "back": { "type": "boolean", "description": "They do one step and give it back to you (a helper)." },
+                },
+                "required": ["to", "note"],
+            },
+        }),
+        json!({
+            "name": crate::flow::CHECK_STEPS,
+            "description": "The checklist of the ticket you hold: tick off items as each is done (`done`, by number) and add the items its work needs (`add`) — a spec, the build, a check, a fix of what you found — instead of tickets of their own.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "done": { "type": "array", "items": { "type": "integer" }, "description": "Items done, by number from 1." },
+                    "add": STEPS_SCHEMA.clone(),
+                },
             },
         }),
         json!({
@@ -1258,8 +1303,21 @@ they say it isn't for now.",
                     "why": { "type": "string", "description": "With status proposed, for an idea: why now, in one or two lines in the person's language — what in the business or on the board makes it timely. Shown on its card." },
                     "request": { "type": "integer", "description": "Put it with the person's request R-n (give n), at any status: its progress is then told with that request's." },
                     "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` adds, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
+                    "steps": STEPS_SCHEMA.clone(),
                 },
                 "required": ["id"],
+            },
+        }));
+        tools.push(json!({
+            "name": crate::flow::REVERT_LANDED,
+            "description": "Work a member landed itself (your digest lists it) that is wrong: its revert goes to the front of its member's queue as a ticket, with `why`, and the person sees it in your digest. For something to add rather than undo, put a follow-up ticket on the board for its member instead.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "id": { "type": "integer", "description": "The landed ticket." },
+                    "why": { "type": "string", "description": "What is wrong with it, for its member — in the person's language." },
+                },
+                "required": ["id", "why"],
             },
         }));
         tools.push(json!({
@@ -1855,6 +1913,7 @@ mod tests {
             merged: None,
             off_main: None,
             design_qa: None, landing: false, plan: None, model: None,
+            flow: None,
             created_by: "pm".into(),
             note: None,
             asks: vec![],

@@ -275,6 +275,7 @@ mod tests {
             design_qa: None, landing: false,
             plan: None,
             model: None,
+            flow: None,
         }
     }
 

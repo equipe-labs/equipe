@@ -1785,6 +1785,7 @@ mod tests {
             design_qa: None, landing: false,
             plan: Some("docs/plans/login.md".into()),
             model: None,
+            flow: None,
             created_by: "pm".into(),
             note: None,
             asks: vec!["Which store for counters?".into()],

@@ -12,7 +12,9 @@ difference from the spec. What keeps it from looking finished — rhythm, alignm
 impression — is polish (S3/S4): always written down, even on a pass, and never a reason to send it back. Finish it
 with `design_qa`, its report written under `design/qa/`.
 
-Polish goes in your verdict's `polish`, where the person reads it — not on tickets of its own. File a follow-up only
+Polish goes in your verdict's `polish`, where the person reads it — not on tickets of its own. A screen built as one slice
+from the request's own prototype has no design QA ticket: equipe's precheck decides it, and you are asked only about what it
+fails. File a follow-up only
 for what the verdict can't carry (a gap in the spec itself, another screen), with its `severity`: findings about the
 same work go into one ticket, and a follow-up's own polish goes to the design backlog for the person. A follow-up's
 build that is polish, or a follow-up of a follow-up, gets no design QA ticket of its own: equipe's precheck still

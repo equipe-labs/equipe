@@ -656,6 +656,7 @@ mod tests {
             note: None,
             plan: None,
             model: None,
+            flow: None,
             asks: vec![],
             label: None, remaining: vec![],
             images: Vec::new(),

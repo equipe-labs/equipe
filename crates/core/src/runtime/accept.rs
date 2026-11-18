@@ -136,7 +136,14 @@ them, and note what they said on the ticket with `comment`, for the PM."
     /// [`Runtime::accept_worked`] takes it from there, in the order the tickets
     /// were named. The PM's call is answered then, with what really happened.
     pub(super) async fn accept_work(&mut self, squad: &str, member: &str, id: SessionId, args: &Value, reply: oneshot::Sender<ToolResult>) {
-        let (checked, push, plan, landing) = match self.accept_plan(squad, member, id, args) {
+        self.accept_work_by(squad, member, id, args, reply, false).await;
+    }
+
+    /// [`Runtime::accept_work`], by the PM — or, `self_land`, by the ticket's
+    /// own member landing it once equipe found nothing in it that needs a
+    /// person (`runtime::flow`): the same look, checks and landing.
+    pub(super) async fn accept_work_by(&mut self, squad: &str, member: &str, id: SessionId, args: &Value, reply: oneshot::Sender<ToolResult>, self_land: bool) {
+        let (checked, push, plan, landing) = match self.accept_plan(squad, member, id, args, self_land) {
             Ok(planned) => planned,
             Err(text) => {
                 self.dispatch(squad).await;
@@ -144,7 +151,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
                 return;
             }
         };
-        let mut worked = AcceptWorked { squad: squad.to_owned(), member: member.to_owned(), session: id, checked, push, named: Vec::new(), landing, reply };
+        let mut worked = AcceptWorked { squad: squad.to_owned(), member: member.to_owned(), session: id, checked, push, named: Vec::new(), landing, reply, self_land };
         // Nothing for git to do: answered at once.
         if !plan.iter().any(|p| matches!(p, Plan::Look(_))) {
             worked.named = plan.into_iter().map(|p| match p {
@@ -174,8 +181,8 @@ them, and note what they said on the ticket with `comment`, for the PM."
     /// it checked, whether main is pushed, and each ticket named, in order —
     /// left out and why, or to be looked at off the loop. The tickets to look
     /// at are under way from here on (`accepting`).
-    fn accept_plan(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<(String, bool, Vec<Plan>, Vec<TicketId>), String> {
-        if !self.sessions.get(&id).is_some_and(Session::is_pm) {
+    fn accept_plan(&mut self, squad: &str, member: &str, id: SessionId, args: &Value, self_land: bool) -> Result<(String, bool, Vec<Plan>, Vec<TicketId>), String> {
+        if !self_land && !self.sessions.get(&id).is_some_and(Session::is_pm) {
             return Err("Only the PM accepts the team's work. Hand yours in with submit_for_review.".into());
         }
         let push = args.get("push").and_then(Value::as_bool).unwrap_or(false);
@@ -216,8 +223,9 @@ them, and note what they said on the ticket with `comment`, for the PM."
                 plan.push(Plan::Left(why));
                 continue;
             }
-            // Its own code goes to the person: nobody accepts their own work.
-            if let Some(why) = rules::own_code(&t, member) {
+            // Its own code goes to the person: nobody accepts their own work —
+            // but a member lands its own once equipe's gates said nothing needs a person.
+            if let Some(why) = rules::own_code(&t, member).filter(|_| !self_land) {
                 plan.push(Plan::Left(why));
                 continue;
             }
@@ -248,7 +256,7 @@ them, and note what they said on the ticket with `comment`, for the PM."
     /// named, is sent back for a conflict, put to its project's checks, or
     /// accepted and merged — then the PM hears what happened.
     pub(super) async fn accept_worked(&mut self, worked: AcceptWorked) {
-        let AcceptWorked { squad, member, session: id, checked, push, named, landing, reply } = worked;
+        let AcceptWorked { squad, member, session: id, checked, push, named, landing, reply, self_land } = worked;
         let (squad, member) = (squad.as_str(), member.as_str());
         let (mut accepted, mut left) = (Vec::new(), Vec::new());
         // What a designer made, to put in front of the person with the acceptance.
@@ -278,7 +286,8 @@ them, and note what they said on the ticket with `comment`, for the PM."
                         "Its branch conflicts with main in {files}. Merge main into your branch in your worktree (git merge \
 main; no rebase needed), resolve each conflict keeping what both sides meant, run the relevant tests, and hand it in again."
                     );
-                    match self.send_back(squad, ticket, member, &reason, SendBackReason::Environment, true) {
+                    let sender = if self_land { "equipe" } else { member };
+                    match self.send_back(squad, ticket, sender, &reason, SendBackReason::Environment, true) {
                         Ok(who) => left.push(format!("T-{ticket} conflicts with main in {files}: sent back to {who} to merge main in")),
                         Err(why) => left.push(why),
                     }
@@ -290,7 +299,7 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
                         continue;
                     }
                     let title = t.title.clone();
-                    self.queue_gate(gate::Gate { squad: squad.to_owned(), ticket, title, by: member.to_owned(), session: id, checked: checked.clone(), push, repo, branch, tries: 0 });
+                    self.queue_gate(gate::Gate { squad: squad.to_owned(), ticket, title, by: member.to_owned(), session: id, checked: checked.clone(), push, repo, branch, tries: 0, self_land });
                     checking.push(ticket);
                 }
                 // A checks file that can't be read holds the merge back: never guessed past.
@@ -309,7 +318,8 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
                         unchecked.push(ticket);
                     }
                     if let Some(journal) = self.journal(squad) {
-                        let _ = journal.ticket_event(ticket, member, "accepted by the PM", &checked);
+                        let kind = if self_land { crate::lead_time::SELF_LANDED } else { "accepted by the PM" };
+                        let _ = journal.ticket_event(ticket, member, kind, &checked);
                     }
                     if let Some(closed) = closed {
                         self.closing.insert((squad.to_owned(), ticket), closed);
@@ -330,11 +340,16 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
         let list = |ids: &[TicketId]| ids.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
         // What the person reads: work merged with no checks run says so.
         let (unchecked_now, rest): (Vec<TicketId>, Vec<TicketId>) = accepted.iter().partition(|t| unchecked.contains(t));
-        if !rest.is_empty() {
+        if self_land {
+            if !accepted.is_empty() {
+                let text = say!(self, "notice.self_landed", ids = list(&accepted));
+                self.publish(Event::Notice { undo: None, session: id, text });
+            }
+        } else if !rest.is_empty() {
             let text = say!(self, "notice.pm_accepted", ids = list(&rest), checked = checked);
             self.publish(Event::Notice { undo: None, session: id, text });
         }
-        if !unchecked_now.is_empty() {
+        if !unchecked_now.is_empty() && !self_land {
             let text = say!(self, "notice.pm_accepted_unchecked", ids = list(&unchecked_now), checked = checked, file = crate::checks::FILE);
             self.publish(Event::Notice { undo: None, session: id, text });
         }
@@ -603,6 +618,8 @@ pub(super) struct AcceptWorked {
     /// Accepted already: landing on main again, nothing more to accept.
     landing: Vec<TicketId>,
     reply: oneshot::Sender<ToolResult>,
+    /// The ticket's own member lands it (`runtime::flow`), not the PM.
+    self_land: bool,
 }
 
 /// A ticket `accept_work` named, as the loop planned it.
