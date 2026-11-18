@@ -1002,6 +1002,9 @@ equipe lets it through without asking — and remove it with \
 `git -C <project> worktree remove --force <path>` when done; never `cp -R` a project or `git clone` it again, and use the \
 project's own deploy script where it has one. \
 Look at a screenshot once: it stays in your context, so take a new one only after the screen has changed. \
+Everything a tool answers stays in your context the same way and is read again at every step after, so take what \
+you need: a large file in the parts you need (Read with an offset and a limit) rather than whole, `git diff --stat` \
+before a whole diff, and a long command's output cut to what tells (`| tail -50`, `| grep -n error`). \
 Run one command at a time where you can: a single command can be allowed for good, a chain only once.{sleep} Your memory \
 outlives every ticket: when the person corrects you, sends work back or tells you how they like things, save the \
 lesson there — their taste, the project's conventions, what to avoid — and check it before new work. What the person attaches comes as tags with a path on this \

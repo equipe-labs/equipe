@@ -155,6 +155,9 @@ pub struct Run<'a> {
     pub label: &'a str,
     /// Set for every command (`CARGO_TARGET_DIR`…).
     pub env: &'a [(String, String)],
+    /// Where a failing command's whole output is kept, for the member sent
+    /// back to open — what it is told is a summary. `None`: not kept.
+    pub keep: Option<&'a Path>,
 }
 
 impl Run<'_> {
@@ -177,7 +180,7 @@ impl Run<'_> {
             Err(err) => return Outcome::Error(err),
         };
         let deadline = Instant::now() + checks.timeout;
-        let ended = match self.on(&merge.commit, "merge", |dir| run_all(dir, &checks.commands, self.env, deadline, checks.timeout)) {
+        let ended = match self.on(&merge.commit, "merge", |dir| run_all_keeping(dir, &checks.commands, self.env, deadline, checks.timeout, self.keep)) {
             Ok(ended) => ended,
             Err(err) => return Outcome::Error(err),
         };
@@ -233,13 +236,24 @@ enum Ended {
 /// Each of `commands` in `dir`, one after another, until one fails or
 /// `deadline` passes.
 fn run_all(dir: &Path, commands: &[String], env: &[(String, String)], deadline: Instant, timeout: Duration) -> Ended {
+    run_all_keeping(dir, commands, env, deadline, timeout, None)
+}
+
+/// [`run_all`], a failing command's whole output copied to `keep` and its
+/// summary ([`summary`]) saying where.
+fn run_all_keeping(dir: &Path, commands: &[String], env: &[(String, String)], deadline: Instant, timeout: Duration, keep: Option<&Path>) -> Ended {
     let log = dir.with_extension("log");
+    let kept = |log: &Path| {
+        let to = keep?;
+        std::fs::create_dir_all(to.parent()?).ok()?;
+        std::fs::copy(log, to).ok().map(|_| to.to_owned())
+    };
     let ended = (|| {
         for command in commands {
             match run_one(dir, command, env, deadline, &log, timeout) {
                 One::Passed => continue,
-                One::Failed(code) => return Ended::Failed { command: command.clone(), code, tail: tail(&log) },
-                One::TimedOut => return Ended::TimedOut { command: command.clone(), tail: tail(&log) },
+                One::Failed(code) => return Ended::Failed { command: command.clone(), code, tail: summary(&log, kept(&log).as_deref()) },
+                One::TimedOut => return Ended::TimedOut { command: command.clone(), tail: summary(&log, kept(&log).as_deref()) },
             }
         }
         Ended::Passed
@@ -314,6 +328,65 @@ fn run_one(dir: &Path, command: &str, env: &[(String, String)], deadline: Instan
     }
 }
 
+/// Words a line of a failing run says it failed with: a test runner's or a
+/// compiler's.
+const FAILURE_MARKS: [&str; 12] = ["FAILED", "FAIL ", "failed", "failures:", "error[", "error:", "Error:", "panicked", "✗", "✕", "×", "AssertionError"];
+
+/// Words a test runner's count line has.
+const COUNT_MARKS: [&str; 5] = ["test result:", "Tests:", "Test Files", " passing", " passed"];
+
+/// How many lines that say what failed a summary lists, and how much of each.
+const FAILURE_LINES: usize = 20;
+const LINE_MAX: usize = 240;
+
+/// What a failing command printed, in short: the lines that say what failed
+/// (the first [`FAILURE_LINES`]), the runner's counts, and its last lines —
+/// at most [`TAIL_BYTES`] — then where the whole output is (`kept`). A test
+/// run's failures are often far above its last lines.
+fn summary(log: &Path, kept: Option<&Path>) -> String {
+    let bytes = std::fs::read(log).unwrap_or_default();
+    let from = bytes.len().saturating_sub(256 * 1024);
+    let text = String::from_utf8_lossy(&bytes[from..]);
+    let cut = |line: &str| if line.chars().count() > LINE_MAX { format!("{}…", line.chars().take(LINE_MAX).collect::<String>()) } else { line.to_owned() };
+    let mut failures: Vec<String> = Vec::new();
+    for line in text.lines().map(str::trim_end).filter(|l| FAILURE_MARKS.iter().any(|m| l.contains(m))) {
+        let line = cut(line);
+        if !failures.contains(&line) {
+            failures.push(line);
+        }
+        if failures.len() == FAILURE_LINES {
+            break;
+        }
+    }
+    let counts: Vec<String> = text.lines().filter(|l| COUNT_MARKS.iter().any(|m| l.contains(m))).map(|l| cut(l.trim())).collect();
+    let counts = &counts[counts.len().saturating_sub(3)..];
+    let last = tail(log);
+    let mut out = String::new();
+    // Only when it adds to the last lines: a short output is shown as it is.
+    let fresh: Vec<&String> = failures.iter().filter(|f| !last.contains(f.as_str())).collect();
+    if !fresh.is_empty() {
+        out.push_str(&format!("Lines that say what failed:\n{}\n\n", fresh.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")));
+    }
+    if !counts.is_empty() && counts.iter().any(|c| !last.contains(c.as_str())) {
+        out.push_str(&format!("Counts:\n{}\n\n", counts.join("\n")));
+    }
+    if !out.is_empty() {
+        out.push_str("Last lines:\n");
+    }
+    out.push_str(&last);
+    if out.len() > TAIL_BYTES * 2 {
+        let mut end = TAIL_BYTES * 2;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+    }
+    if let Some(kept) = kept {
+        out.push_str(&format!("\n[the whole output: {}]", kept.display()));
+    }
+    out
+}
+
 /// The last part of what a command printed: its last [`TAIL_LINES`] lines,
 /// at most [`TAIL_BYTES`].
 fn tail(log: &Path) -> String {
@@ -357,7 +430,7 @@ pub fn failed_reason(outcome: &Outcome) -> Option<String> {
         Outcome::TimedOut { command, after, tail } => (format!("`{command}` was still running after {} minutes and was stopped", after.as_secs() / 60), tail),
         _ => return None,
     };
-    let tail = if tail.is_empty() { String::new() } else { format!(" Its output ended:\n```\n{tail}\n```\n") };
+    let tail = if tail.is_empty() { String::new() } else { format!(" Its output, in short:\n```\n{tail}\n```\nOpen the whole output, where it says, only for the part you need.") };
     Some(format!(
         "equipe ran the project's checks ({FILE}) on your branch merged with main, before merging it, and {what}.{tail} Main \
 alone passes it, so the change is in your branch or in how it meets main: merge main into your branch in your worktree \
@@ -410,7 +483,7 @@ mod tests {
 
     fn run(repo: &Path) -> Outcome {
         let scratch = repo.parent().unwrap().join("checks");
-        let outcome = Run { repo, branch: "work", message: "merge work", scratch: &scratch, label: "t1", env: &[] }.run();
+        let outcome = Run { repo, branch: "work", message: "merge work", scratch: &scratch, label: "t1", env: &[], keep: None }.run();
         // Nothing is left behind, whatever happened.
         assert_eq!(std::fs::read_dir(&scratch).map(|d| d.count()).unwrap_or(0), 0, "scratch emptied");
         assert!(!git(repo, &["worktree", "list"]).contains(scratch.to_string_lossy().as_ref()), "worktrees removed");
@@ -456,6 +529,37 @@ mod tests {
         assert_eq!(git(&repo, &["rev-parse", "main"]), before, "main untouched");
         let reason = failed_reason(&outcome).unwrap();
         assert!(reason.contains("exit code 1") && reason.contains("broken by the branch") && reason.contains("git merge main"), "{reason}");
+    }
+
+    #[test]
+    fn a_long_failing_test_run_is_told_as_what_failed_its_counts_and_its_end_with_the_whole_kept() {
+        let dir = scratch("summary");
+        let log = dir.join("run.log");
+        let mut out = String::from("running 900 tests\n");
+        for i in 0..900 {
+            out.push_str(&format!("test case_{i} ... {}\n", if i == 17 { "FAILED" } else { "ok" }));
+        }
+        out.push_str("\nfailures:\n    case_17: assertion `left == right` failed\n");
+        out.push_str("\ntest result: FAILED. 899 passed; 1 failed; 0 ignored\n");
+        for i in 0..60 {
+            out.push_str(&format!("   Doc-tests line {i}\n"));
+        }
+        std::fs::write(&log, &out).unwrap();
+        let kept = dir.join("t3").join("checks-failed.log");
+        let ended = (|| {
+            std::fs::create_dir_all(kept.parent().unwrap()).ok()?;
+            std::fs::copy(&log, &kept).ok()
+        })();
+        assert!(ended.is_some());
+        let said = summary(&log, Some(&kept));
+        assert!(said.contains("test case_17 ... FAILED"), "the failing test, far above the end: {said}");
+        assert!(said.contains("Counts:\ntest result: FAILED. 899 passed; 1 failed"), "{said}");
+        assert!(said.contains("Last lines:\n") && said.contains("Doc-tests line 59"), "{said}");
+        assert!(said.ends_with(&format!("[the whole output: {}]", kept.display())), "{said}");
+        assert!(said.len() < out.len() / 4, "{} of {}", said.len(), out.len());
+        // A short output is shown as it is.
+        std::fs::write(&log, "broken by the branch\n").unwrap();
+        assert_eq!(summary(&log, None), "broken by the branch");
     }
 
     #[test]

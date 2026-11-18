@@ -7052,11 +7052,11 @@ async fn a_long_board_comes_in_pages_each_within_the_cap() {
     let repo = repo();
     let home = squad_home(&[&repo]);
     let (claude, _recorded) = recording_claude(&answering("ok"));
-    // Ideas wait on nothing: a board of 400 tickets with long titles, written before the title rule.
+    // Proposals wait on nothing: a board of 400 tickets with long titles, written before the title rule.
     {
         let journal = Journal::for_squad(&home, "acme").unwrap();
         for n in 0..400 {
-            let long = Ticket { status: TicketStatus::Idea, ..old_ticket(&format!("Idea number {n} for the roadmap: {}", "a long title ".repeat(10))) };
+            let long = Ticket { status: TicketStatus::Proposed, ..old_ticket(&format!("Proposal number {n} for the roadmap: {}", "a long title ".repeat(10))) };
             journal.create_ticket(&long).unwrap();
         }
     }
