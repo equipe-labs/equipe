@@ -6863,8 +6863,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         let candidates: Vec<crate::lanes::Member> = members.iter().map(|m| lane(m, &tickets, false)).collect();
         // With a reserve held, the little room goes to the most urgent tickets first.
         let urgent = if paced { crate::pacing::urgent_first(&tickets) } else { Vec::new() };
-        let merged: Vec<TicketId> = [urgent.as_slice(), first].concat();
-        let first: &[TicketId] = if urgent.is_empty() { first } else { &merged };
+        // What the person asked for goes before the squad's own follow-ups and checks (`requests`).
+        let requested = self.journals.get(squad).map(|j| j.requests().serving()).unwrap_or_default();
+        let merged: Vec<TicketId> = [urgent.as_slice(), first, requested.as_slice()].concat();
+        let first: &[TicketId] = if urgent.is_empty() && requested.is_empty() { first } else { &merged };
         let assigned = crate::lanes::assign_guarded(&tickets, &candidates, single_project, first, &room, &guarded);
         // What a hold keeps from starting: what members would take but for it.
         if members.iter().any(|m| m.held) {
@@ -8465,6 +8467,9 @@ It starts when {owner} is free."
         if call.name == crate::stops::STOP_WORK {
             return self.stop_work_tool(call, reply).await;
         }
+        if call.name == board::UNBLOCK {
+            return self.unblock_tool(call, reply).await;
+        }
         if call.name == crate::signals::PROPOSE_SIGNAL {
             return self.propose_signal(call, reply);
         }
@@ -9930,6 +9935,8 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                         return Err(crate::stops::refusal(&stop));
                     }
                 }
+                // A request's ticket isn't chained behind other work without a reason (`requests`).
+                let depends_note = if idea { String::new() } else { self.check_depends(&squad, id, None, named_request, title, body, &depends_on, &args)? };
                 // Where the PM runs the work, a member's proposal is simply done:
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
@@ -10022,6 +10029,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if let Some(serves) = serves {
                     reply.push_str(&serves);
                 }
+                reply.push_str(&depends_note);
                 Ok(reply)
             }
             board::UPDATE_TICKET => {
@@ -10078,9 +10086,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     }
                     ticket.kind = kind;
                 }
+                let mut depends_note = String::new();
                 if let Some(ids) = board::arg_ids(&args, "depends_on") {
+                    let added: Vec<TicketId> = ids.iter().copied().filter(|d| !ticket.depends_on.contains(d)).collect();
+                    let text = format!("{} {}", ticket.title, ticket.body);
+                    depends_note = self.check_depends(&squad, id, Some(ticket_id), None, &ticket.title, &text, &added, &args)?;
                     ticket.depends_on = ids;
                 }
+                let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let waiting = ticket.status == TicketStatus::Waiting;
                 let was_idea = ticket.status == TicketStatus::Idea;
                 match board::arg_str(&args, "status") {
@@ -10115,7 +10128,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if pitched {
                     return Ok(format!("Put idea T-{ticket_id} to the person: its card asks whether to start it now. Tell them in a line or two why now; their click starts it."));
                 }
-                Ok(format!("Updated T-{ticket_id}."))
+                Ok(format!("Updated T-{ticket_id}.{depends_note}"))
             }
             board::COMMENT => {
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;

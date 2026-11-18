@@ -822,6 +822,7 @@
   "gate.card_why": "需要你確認：{list}",
   "news.stopped.other": "已停止「{words}」：取消了 {count} 張未完成的工單，在你解除之前不再接受此類新工單。",
   "news.stop_lifted": "已解除「{words}」的停止：此類工作可以再放上看板。",
+  "news.unblocked": "{name} 讓 T-{id} 不再等待 {deps}：兩者的工作沒有重疊。",
   "news.questions_withdrawn.other": "T-{id} 已了結，撤回了 {count} 個待回答的問題。",
   "error.stop_what": "請說明要停止什麼：一個請求、一張工單，或用文字描述。",
   "notice.daily_title": "{n} 件事已卡住 {blocks} 張工單 {span}",

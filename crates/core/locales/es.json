@@ -830,6 +830,7 @@
   "news.stopped.one": "Detenido «{words}»: {count} ticket abierto cancelado, y los nuevos se rechazan hasta que levantes la parada.",
   "news.stopped.other": "Detenido «{words}»: {count} tickets abiertos cancelados, y los nuevos se rechazan hasta que levantes la parada.",
   "news.stop_lifted": "Parada levantada para «{words}»: ese trabajo puede volver al tablero.",
+  "news.unblocked": "{name} quitó la espera de T-{id} sobre {deps}: su trabajo no se solapa.",
   "news.questions_withdrawn.one": "{count} pregunta sobre T-{id} retirada: ya está resuelto.",
   "news.questions_withdrawn.other": "{count} preguntas sobre T-{id} retiradas: ya está resuelto.",
   "error.stop_what": "Di qué detener: una solicitud, un ticket o con palabras.",

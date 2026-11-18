@@ -438,3 +438,52 @@ async fn small_handed_in_work_is_the_pms_to_decide_and_weighty_work_goes_up_with
     assert!(odd.is_error || odd.text.starts_with("Already"), "{odd:?}");
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_requests_ticket_isnt_chained_behind_other_work_and_a_member_unblocks_its_own() {
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (claude, _calls) = recording_claude();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "designer")).await;
+    // Internal work on the app (T-1), and work on it for qa, who isn't on the squad (T-2, never starts).
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Sidebar collapse code", "body": "Collapse the rail in src/components/Sidebar.tsx", "owner": "qa" })).await;
+
+    // The person asks the designer for a prototype: chained behind T-1 without a reason, refused.
+    handle.send(Command::Submit { session: 2, text: "A Linear-style live prototype, please\n(LONG)".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 2, .. })).await;
+    let proto = json!({ "title": "Live prototype of the new layout", "body": "In design/directions/linear-claude/", "owner": "qa", "kind": "task", "depends_on": [1] });
+    let chained = tool(&handle, "designer", "create_ticket", proto.clone()).await;
+    assert!(chained.is_error && chained.text.contains("work outside it") && chained.text.contains("depends_why"), "{chained:?}");
+    // With a reason it may — and the places that don't overlap are pointed out all the same? Only without one.
+    let mut why = proto.clone();
+    why["depends_why"] = json!("It reuses the collapsed rail's motion");
+    let made = tool(&handle, "designer", "create_ticket", why).await;
+    assert!(!made.is_error && made.text.contains("R-1"), "{made:?}");
+
+    // The PM can't chain it behind internal work either, without saying why.
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Icon swap in the app", "body": "src/icons/", "owner": "qa" })).await;
+    let pm = tool(&handle, "pm", "update_ticket", json!({ "id": 2, "depends_on": [1, 3] })).await;
+    assert!(pm.is_error && pm.text.contains("T-3"), "{pm:?}");
+
+    // Outside a request, a dependency whose places overlap nothing is only pointed out.
+    let loose = tool(&handle, "pm", "create_ticket", json!({ "title": "Docs for the rail", "body": "docs/rail.md", "owner": "qa", "depends_on": [1] })).await;
+    assert!(!loose.is_error && loose.text.contains("nothing overlaps"), "{loose:?}");
+
+    // qa isn't here; the designer's own ticket (T-2, owner qa) isn't its own: asking goes to the PM, now.
+    let asked = tool(&handle, "designer", "unblock", json!({ "id": 2, "why": "The prototype is only in design/directions/" })).await;
+    assert!(!asked.is_error && asked.text.contains("Asked the PM"), "{asked:?}");
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } if text.starts_with("[Unblock · designer]"))).await;
+
+    // Its own ticket, not started: it drops the dependency itself, logged, and the PM is told.
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Prototype motion notes", "body": "design/directions/notes.md", "owner": "designer", "kind": "task", "depends_on": [1], "depends_why": "test" })).await;
+    let own = tool(&handle, "designer", "unblock", json!({ "id": 5, "on": [1], "why": "Notes only, in design/directions/" })).await;
+    assert!(!own.is_error && own.text.contains("no longer waits on T-1"), "{own:?}");
+    let t5 = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 5).unwrap();
+    assert!(t5.depends_on.is_empty(), "{t5:?}");
+    let refused = tool(&handle, "designer", "unblock", json!({ "id": 5, "on": [1], "why": "again" })).await;
+    assert!(refused.is_error, "{refused:?}");
+    handle.shutdown().await;
+}

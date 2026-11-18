@@ -114,3 +114,21 @@ data)"). The person's own words read by a screen always raise their card.
 Every card names each ticket by its title, and the accept card adds one plain
 line on what changes for people (the first sentence of the hand-in, in the
 person's language) — never a bare list of numbers.
+
+## What the person asked for doesn't queue behind internal work
+
+- **First in the queue.** Ready tickets of open requests (asked, made for
+  them, linked — not equipe's checks nor design follow-ups) are handed out
+  before the rest of the same members' work (`Store::serving`, in
+  `dispatch_to`'s `first`).
+- **No chaining without a reason.** A ticket of a request — being made in
+  answer to the person, made while working one, or already in one — may not
+  wait (`depends_on`, on `create_ticket` or `update_ticket`) on open work
+  outside that request unless `depends_why` says why. Any dependency whose
+  named places (`design/…`, `src/…`) overlap nothing with the ticket's is
+  pointed out in the reply.
+- **A member unblocks its own.** `unblock` takes dependencies off the
+  member's own ticket that hasn't started, with why (logged on the ticket, the
+  PM told). On a ticket that isn't its own or has started, it asks the PM
+  instead — a `[Unblock · member]` message the PM takes up at its next turn,
+  to settle first.

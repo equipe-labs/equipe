@@ -207,7 +207,7 @@ don't ask them in words meanwhile."
     }
 
     /// `text` to the PM as a routine's would be: now, or after its turn.
-    async fn hand_to_pm(&mut self, squad: &str, pm: SessionId, text: String) {
+    pub(super) async fn hand_to_pm(&mut self, squad: &str, pm: SessionId, text: String) {
         let about = self.hq(squad).map(|hq| board::project_name(&hq));
         self.said_about = Some(about);
         match self.sessions.get(&pm) {

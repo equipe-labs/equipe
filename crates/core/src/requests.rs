@@ -406,6 +406,61 @@ pub fn asked_after<'a>(text: &str, requests: &'a [Request]) -> Vec<&'a Request> 
         .collect()
 }
 
+// ── what a request's ticket may wait on ──
+
+/// The places a ticket's words name — `design/directions/`, `src/app/x.tsx`
+/// — each by its first folder (or its name, for a file at the top).
+pub fn areas(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = text
+        .split(|c: char| c.is_whitespace() || matches!(c, '`' | '(' | ')' | '[' | ']' | ',' | ';' | '"' | '\'' | '“' | '”'))
+        .map(|w| w.trim_end_matches(['.', ':', '!', '?']))
+        .filter(|w| w.contains('/') && !w.contains("://") && w.chars().any(char::is_alphabetic) && !w.starts_with('/'))
+        .filter_map(|w| w.trim_start_matches("./").split('/').find(|p| !p.is_empty()).map(|p| p.to_lowercase()))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Whether two tickets' words name overlapping places: `None` when either
+/// names none — nothing to tell by.
+pub fn overlap(a: &str, b: &str) -> Option<bool> {
+    let (a, b) = (areas(a), areas(b));
+    if a.is_empty() || b.is_empty() {
+        return None;
+    }
+    Some(a.iter().any(|x| b.contains(x)))
+}
+
+/// Why a ticket can't wait on `dep`, if it can't: one serving the person's
+/// request `serves` isn't chained behind open work outside that request
+/// without a reason. (English, for the member who asked.)
+pub fn chain_refusal(ticket: Option<TicketId>, serves: Option<RequestId>, dep: &Ticket, dep_serves: Option<RequestId>) -> Option<String> {
+    if dep.status.is_closed() || (serves.is_some() && dep_serves == serves) {
+        return None;
+    }
+    let what = ticket.map_or_else(|| "This ticket".to_owned(), |t| format!("T-{t}"));
+    let request = serves.map_or_else(|| "what the person just asked for".to_owned(), |r| format!("the person's request R-{r}"));
+    Some(format!(
+        "{what} serves {request}; T-{} ({}) is work outside it, still open. A request's ticket isn't chained behind other \
+work without a reason: leave T-{} out of depends_on — or, if it truly must wait, say why in `depends_why`.",
+        dep.id, dep.title, dep.id
+    ))
+}
+
+/// What a member is told when a dependency names places that don't
+/// overlap with its ticket's (`None` when they do, or can't be told).
+pub fn overlap_warning(text: &str, dep: &Ticket) -> Option<String> {
+    (overlap(text, &format!("{} {}", dep.title, dep.body)) == Some(false)).then(|| {
+        format!(
+            " Note: it now waits on T-{}, whose work is in {} while this one's is in {} — nothing overlaps. If it needn't wait, drop the dependency (update_ticket, or `unblock` on your own ticket).",
+            dep.id,
+            areas(&format!("{} {}", dep.title, dep.body)).join(", "),
+            areas(text).join(", ")
+        )
+    })
+}
+
 // ── where requests are kept ──
 
 /// A request as kept, before its status is worked out.
@@ -488,6 +543,19 @@ impl Store<'_> {
         )?;
         self.0.execute("UPDATE requests SET closed_at = NULL WHERE id = ?1", [request as i64])?;
         Ok(())
+    }
+
+    /// The open tickets the person's open requests are waiting for — what they
+    /// asked, what members made for it, what was linked to it; not equipe's
+    /// checks nor design follow-ups — for the queue to take first.
+    pub fn serving(&self) -> Vec<TicketId> {
+        let Ok(mut stmt) = self.0.prepare(
+            "SELECT rt.ticket FROM request_tickets rt JOIN requests r ON r.id = rt.request
+             WHERE r.closed_at IS NULL AND rt.link IN ('asked', 'made', 'linked') ORDER BY r.asked_at, rt.at",
+        ) else {
+            return Vec::new();
+        };
+        stmt.query_map([], |r| r.get(0)).and_then(|rows| rows.collect()).unwrap_or_default()
     }
 
     /// The request `ticket` serves, if any.
@@ -822,6 +890,24 @@ mod tests {
     }
 
     #[test]
+    fn a_requests_ticket_waits_on_other_work_only_with_a_reason_and_overlap_is_told() {
+        let mut sidebar = ticket(3672, "Sidebar collapse code", TicketStatus::Todo);
+        sidebar.body = "Collapse the rail in src/components/Sidebar.tsx".into();
+        assert!(chain_refusal(Some(3674), Some(7), &sidebar, None).unwrap().contains("R-7"));
+        assert!(chain_refusal(None, None, &sidebar, Some(7)).unwrap().contains("what the person just asked for"), "a request about to be made");
+        assert_eq!(chain_refusal(Some(3674), Some(7), &sidebar, Some(7)), None, "within the same request");
+        sidebar.status = TicketStatus::Done;
+        assert_eq!(chain_refusal(Some(3674), Some(7), &sidebar, None), None, "done work holds nothing up");
+        assert_eq!(areas("A live prototype in `design/directions/linear-claude/` and ./design/x.md"), ["design"]);
+        assert_eq!(areas("see https://linear.app/x and 3/4 of it"), Vec::<String>::new());
+        let proto = "Live prototype in design/directions/linear-claude/";
+        assert_eq!(overlap(proto, &sidebar.body), Some(false));
+        assert!(overlap_warning(proto, &sidebar).unwrap().contains("in src while this one's is in design"), "{:?}", overlap_warning(proto, &sidebar));
+        assert_eq!(overlap(proto, "Tokens in design/tokens.json"), Some(true));
+        assert_eq!(overlap(proto, "No paths at all"), None);
+    }
+
+    #[test]
     fn a_title_is_the_first_line_that_says_something_cut_short() {
         assert_eq!(title_of("\n  Make the input box new\nand the left menu"), "Make the input box new");
         let long = "x".repeat(100);
@@ -853,5 +939,8 @@ mod tests {
         assert!(store.listed(10_000).is_empty(), "closed before: not listed");
         store.link(id, 7, None, Link::Linked, 600).unwrap();
         assert_eq!(store.get(id).unwrap().closed_at, None, "a new ticket opens it again");
+        store.link(id, 8, Some(5), Link::Check, 601).unwrap();
+        store.link(id, 9, Some(5), Link::FollowUp, 602).unwrap();
+        assert_eq!(store.serving(), [5, 6, 7], "what the person asked for goes first; checks and follow-ups don't");
     }
 }

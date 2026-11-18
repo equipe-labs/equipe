@@ -822,6 +822,7 @@
   "gate.card_why": "あなたの確認が必要です: {list}",
   "news.stopped.other": "「{words}」を停止しました: 開いていたチケット {count} 件を取り消し、解除するまで新しいチケットも受け付けません。",
   "news.stop_lifted": "「{words}」の停止を解除しました: またボードに載せられます。",
+  "news.unblocked": "{name} が T-{id} の {deps} 待ちを外しました: 重なる作業はありません。",
   "news.questions_withdrawn.other": "T-{id} が片付いたので、残っていた質問 {count} 件を取り下げました。",
   "error.stop_what": "何を止めるか指定してください: 依頼、チケット、または言葉で。",
   "notice.daily_title": "{n}件が{span}にわたりチケット{blocks}件を止めています",

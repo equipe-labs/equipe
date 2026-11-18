@@ -822,6 +822,7 @@
   "gate.card_why": "확인이 필요해요: {list}",
   "news.stopped.other": "“{words}” 작업을 멈췄어요: 열린 티켓 {count}개를 취소했고, 멈춤을 풀 때까지 새 티켓도 받지 않아요.",
   "news.stop_lifted": "“{words}” 멈춤을 풀었어요: 다시 보드에 올릴 수 있어요.",
+  "news.unblocked": "{name}이(가) T-{id}의 {deps} 대기를 풀었어요: 겹치는 작업이 없어요.",
   "news.questions_withdrawn.other": "T-{id}이(가) 마무리돼서 남아 있던 질문 {count}개를 거뒀어요.",
   "error.stop_what": "무엇을 멈출지 알려 주세요: 요청, 티켓, 또는 말로요.",
   "notice.daily_title": "{n}가지가 {span} 동안 티켓 {blocks}개를 막고 있어요",

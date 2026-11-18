@@ -830,6 +830,7 @@
   "news.stopped.one": "« {words} » arrêté : {count} ticket ouvert annulé, et les nouveaux sont refusés jusqu’à ce que vous leviez l’arrêt.",
   "news.stopped.other": "« {words} » arrêté : {count} tickets ouverts annulés, et les nouveaux sont refusés jusqu’à ce que vous leviez l’arrêt.",
   "news.stop_lifted": "Arrêt levé pour « {words} » : ce travail peut revenir au tableau.",
+  "news.unblocked": "{name} a retiré l’attente de T-{id} sur {deps} : leurs travaux ne se recoupent pas.",
   "news.questions_withdrawn.one": "{count} question sur T-{id} retirée : c’est réglé.",
   "news.questions_withdrawn.other": "{count} questions sur T-{id} retirées : c’est réglé.",
   "error.stop_what": "Dites quoi arrêter : une demande, un ticket ou en mots.",

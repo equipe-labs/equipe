@@ -830,6 +830,7 @@
   "news.stopped.one": "Stopped “{words}”: {count} open ticket cancelled, and new ones of it are turned away until you lift it.",
   "news.stopped.other": "Stopped “{words}”: {count} open tickets cancelled, and new ones of it are turned away until you lift it.",
   "news.stop_lifted": "Lifted the stop on “{words}”: that work can be put on the board again.",
+  "news.unblocked": "{name} took T-{id} off waiting on {deps}: its work overlaps nothing there.",
   "news.questions_withdrawn.one": "{count} question about T-{id} withdrawn: it is settled.",
   "news.questions_withdrawn.other": "{count} questions about T-{id} withdrawn: it is settled.",
   "error.stop_what": "Say what to stop: a request, a ticket, or in words.",

@@ -311,3 +311,131 @@ impl Runtime {
         }
     }
 }
+
+impl Runtime {
+    /// Whether a ticket session `id` makes now serves one of the person's
+    /// requests: `Some(Some(r))` an existing one — named, or that of the
+    /// ticket `id` works — `Some(None)` the one about to be made for what
+    /// the person just said, `None` none.
+    fn would_serve(&self, squad: &str, id: SessionId, named: Option<RequestId>) -> Option<Option<RequestId>> {
+        if named.is_some() {
+            return Some(named);
+        }
+        let journal = self.journals.get(squad)?;
+        if let Some(on) = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket)) {
+            return journal.requests().of_ticket(on).map(Some);
+        }
+        let member = self.member_session(id);
+        let now = now_secs();
+        let said = self
+            .person_said
+            .iter()
+            .filter(|(at, s)| self.member_session(**at) == member && !s.text.is_empty() && now.saturating_sub(s.at) <= rules::ASKED_WITHIN)
+            .max_by_key(|(_, s)| s.at)
+            .map(|(_, s)| s.request)?;
+        Some(said.filter(|r| journal.requests().exists(*r)))
+    }
+
+    /// `depends_on` checked for ticket `ticket` (`None`: being made from
+    /// session `id`, with words `text`): a ticket of the person's request
+    /// isn't chained behind open work outside it unless `depends_why` says
+    /// why; a dependency whose places don't overlap is pointed out. The note
+    /// for the reply.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn check_depends(
+        &mut self,
+        squad: &str,
+        id: SessionId,
+        ticket: Option<TicketId>,
+        named: Option<RequestId>,
+        title: &str,
+        text: &str,
+        deps: &[TicketId],
+        args: &Value,
+    ) -> Result<String, String> {
+        if deps.is_empty() {
+            return Ok(String::new());
+        }
+        let why = board::arg_str(args, "depends_why").map(str::trim).filter(|w| !w.is_empty());
+        let Some(journal) = self.journals.get(squad) else { return Ok(String::new()) };
+        let serves = match ticket {
+            Some(t) => journal.requests().of_ticket(t).map(Some),
+            None => self.would_serve(squad, id, named),
+        };
+        let mut note = String::new();
+        for dep in deps {
+            let Some(d) = journal.ticket(*dep).ok().flatten() else { continue };
+            if let (Some(serves), None) = (serves, why)
+                && let Some(refusal) = rules::chain_refusal(ticket, serves, &d, journal.requests().of_ticket(*dep))
+            {
+                return Err(refusal);
+            }
+            if why.is_none()
+                && let Some(warning) = rules::overlap_warning(&format!("{title} {text}"), &d)
+            {
+                note.push_str(&warning);
+            }
+        }
+        Ok(note)
+    }
+
+    /// `unblock`: a member takes dependencies off its own ticket, not started
+    /// yet, saying why — logged, the PM told — and it can start; otherwise
+    /// the PM is asked to, at its next turn, as something to settle first.
+    pub(super) async fn unblock_tool(&mut self, call: ToolCall, reply: oneshot::Sender<equipe_protocol::rpc::ToolResult>) {
+        let answer = self.unblock(&call).await;
+        let _ = reply.send(match answer {
+            Ok(text) => equipe_protocol::rpc::ToolResult::ok(text),
+            Err(text) => equipe_protocol::rpc::ToolResult::error(text),
+        });
+    }
+
+    async fn unblock(&mut self, call: &ToolCall) -> Result<String, String> {
+        let squad = call.squad.clone();
+        let member = call.member.clone();
+        let id = self.caller_id(call).ok_or_else(|| format!("{member} isn't on the squad {squad}."))?;
+        let args = &call.arguments;
+        let ticket_id = board::arg_id(args, "id").ok_or("Which ticket waits? Give its id.")?;
+        let why = board::arg_str(args, "why").map(str::trim).filter(|w| !w.is_empty()).ok_or("Say `why` its work doesn't need them: what each touches.")?.to_owned();
+        let mut ticket = self.find_ticket(&squad, ticket_id).ok_or_else(|| format!("There is no T-{ticket_id}."))?;
+        let on: Vec<TicketId> = match board::arg_ids(args, "on") {
+            Some(ids) => ids.into_iter().filter(|d| ticket.depends_on.contains(d)).collect(),
+            None => ticket.depends_on.clone(),
+        };
+        if on.is_empty() {
+            return Err(format!("T-{ticket_id} doesn't wait on those (it waits on {}).", if ticket.depends_on.is_empty() { "nothing".to_owned() } else { crate::by_words::list(&ticket.depends_on) }));
+        }
+        let listed = crate::by_words::list(&on);
+        let role = self.sessions.get(&self.member_session(id)).and_then(|s| s.member.as_ref().map(|m| m.role.clone())).unwrap_or_default();
+        let is_pm = self.sessions.get(&self.member_session(id)).is_some_and(Session::is_pm);
+        let own = ticket.assignee.as_deref() == Some(member.as_str())
+            || ticket.owner.as_deref() == Some(member.as_str())
+            || (ticket.owner.as_deref() == Some(role.as_str()) && ticket.assignee.as_deref().is_none_or(|a| a == member));
+        let not_started = matches!(ticket.status, TicketStatus::Todo | TicketStatus::Proposed) && ticket.branch.is_none();
+        if (own || is_pm) && not_started {
+            ticket.depends_on.retain(|d| !on.contains(d));
+            let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
+            journal.save_ticket(&ticket).map_err(|e| e.to_string())?;
+            let _ = journal.ticket_event(ticket_id, &member, "dependency dropped", &format!("{listed}: {why}"));
+            self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
+            if !is_pm {
+                let line = format!("{member} took {listed} off T-{ticket_id}'s depends_on: {why} — put it back with update_ticket if it truly must wait.");
+                let shown = say!(self, "news.unblocked", name = member, id = ticket_id, deps = listed);
+                self.brief_pm(&squad, line, Some(shown));
+            }
+            self.dispatch(&squad).await;
+            return Ok(format!("T-{ticket_id} no longer waits on {listed}; it starts when its owner is free.{}", if is_pm { "" } else { " The PM is told." }));
+        }
+        let Some(pm) = self.pm_of(&squad) else { return Err("There's no PM to ask.".into()) };
+        let because = if own { format!("it has started ({})", ticket.status.label()) } else { "it isn't yours".to_owned() };
+        let text = format!(
+            "[Unblock · {member}] {member} asks you to unblock T-{ticket_id} ({}): it waits on {listed}. Its word: {why}\n\nSettle this \
+first: if the work overlaps nothing there, drop the dependency now (update_ticket with depends_on); if it must wait, tell \
+{member} why in a comment on T-{ticket_id}.",
+            ticket.title
+        );
+        self.hand_to_pm(&squad, pm, text).await;
+        Ok(format!("Asked the PM to unblock T-{ticket_id} ({because}): it takes it up at its next turn. Go on with other work meanwhile."))
+    }
+}
+
