@@ -9,7 +9,10 @@
 
 use std::collections::BTreeMap;
 
-use equipe_core::protocol::metrics::{Bucket, Connection, ErrorCode, FetchError, MetricValue, QueryResult, Sample, Shape, SourceKind, SourceSpec, Sources};
+use equipe_core::protocol::metrics::{
+    Bucket, Connection, ErrorCode, FetchError, MetricValue, PosthogAccount, PosthogLook, PosthogProject, PosthogSetup, QueryResult, Sample, SetupOutcome, Shape, SourceKind, SourceSpec, Sources,
+};
+use equipe_core::protocol::secrets::SquadSecret;
 
 /// The periods the screen offers, in days.
 pub const PERIODS: [u32; 2] = [7, 30];
@@ -41,6 +44,109 @@ pub struct Draft {
     pub missing: bool,
     /// Opened from the North Star card: only its three boxes show.
     pub north: bool,
+    /// PostHog's "Set it up for me", under way (docs/METRICS.md).
+    pub setup: Option<Setup>,
+    /// PostHog's boxes to paste a key into, picked over "Set it up for me".
+    pub paste: bool,
+}
+
+/// Where PostHog's "Set it up for me" stands. Holds no key: the key goes
+/// from PostHog to the daemon's Keychain and never comes to the screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Setup {
+    /// Asking equipe's browser who is signed in to PostHog.
+    Looking,
+    /// Not signed in: the browser is open on PostHog's sign-in, for the
+    /// person to sign in themselves; looked at again every few seconds.
+    SignIn,
+    /// More than one project: the person picks.
+    Choose(Box<PosthogLook>),
+    /// The card that says what equipe will make — the person's yes is what
+    /// makes it.
+    Confirm(Box<Picked>),
+    Creating(Box<Picked>),
+    Done { setup: Box<PosthogSetup>, project: String },
+    /// PostHog wants a sign-in from the last two hours before it makes a key.
+    SignInAgain { host: String },
+    /// equipe couldn't make it: the key page, its steps and the paste box.
+    Manual { keys_url: String, why: Option<String> },
+    /// equipe's browser can't be asked here (members use a Chrome each).
+    NoBrowser,
+}
+
+/// The project to connect, and the PostHog account it is in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Picked {
+    pub account: PosthogAccount,
+    pub project: PosthogProject,
+}
+
+/// PostHog's sign-in page, where "Set it up for me" sends a person who isn't
+/// signed in (its region picker is there too).
+pub const POSTHOG_SIGN_IN: &str = "https://us.posthog.com/login";
+/// PostHog's key page when no region is known yet.
+pub const POSTHOG_KEYS: &str = "https://us.posthog.com/settings/user-api-keys";
+
+/// What follows a look at PostHog: sign in, pick a project, or the card that
+/// asks the person's yes — the only project, or the one they picked.
+pub fn after_look(look: &PosthogLook) -> Setup {
+    if !look.browser {
+        return Setup::NoBrowser;
+    }
+    if !look.signed_in() {
+        return Setup::SignIn;
+    }
+    match look.only_project() {
+        Some((account, project)) => Setup::Confirm(Box::new(Picked { account: account.clone(), project: project.clone() })),
+        None => Setup::Choose(Box::new(look.clone())),
+    }
+}
+
+/// What follows the daemon's answer to the person's yes.
+pub fn after_setup(done: PosthogSetup, account: &PosthogAccount, project: &PosthogProject) -> Setup {
+    match done.outcome {
+        SetupOutcome::Connected => Setup::Done { setup: Box::new(done), project: project.name.clone() },
+        SetupOutcome::SignIn => Setup::SignIn,
+        SetupOutcome::SignInAgain => Setup::SignInAgain { host: account.host.clone() },
+        SetupOutcome::Manual => Setup::Manual { keys_url: done.keys_url, why: done.why },
+    }
+}
+
+/// A PostHog key a member saved in the squad's keys — on a ticket that wired
+/// PostHog into the product, say — while Metrics shows no PostHog yet: the
+/// one-tap "Show these numbers in Metrics?".
+pub fn posthog_suggestion<'a>(squad: &str, secrets: &'a [SquadSecret], connections: &[Connection], dismissed: &[String]) -> Option<&'a SquadSecret> {
+    if connections.iter().any(|c| c.kind == SourceKind::Posthog) {
+        return None;
+    }
+    let posthog = |s: &SquadSecret| [s.service.as_str(), s.name.as_str()].iter().any(|t| t.to_ascii_lowercase().contains("posthog"));
+    secrets.iter().filter(|s| s.squad.as_str() == squad && posthog(s) && !dismissed.contains(&s.name)).max_by_key(|s| s.created_at)
+}
+
+/// The event the North Star counts the people of, when it was set that way
+/// ("Set it up for me" on a product without equipe's `work_accepted`): the
+/// card names it, and counts people, not squads.
+pub fn north_people_event(sources: &Sources) -> Option<String> {
+    let c = sources.connections.iter().find(|c| c.kind == SourceKind::Posthog)?;
+    let event = c.settings.get("north_star_event")?;
+    (c.settings.get("north_star_property").map(String::as_str) == Some("distinct_id")).then(|| event.clone())
+}
+
+/// PostHog's metrics counted from page views.
+pub const PAGE_VIEW_METRICS: [&str; 4] = ["visits", "languages", "referrers", "utm_sources"];
+
+/// The PostHog connections whose project sends no page views: fetched fine,
+/// and not one day of visits. Their page-view cards make way for one that
+/// says so, instead of four empty ones.
+pub fn without_page_views(query: &QueryResult, sources: &Sources) -> Vec<String> {
+    sources
+        .connections
+        .iter()
+        .filter(|c| c.kind == SourceKind::Posthog && c.last_ok.is_some() && c.last.as_ref().is_some_and(|l| l.error.is_none()))
+        .filter(|c| query.values.iter().filter(|m| m.connection == c.id && m.metric == "visits").all(|m| m.days_known == 0))
+        .filter(|c| query.values.iter().any(|m| m.connection == c.id))
+        .map(|c| c.id.clone())
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -57,6 +163,8 @@ pub struct Metrics {
     pub demo: bool,
     /// The width the screen has, in pixels (0 until the shell has drawn once).
     pub room: f32,
+    /// Saved PostHog keys whose "Show these numbers in Metrics?" got a "Not now".
+    pub dismissed: Vec<String>,
 }
 
 impl Metrics {
@@ -692,6 +800,60 @@ mod tests {
             let (title, body) = banner_words(&b, "PostHog", at);
             assert!(!title.contains('{') && !body.contains('{') && !body.contains("  "), "{code:?}: {title} / {body}");
         }
+    }
+
+    fn look(projects: &[(u64, &str)]) -> PosthogLook {
+        let account = PosthogAccount { host: "https://us.posthog.com".into(), region: "us".into(), organization: "Atinum".into(), projects: projects.iter().map(|(id, name)| PosthogProject { id: *id, name: (*name).into() }).collect(), current: None };
+        PosthogLook { browser: true, accounts: if projects.is_empty() { vec![] } else { vec![account] } }
+    }
+
+    #[test]
+    fn set_it_up_signs_in_asks_only_with_a_choice_and_always_asks_the_yes() {
+        assert_eq!(after_look(&PosthogLook::default()), Setup::NoBrowser);
+        assert_eq!(after_look(&look(&[])), Setup::SignIn, "signed out: sign in, in equipe's browser");
+        let Setup::Confirm(one) = after_look(&look(&[(735144, "Atinum MCP")])) else { panic!("one project: straight to the yes") };
+        assert_eq!(one.project.id, 735144);
+        assert!(matches!(after_look(&look(&[(1, "Site"), (2, "App")])), Setup::Choose(_)), "two: a choice card");
+        // What the daemon answers the yes.
+        let (account, project) = (one.account.clone(), one.project.clone());
+        let answer = |outcome| PosthogSetup { outcome, keys_url: "https://us.posthog.com/settings/user-api-keys".into(), ..PosthogSetup::default() };
+        assert!(matches!(after_setup(answer(SetupOutcome::Connected), &account, &project), Setup::Done { .. }));
+        assert_eq!(after_setup(answer(SetupOutcome::SignIn), &account, &project), Setup::SignIn);
+        assert_eq!(after_setup(answer(SetupOutcome::SignInAgain), &account, &project), Setup::SignInAgain { host: "https://us.posthog.com".into() });
+        assert!(matches!(after_setup(answer(SetupOutcome::Manual), &account, &project), Setup::Manual { keys_url, .. } if keys_url.ends_with("/settings/user-api-keys")));
+    }
+
+    #[test]
+    fn a_saved_posthog_key_suggests_metrics_until_it_is_connected_or_waved_off() {
+        use equipe_core::protocol::secrets::SecretKind;
+        let key = |name: &str, service: &str, at| SquadSecret { squad: "demo".into(), name: name.into(), kind: SecretKind::ApiKey, service: service.into(), projects: vec![], any_project: false, created_by: "dev".into(), created_ticket: Some(12), created_at: at, note: String::new(), last_used: None };
+        let secrets = vec![key("vercel-token", "vercel", 1), key("posthog-project-key", "app.posthog.com", 2), key("ph", "PostHog", 3)];
+        assert_eq!(posthog_suggestion("demo", &secrets, &[], &[]).map(|s| s.name.as_str()), Some("ph"), "the latest PostHog key");
+        assert_eq!(posthog_suggestion("other", &secrets, &[], &[]), None, "another squad's keys aren't this one's");
+        assert_eq!(posthog_suggestion("demo", &secrets, &[], &["ph".into(), "posthog-project-key".into()]), None, "not now");
+        let (s, _) = demo::healthy();
+        assert_eq!(posthog_suggestion("demo", &secrets, &s.connections, &[]), None, "PostHog is in Metrics already");
+    }
+
+    #[test]
+    fn a_project_without_page_views_gets_one_card_that_says_so() {
+        let (s, mut q) = demo::healthy();
+        assert!(without_page_views(&q, &s).is_empty());
+        for m in q.values.iter_mut().filter(|m| m.metric == "visits") {
+            m.days_known = 0;
+            m.value = None;
+        }
+        assert_eq!(without_page_views(&q, &s), ["m1"]);
+        // A failed fetch isn't "no page views": it says it failed.
+        let (failing, _) = demo::failing();
+        assert!(without_page_views(&q, &failing).is_empty());
+        // The North Star counting people of the project's own event is named so.
+        let mut s = s;
+        let c = s.connections.iter_mut().find(|c| c.kind == SourceKind::Posthog).unwrap();
+        c.settings.insert("north_star_event".into(), "mcp_tool_called".into());
+        assert_eq!(north_people_event(&s), None, "squads still, until it counts people");
+        s.connections.iter_mut().find(|c| c.kind == SourceKind::Posthog).unwrap().settings.insert("north_star_property".into(), "distinct_id".into());
+        assert_eq!(north_people_event(&s).as_deref(), Some("mcp_tool_called"));
     }
 
     #[test]

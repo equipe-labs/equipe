@@ -63,6 +63,14 @@
 //   {"op":"snap","hosts":["github.com"],"token":11}
 //     (a picture of the person's tab on that site, for its authenticator QR
 //     code; `snap` answers it, PNG in base64, to the daemon alone)
+//   {"op":"posthog","step":"look","token":12}
+//   {"op":"posthog","step":"key","host":"us.posthog.com","label":"…","scopes":["query:read"],"teams":[735144],"token":13}
+//   {"op":"posthog","step":"logout","host":"us.posthog.com","token":14}  {"op":"posthog","step":"done","token":15}
+//     (equipe's own tab on PostHog Cloud, on the person's session: who is
+//     signed in and to which projects, or one personal API key made through
+//     PostHog's API; `answer` carries it — the key's value too — to the
+//     daemon alone; `logout` is PostHog's own sign-out, for the person's
+//     "Sign in again"; `done` closes the tabs)
 // Page ids start at $EQUIPE_FIRST_PAGE. A member's tab is told with what the
 // daemon reads to tell whether it waits for a person (`signals`), and its icon.
 // Its standard output is binary: messages of `u32be length | u8 kind | payload`
@@ -1172,6 +1180,86 @@ const startProfile = async (name, profile, STATE) => {
     emit({ type: 'snap', token, png });
   };
 
+  // ── PostHog: equipe sets up its own read-only key (docs/METRICS.md, "Set it up for me") ──
+  // equipe's own tab on PostHog Cloud (lane `equipe:posthog`, behind the others, no member's tools
+  // on it), signed in with the person's session in this profile. `look` asks PostHog's API who is
+  // signed in and to which organization and projects; `key` makes one personal API key through
+  // PostHog's own API — the call its settings page makes, with its CSRF token — with only the scopes
+  // and the project the daemon names. The answer (kind 1 `answer`) goes to the daemon alone, the
+  // key's value with it: never printed, never on a page. The tabs close two minutes after their last use.
+  const POSTHOG_HOSTS = ['us.posthog.com', 'eu.posthog.com'];
+  const POSTHOG_LANE = 'equipe:posthog';
+  const posthogTabs = new Map();
+  let posthogIdle = null;
+  const posthogTab = async (host) => {
+    clearTimeout(posthogIdle);
+    posthogIdle = setTimeout(() => { for (const t of posthogTabs.values()) t.close().catch(() => {}); posthogTabs.clear(); }, 120000);
+    const open = posthogTabs.get(host);
+    if (open && !open.isClosed()) return open;
+    ownLane(POSTHOG_LANE);
+    // PostHog's API, not its app: the origin is all the calls need, and nothing heavy loads.
+    const page = await openTab(POSTHOG_LANE, `https://${host}/api/users/@me/`);
+    await page.waitForLoadState('domcontentloaded', { timeout: 20000 }).catch(() => {});
+    posthogTabs.set(host, page);
+    return page;
+  };
+  const posthogMe = async () => {
+    const r = await fetch('/api/users/@me/', { credentials: 'same-origin', headers: { Accept: 'application/json' } });
+    if (!r.ok) return { status: r.status };
+    const me = await r.json();
+    const org = me.organization || {};
+    const team = (t) => ({ id: t.id, name: String(t.name || ''), project_id: t.project_id ?? null });
+    return { status: r.status, current: me.team ? me.team.id : null, organization: { id: org.id || null, name: String(org.name || ''), teams: (org.teams || []).map(team) } };
+  };
+  const posthogMint = async ({ label, scopes, teams }) => {
+    const cookie = document.cookie.split('; ').find((c) => c.startsWith('posthog_csrftoken=')) || '';
+    const csrf = decodeURIComponent(cookie.slice('posthog_csrftoken='.length));
+    const r = await fetch('/api/personal_api_keys/', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-CSRFToken': csrf },
+      body: JSON.stringify({ label, scopes, scoped_teams: teams, scoped_organizations: [] }),
+    });
+    let body = null;
+    try { body = await r.json(); } catch {}
+    if (!r.ok) return { status: r.status, code: (body && body.code) || null, detail: body && typeof body.detail === 'string' ? body.detail.slice(0, 300) : null };
+    return { status: r.status, id: (body && body.id) || null, value: (body && body.value) || null };
+  };
+  // The person's "Sign in again" (PostHog makes keys only for a sign-in of the last two hours):
+  // PostHog's own sign-out — a POST, with the page's CSRF token — so the next sign-in is fresh.
+  const posthogLogout = async () => {
+    const cookie = document.cookie.split('; ').find((c) => c.startsWith('posthog_csrftoken=')) || '';
+    const csrf = decodeURIComponent(cookie.slice('posthog_csrftoken='.length));
+    const r = await fetch('/logout', { method: 'POST', credentials: 'same-origin', redirect: 'manual', headers: { 'X-CSRFToken': csrf } });
+    return { status: r.status || 302 };
+  };
+  const posthog = async ({ step, host, label, scopes, teams, token }) => {
+    const answer = (rest) => emit({ type: 'answer', token, ...rest });
+    if (step === 'look') {
+      const hosts = [];
+      for (const h of POSTHOG_HOSTS) {
+        const page = await posthogTab(h).catch(() => null);
+        const me = page ? await page.evaluate(posthogMe).catch(() => null) : null;
+        hosts.push({ host: h, ...(me || { status: 0 }) });
+      }
+      return answer({ hosts });
+    }
+    if (step === 'key' && POSTHOG_HOSTS.includes(host) && typeof label === 'string' && Array.isArray(scopes) && Array.isArray(teams)) {
+      const page = await posthogTab(host).catch(() => null);
+      const made = page ? await page.evaluate(posthogMint, { label, scopes, teams }).catch(() => null) : null;
+      return answer(made || { status: 0 });
+    }
+    if (step === 'logout' && POSTHOG_HOSTS.includes(host)) {
+      const page = await posthogTab(host).catch(() => null);
+      const out = page ? await page.evaluate(posthogLogout).catch(() => null) : null;
+      return answer(out || { status: 0 });
+    }
+    if (step === 'done') {
+      for (const t of posthogTabs.values()) await t.close().catch(() => {});
+      posthogTabs.clear();
+    }
+    return answer({ status: 0 });
+  };
+
   const dialog = async ({ page, accept, text }) => {
     const d = dialogs.get(page);
     if (!d) return;
@@ -1295,7 +1383,7 @@ const startProfile = async (name, profile, STATE) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, cookies, restore, collect, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, cookies, restore, collect, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap, posthog };
   // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again —
   // unless the daemon closed it itself, to give the profile to the person's own window.
   let suspending = false;
@@ -1334,7 +1422,7 @@ const target = async (request) => {
   switch (request.op) {
     case 'lane': case 'person': case 'newtab': case 'restore': case 'collect': return profileOf(request);
     // equipe's own tabs, passkeys and pictures: the person's main Chrome only.
-    case 'visit': case 'passkey_add': case 'snap': return profileOf({});
+    case 'visit': case 'passkey_add': case 'snap': case 'posthog': return profileOf({});
     case 'show': case 'close': return byLane(request.id);
     case 'control': case 'goto': case 'cookies': case 'fill': case 'passkey_use': return byLane(request.lane);
     default: return byPage(request.page);

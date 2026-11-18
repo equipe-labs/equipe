@@ -856,6 +856,40 @@ async fn serve_client(
                 let _ = out_tx.send(Message::response(id, "stopped"));
                 break;
             }
+            // PostHog's "Set it up for me" (docs/METRICS.md): asks equipe's own browser.
+            (Some(method @ (equipe_protocol::metrics::POSTHOG_LOOK | equipe_protocol::metrics::POSTHOG_SETUP)), Some(id)) => {
+                let (metrics, core, out, method) = (metrics.clone(), core.clone(), out_tx.clone(), method.to_owned());
+                let params = message.params.clone().unwrap_or(serde_json::Value::Null);
+                tokio::spawn(async move {
+                    let hub = core.shared_browser().await;
+                    let browser = hub.as_deref().map(|h| h as &dyn crate::metrics::setup::Browser);
+                    let answered = if method == equipe_protocol::metrics::POSTHOG_LOOK {
+                        match serde_json::from_value(params) {
+                            Ok(p) => metrics.posthog_look(browser, &p).await.and_then(|r| serde_json::to_value(r).map_err(|e| crate::metrics::Refused { code: crate::metrics::STORAGE, message: e.to_string() })),
+                            Err(e) => Err(crate::metrics::Refused { code: crate::metrics::BAD_PARAMS, message: format!("{method}: {e}") }),
+                        }
+                    } else {
+                        match serde_json::from_value(params) {
+                            Ok(p) => metrics.posthog_setup(browser, p).await.and_then(|r| {
+                                // Connected: its first numbers, right after.
+                                if let Some(c) = &r.connection {
+                                    let (metrics, cid) = (metrics.clone(), c.id.clone());
+                                    tokio::spawn(async move {
+                                        let now = crate::metrics::adapters::unix_now();
+                                        metrics.refresh_one(&cid, now, crate::metrics::day_of(&crate::routines::Local, now)).await;
+                                    });
+                                }
+                                serde_json::to_value(r).map_err(|e| crate::metrics::Refused { code: crate::metrics::STORAGE, message: e.to_string() })
+                            }),
+                            Err(e) => Err(crate::metrics::Refused { code: crate::metrics::BAD_PARAMS, message: format!("{method}: {e}") }),
+                        }
+                    };
+                    let _ = out.send(match answered {
+                        Ok(result) => Message::response(id, result),
+                        Err(e) => Message::failure(id, e.code, e.message),
+                    });
+                });
+            }
             // The product's numbers (docs/METRICS.md): each on its own task, a refresh takes seconds.
             (Some(method), Some(id)) if method.starts_with("metrics.") => {
                 let (metrics, out, method) = (metrics.clone(), out_tx.clone(), method.to_owned());

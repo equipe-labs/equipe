@@ -825,6 +825,8 @@ fn read_host(mut out: impl std::io::Read, hub: &Hub, events: &tokio::sync::mpsc:
         decoder.push(&buf[..n]);
         loop {
             match decoder.message() {
+                // An answer to an `ask` (it may hold a secret): to its asker, nowhere else.
+                Ok(Some((stream::JSON, payload))) if payload.starts_with(br#"{"type":"answer""#) => hub.answer(&payload),
                 Ok(Some((stream::JSON, payload))) => {
                     if let Ok(event) = serde_json::from_slice::<HostEvent>(&payload)
                         && events.send(event).is_err()
@@ -877,6 +879,9 @@ pub struct Hub {
     inner: std::sync::Mutex<HubInner>,
     /// Bumped with every frame: watchers wake on it and look at their page.
     tick: tokio::sync::watch::Sender<u64>,
+    /// Requests asked with [`Hub::ask`], waiting for the host's `answer`, by token.
+    answers: std::sync::Mutex<std::collections::HashMap<u64, tokio::sync::oneshot::Sender<Hidden>>>,
+    next_answer: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Default)]
@@ -940,7 +945,36 @@ fn wanted(watchers: impl IntoIterator<Item = Want>) -> std::collections::HashMap
 
 impl Hub {
     pub fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { inner: Default::default(), tick: tokio::sync::watch::Sender::new(0) })
+        std::sync::Arc::new(Self {
+            inner: Default::default(),
+            tick: tokio::sync::watch::Sender::new(0),
+            answers: Default::default(),
+            // Apart from the runtime's own tokens, though answers never mix with its events.
+            next_answer: std::sync::atomic::AtomicU64::new(1 << 40),
+        })
+    }
+
+    /// Ask the host something it answers with `{"type":"answer","token":…}`
+    /// (`posthog`), and wait for that answer — straight from the host's
+    /// output to here, never through the runtime's events or a log. `None`:
+    /// no host, or no answer within `wait`.
+    pub async fn ask(&self, mut request: Value, wait: std::time::Duration) -> Option<Hidden> {
+        let token = self.next_answer.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        request["token"] = json!(token);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.answers.lock().expect("hub answers").insert(token, tx);
+        let answered = if self.op(&request) { tokio::time::timeout(wait, rx).await.ok().and_then(Result::ok) } else { None };
+        self.answers.lock().expect("hub answers").remove(&token);
+        answered
+    }
+
+    /// The host's answer to an [`Hub::ask`]; one no one waits for is dropped.
+    fn answer(&self, payload: &[u8]) {
+        let Ok(value) = serde_json::from_slice::<Value>(payload) else { return };
+        let Some(token) = value.get("token").and_then(Value::as_u64) else { return };
+        if let Some(waiting) = self.answers.lock().expect("hub answers").remove(&token) {
+            let _ = waiting.send(Hidden(value));
+        }
     }
 
     /// The host frames come from now (`None`: gone). What was watched is asked
@@ -1541,6 +1575,26 @@ pub fn sites(state: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_answer_goes_to_its_asker_alone_and_never_becomes_an_event() {
+        let hub = Hub::new();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        hub.answers.lock().unwrap().insert(7, tx);
+        let mut out = equipe_protocol::stream::encode(equipe_protocol::stream::JSON, br#"{"type":"answer","token":7,"value":"phx_secret_value"}"#);
+        out.extend(equipe_protocol::stream::encode(equipe_protocol::stream::JSON, br#"{"type":"answer","token":99,"value":"nobody"}"#));
+        out.extend(equipe_protocol::stream::encode(equipe_protocol::stream::JSON, br#"{"type":"dialog_closed","page":3}"#));
+        let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        read_host(&out[..], &hub, &events_tx);
+        let answered = rx.await.unwrap();
+        assert_eq!(answered.0["value"], "phx_secret_value");
+        assert!(!format!("{answered:?}").contains("phx_secret_value"), "an answer is never printed");
+        assert!(matches!(events.try_recv(), Ok(HostEvent::DialogClosed { page: 3 })), "other messages are events as before");
+        assert!(events.try_recv().is_err(), "an answer is no event");
+        assert!(hub.answers.lock().unwrap().is_empty());
+        // No host: nothing to ask, at once.
+        assert!(hub.ask(json!({ "op": "posthog", "step": "look" }), std::time::Duration::from_secs(5)).await.is_none());
+    }
 
     #[test]
     fn a_sign_in_that_ran_out_is_told_by_the_sites_answer_or_the_pages_opening_words() {

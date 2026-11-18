@@ -58,7 +58,7 @@ hard-code fields. A kind is offered only once its adapter exists.
 | kind | status | fields (`*` secret, kept in the Keychain) | metrics |
 |---|---|---|---|
 | `fake` | here (tests, screens; offered when `EQUIPE_METRICS_FAKE` is set) | `token`*, `seed`, `fail` | `visits`, `stars`, `languages` |
-| `posthog` | here (`adapters/posthog.rs`) | `api_key`* (Query: Read), `project_id`, `host` (default `https://us.posthog.com`), `filter`, `language_property`, `click_events`, `click_property`, `north_star_event`, `north_star_property`, `north_star_where` | `visits`, `languages`, `referrers`, `utm_sources`, `clicks`, `north_star` |
+| `posthog` | here (`adapters/posthog.rs`; "Set it up for me" below) | `api_key`* (Query: Read), `project_id`, `host` (default `https://us.posthog.com`), `filter`, `language_property`, `click_events`, `click_property`, `north_star_event`, `north_star_property` (`distinct_id`: people), `north_star_where` (`*`: every event) | `visits`, `languages`, `referrers`, `utm_sources`, `clicks`, `north_star` |
 | `github` | here (`adapters/github.rs`) | `token`* (Administration: read), `repo` (`owner/name`) | `views`, `visitors`, `clones`, `stars`, `referrers` |
 | `app_store` | here (`adapters/app_store.rs`) | `issuer_id`, `key_id`, `private_key`* (the .p8's text), `vendor_number`, `app_id` | `downloads` |
 
@@ -100,6 +100,92 @@ there say where in the service each one is found.
 `seed` and day, and — like GitHub — remembers 14 days. `fail` (`auth`,
 `rate_limited`, `network`) makes every fetch fail, its message quoting the
 token so the redaction can be tested.
+
+### PostHog: "Set it up for me"
+
+Making a PostHog key by hand is five steps on someone else's site (Settings →
+Personal API keys → create → tick scopes → copy, then paste it with the project
+ID). The person signs in to PostHog once instead, and equipe does the rest.
+Metrics' "Connect PostHog" offers **Set it up for me** first and **Paste a
+key** beside it. Code: `crates/core/src/metrics/setup.rs`, the browser host's
+`posthog` op (`crates/core/assets/browser-host.cjs`), `browser::Hub::ask`, the
+screen in `crates/desktop/src/views/metrics.rs` (logic: `Setup` in
+`crates/desktop/src/metrics.rs`).
+
+```mermaid
+sequenceDiagram
+  participant S as Screen
+  participant D as daemon
+  participant B as equipe's browser (host)
+  participant P as PostHog Cloud
+  S->>D: metrics.posthog_look
+  D->>B: posthog look (equipe's own tab, person's session)
+  B->>P: GET /api/users/@me/ (US, EU)
+  B-->>D: signed in where, organization, projects
+  Note over S: signed out → PostHog's sign-in opens in equipe's browser;<br/>the person types password / code; looked at again every 4 s
+  Note over S: several projects → a choice card
+  Note over S: the confirm card: name, scope, project — the person's yes
+  S->>D: metrics.posthog_setup {host, project_id}
+  D->>B: posthog key {label, scopes, teams}
+  B->>P: POST /api/personal_api_keys/ (X-CSRFToken)
+  B-->>D: the key's value — to the daemon alone
+  D->>P: HogQL top events (30 days), with the new key
+  D->>D: Keychain ← key; connection: project, host, North Star
+```
+
+1. **Look.** `metrics.posthog_look` asks the browser host, in a tab of
+   equipe's own (lane `equipe:posthog`: behind the person's tabs, no member's
+   tools on it), PostHog's `GET /api/users/@me/` on `us.posthog.com` and
+   `eu.posthog.com`. Signed in at one: its organization and projects, and the
+   region — the address the session is at. Not signed in: the screen opens
+   PostHog's sign-in in equipe's browser through the usual "Sign in to a site"
+   (`Command::BrowserSignIn`); the person types their password and any code
+   themselves, and the screen looks again every 4 s for half an hour.
+2. **Pick.** One project: on. More: a choice card (project · organization ·
+   region).
+3. **The person's yes.** A card says exactly what will be made — name
+   `equipe metrics (read-only)`, access `query:read` only, the project — and
+   that the key goes to this Mac's Keychain and where to delete it. Only its
+   **Create the key** sends `metrics.posthog_setup`; members have no tool or
+   request that reaches it.
+4. **Make the key.** The host calls `POST /api/personal_api_keys/` — the
+   request PostHog's own settings page makes, with its CSRF token from the
+   page's cookie — with `scopes: ["query:read"]`, `scoped_teams: [project]`.
+   Listing projects uses the person's session, so the key needs no
+   `project:read`. The answer (`{"type":"answer"}`) goes from the host's
+   output straight to the asking request (`Hub::ask`), never through the
+   runtime's events or a log.
+5. **Keep and connect.** The key becomes the connection's `api_key` (the
+   Keychain, as a pasted key), with `project_id` and `host` set. The new
+   key asks the project's top events of 30 days: no `$pageview` — the visit
+   cards make way for one card that says the project sends no page views (not
+   "unreachable"); no `work_accepted` — the North Star counts the people
+   (`north_star_property: distinct_id`) who sent the project's most sent event
+   of its own (`north_star_where: *`), shown on the done card with "Change
+   definition". The first fetch follows.
+
+**Security.** The key's value is in the host's answer, the daemon's memory and
+the Keychain — never on a page a member can read, a screen, an event, a log, a
+URL or a screenshot (`Minted`'s `Debug` hides it; the setup's answer has none).
+Scope is the least the screen needs, on one project. The done card names the
+key and links PostHog's key page to delete it.
+
+**When it can't be done for the person.** PostHog makes a key only for a
+sign-in from the last two hours (`403 sensitive_action_required_reauth`): the
+card says so, and **Sign in again** signs out of PostHog in equipe's browser
+(PostHog's own `POST /logout`, from equipe's tab) and opens the sign-in there
+for the person; once they are in, the same yes card comes back. Signed out meanwhile: back to signing in.
+Anything else (a limit on keys, no answer, members using a Chrome each, a
+self-hosted PostHog): the key page opens in equipe's browser with the steps,
+beside the paste boxes. What stays manual: a self-hosted PostHog (only US and
+EU Cloud are looked at), the password and any code (always the person's),
+and deleting an older equipe key when one is made again.
+
+**Suggested after a ticket.** When a member saves a PostHog key in the squad's
+keys (`secret_save`, its service or name saying PostHog — on a ticket that wired
+PostHog into the product, say) and Metrics has no PostHog yet, Metrics shows
+"Show these numbers in Metrics?" with **Set it up for me**, and Connections'
+PostHog row a **Show in Metrics** button: one tap starts the same flow.
 
 ### Field
 
@@ -244,6 +330,13 @@ secret field left out keeps its key, a setting left out keeps its value; an
 optional (not required, not secret) setting sent as `""` is cleared. The
 answer comes at once; the first fetch follows on its own — `metrics.sources`
 or `metrics.refresh` shows when it has.
+
+### `metrics.posthog_look`, `metrics.posthog_setup`
+
+`{ "squad", "sign_out"?: "https://us.posthog.com" }` → `PosthogLook { browser, accounts: [{ host, region, organization, projects: [{ id, name }], current? }] }` (`sign_out`: the person's "Sign in again" — PostHog's own sign-out on that host first).
+
+`{ "squad", "project"?, "host", "project_id", "id"? }` → `PosthogSetup { outcome: connected | sign_in | sign_in_again | manual, connection?, key_label, scopes, keys_url, events, page_views, north_star_event?, why? }`
+— the person's yes only; never carries the key. See "PostHog: Set it up for me".
 
 ### `metrics.disconnect`
 

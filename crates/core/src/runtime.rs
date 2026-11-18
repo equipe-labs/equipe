@@ -345,6 +345,9 @@ enum Request {
     /// Sign in to a site in equipe's own browser, where the person is (`start_sign_in`).
     SignIn(String, oneshot::Sender<equipe_protocol::rpc::BrowserSignInOpened>),
     BrowserHub(oneshot::Sender<std::sync::Arc<browser::Hub>>),
+    /// The shared Chrome's hub with its host started, for equipe's own asks
+    /// of it (`Hub::ask`); `None` when members use a Chrome each.
+    SharedBrowser(oneshot::Sender<Option<std::sync::Arc<browser::Hub>>>),
     Desktop(DesktopRequest),
     /// A member's phone tools ([`crate::phone`]).
     Phone(phone::PhoneRequest),
@@ -594,6 +597,15 @@ impl Handle {
         let (tx, rx) = oneshot::channel();
         self.requests.send(Request::BrowserHub(tx)).ok()?;
         rx.await.ok()
+    }
+
+    /// The shared Chrome, its host started if it wasn't, for equipe's own
+    /// asks of it (PostHog's "Set it up for me"). `None` when members use a
+    /// Chrome each, or it couldn't start.
+    pub async fn shared_browser(&self) -> Option<std::sync::Arc<browser::Hub>> {
+        let (tx, rx) = oneshot::channel();
+        self.requests.send(Request::SharedBrowser(tx)).ok()?;
+        tokio::time::timeout(ANSWER_WAIT * 4, rx).await.ok()?.ok()?
     }
 
     /// Who is mid-turn, and how many requests wait for the person.
@@ -1824,6 +1836,7 @@ impl Wake {
             Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
             Wake::Request(Some(Request::SignIn(..))) => Borrowed("person's sign-in"),
             Wake::Request(Some(Request::BrowserHub(_))) => Borrowed("browser panel"),
+            Wake::Request(Some(Request::SharedBrowser(_))) => Borrowed("equipe's own ask of the browser"),
             Wake::Request(Some(Request::Desktop(_))) => Borrowed("desktop lease"),
             Wake::Request(Some(Request::Phone(_))) => Borrowed("phone tool"),
             Wake::Request(Some(Request::McpUpstream(..))) => Borrowed("an outside MCP server's proxy"),
@@ -2039,6 +2052,10 @@ impl Runtime {
                 }
                 Some(Request::BrowserHub(reply)) => {
                     let _ = reply.send(self.hub.clone());
+                }
+                Some(Request::SharedBrowser(reply)) => {
+                    let host = self.config.npx.clone().and_then(|npx| self.browser_host(&npx));
+                    let _ = reply.send(host.map(|_| self.hub.clone()));
                 }
                 Some(Request::DesktopGate(check, reply)) => self.gate_desktop(*check, reply),
                 Some(Request::DesktopTool(call, reply)) => {

@@ -40,6 +40,11 @@ const NORTH_PROPERTY: &str = "squad";
 const NORTH_WHERE: &str = "by=person";
 /// Days of the North Star asked at most: 12 windows of 7 and the one before.
 const NORTH_DAYS: u32 = 91;
+/// `north_star_property` that counts people (who sent the event), and
+/// `north_star_where` that counts every event: what "Set it up for me" sets
+/// for a product that doesn't send equipe's `work_accepted`.
+pub const PEOPLE: &str = "distinct_id";
+pub const EVERY: &str = "*";
 /// Days of page loads and clicks asked at most: the screen's longest period
 /// (30 days) and the one before it, with room. A first fetch of 400 days of
 /// events, three times over, is what tripped PostHog's "Queries are a little
@@ -66,8 +71,8 @@ impl Adapter for Posthog {
                 field("click_events", "Click events", false, false, "Events counted as clicks, comma-separated: download_click, cta_github_click"),
                 field("click_property", "Click place property", false, false, "The event property that says where it was clicked: location"),
                 field("north_star_event", "North Star event", false, false, "The event of an approval: work_accepted when empty"),
-                field("north_star_property", "North Star counts", false, false, "The event property counted once each: squad when empty"),
-                field("north_star_where", "North Star only", false, false, "Event properties, comma-separated: by=person when empty"),
+                field("north_star_property", "North Star counts", false, false, "The event property counted once each: squad when empty, distinct_id for people"),
+                field("north_star_where", "North Star only", false, false, "Event properties, comma-separated: by=person when empty, * for every event"),
             ],
             metrics: vec![
                 metric("visits", "Visits", "page_loads", Shape::Count),
@@ -153,8 +158,12 @@ impl North {
         let named = setting("north_star_event");
         Ok(Self {
             event: named.clone().unwrap_or_else(|| NORTH_EVENT.into()),
-            property: property(&setting("north_star_property").unwrap_or_else(|| NORTH_PROPERTY.into()))?,
-            only: filter(&setting("north_star_where").unwrap_or_else(|| NORTH_WHERE.into()))?,
+            property: north_property(&setting("north_star_property").unwrap_or_else(|| NORTH_PROPERTY.into()))?,
+            only: match setting("north_star_where") {
+                // `*`: every event of it counts.
+                Some(w) if w.trim() == EVERY => String::new(),
+                w => filter(&w.unwrap_or_else(|| NORTH_WHERE.into()))?,
+            },
             named: named.is_some(),
             from: today - i64::from(days.clamp(1, NORTH_DAYS)) + 1,
         })
@@ -262,6 +271,12 @@ fn property(name: &str) -> Result<String, String> {
     Ok(format!("properties.{name}"))
 }
 
+/// What the North Star counts once each: an event property, or
+/// [`PEOPLE`] — the person who sent it (PostHog's `distinct_id`).
+fn north_property(name: &str) -> Result<String, String> {
+    if name.trim() == PEOPLE { Ok(PEOPLE.into()) } else { property(name) }
+}
+
 /// A string as HogQL quotes it.
 fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
@@ -323,6 +338,22 @@ async fn run(fetch: &Fetch<'_>, key: &str, query: &str, patience: &mut Patience)
     }
     let v = json(SERVICE, &answer)?;
     v.get("results").and_then(Value::as_array).cloned().ok_or_else(|| error(ErrorCode::BadResponse, "PostHog's answer had no results"))
+}
+
+/// The project's events of the last 30 days, the most sent first (25 at
+/// most): what "Set it up for me" picks the cards' events from.
+pub async fn top_events(client: &reqwest::Client, host: &str, project_id: u64, key: &str) -> Result<Vec<crate::protocol::metrics::EventCount>, FetchError> {
+    let settings: BTreeMap<String, String> = [("host".to_owned(), host.to_owned()), ("project_id".to_owned(), project_id.to_string())].into();
+    let keys = BTreeMap::new();
+    let fetch = Fetch { settings: &settings, keys: &keys, today: "", days: 30, client };
+    let query = "SELECT event, count() AS n FROM events WHERE timestamp >= now() - INTERVAL 30 DAY GROUP BY event ORDER BY n DESC LIMIT 25";
+    let rows = run(&fetch, key, query, &mut Patience::new()).await?;
+    rows.iter()
+        .map(|row| match (row.get(0).and_then(Value::as_str), row.get(1).and_then(Value::as_f64)) {
+            (Some(event), Some(n)) => Ok(crate::protocol::metrics::EventCount { event: event.to_owned(), count: n.max(0.0) as u64 }),
+            _ => Err(error(ErrorCode::BadResponse, "PostHog's rows weren't event, count")),
+        })
+        .collect()
 }
 
 fn refusal(answer: &Answer) -> FetchError {
@@ -641,6 +672,34 @@ mod tests {
         for bad in [("north_star_property", "squad)"), ("north_star_where", "by")] {
             assert_eq!(fetch_with(&settings(&url, &[bad]), 7).await.unwrap_err().code, ErrorCode::Other, "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_north_star_can_count_the_people_who_sent_any_event() {
+        let today = day_number("2026-11-02").unwrap();
+        let set = |k: &str| match k {
+            "north_star_event" => Some("mcp_tool_called".to_owned()),
+            "north_star_property" => Some(PEOPLE.to_owned()),
+            "north_star_where" => Some(EVERY.to_owned()),
+            _ => None,
+        };
+        let north = North::new(set, today, 14).unwrap();
+        let ask = Ask { from: String::new(), to: day_string(today), zone: "UTC".into(), filter: String::new(), language: String::new(), clicks: vec![], click_place: None, north };
+        let q = ask.north.query(&ask);
+        assert!(q.contains("event = 'mcp_tool_called'") && q.contains("toString(distinct_id) AS who"), "{q}");
+        assert!(!q.contains("properties.by"), "every event counts: {q}");
+        assert!(North::new(|k| (k == "north_star_property").then(|| "distinct_id)".to_owned()), today, 14).is_err());
+    }
+
+    #[tokio::test]
+    async fn the_top_events_are_read_most_sent_first() {
+        let (url, seen) = serve(|_| Reply::ok(br#"{"results": [["mcp_tool_called", 812], ["$identify", 40], ["signup", 9]]}"#.to_vec())).await;
+        let client = reqwest::Client::new();
+        let events = top_events(&client, &url, 735144, KEY).await.unwrap();
+        assert_eq!(events.iter().map(|e| (e.event.as_str(), e.count)).collect::<Vec<_>>(), [("mcp_tool_called", 812), ("$identify", 40), ("signup", 9)]);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen[0].path, "/api/projects/735144/query/");
+        assert!(seen[0].body.contains("INTERVAL 30 DAY") && seen[0].body.contains("GROUP BY event"));
     }
 
     #[test]

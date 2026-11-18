@@ -387,6 +387,10 @@ fn row_view(shell: &Shell, row: &Row, divider: bool, cx: &mut Context<Shell>) ->
         if let Some(url) = service.sign_in_target() {
             actions = actions.child(ui::button(p, element("conn-signin"), Kind::Secondary, t!("connections.sign_in")).icon(Icon::Globe).on_click(cx.listener(move |this, _, _, cx| this.sign_in_to(url, cx))));
         }
+        // PostHog's numbers on the Metrics screen: equipe sets the connection up itself.
+        if service.id == "posthog" && shell.metrics.connection_of(equipe_core::protocol::metrics::SourceKind::Posthog).is_none() {
+            actions = actions.child(ui::button(p, element("conn-metrics"), Kind::Secondary, t!("connections.show_in_metrics")).icon(Icon::Chart).on_click(cx.listener(|this, _, window, cx| this.metrics_setup_open(window, cx))));
+        }
     }
     if !row.keys.is_empty() {
         if shell.logins_ui.connections.confirm.as_deref() == Some(row.id.as_str()) {
