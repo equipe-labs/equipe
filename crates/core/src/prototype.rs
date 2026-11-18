@@ -191,8 +191,22 @@ impl Server {
     }
 
     async fn answer(self, mut socket: tokio::net::TcpStream) {
+        // The whole head, not just the first read's worth: a request can come
+        // in pieces, and closing with some of it unread resets the connection
+        // before the reply is read.
         let mut buf = vec![0u8; 8192];
-        let Ok(Ok(n)) = tokio::time::timeout(Duration::from_secs(10), socket.read(&mut buf)).await else { return };
+        let mut n = 0;
+        let read_head = async {
+            while n < buf.len() && !buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                match socket.read(&mut buf[n..]).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(got) => n += got,
+                }
+            }
+        };
+        if tokio::time::timeout(Duration::from_secs(10), read_head).await.is_err() || n == 0 {
+            return;
+        }
         let head = String::from_utf8_lossy(&buf[..n]);
         let mut words = head.lines().next().unwrap_or_default().split(' ');
         let found = match (words.next(), words.next()) {
@@ -306,7 +320,7 @@ mod tests {
         let reply = tokio::task::spawn_blocking(move || {
             use std::io::{Read as _, Write as _};
             let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
-            write!(s, "GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+            s.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes()).unwrap();
             let mut out = String::new();
             s.read_to_string(&mut out).unwrap();
             out
