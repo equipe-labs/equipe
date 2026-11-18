@@ -60,6 +60,7 @@ mod refcards;
 mod refs;
 mod designs;
 mod refshelf;
+mod requests;
 mod readonly;
 mod screen_look;
 mod setup;

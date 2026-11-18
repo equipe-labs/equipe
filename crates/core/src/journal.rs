@@ -836,6 +836,10 @@ impl Journal {
         )?;
         // Why the person was asked to sign in, and sign-ins finished (`crate::logins`).
         crate::logins::create_table(&conn)?;
+        // The person's requests and the tickets serving each (`crate::requests`).
+        crate::requests::create_table(&conn)?;
+        // The kinds of work the person stopped (`crate::stops`).
+        crate::stops::create_table(&conn)?;
         // Tickets from before kinds: `code` with a project, `task` without — once,
         // when the column arrives.
         if conn.execute("ALTER TABLE tickets ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'", []).is_ok() {
@@ -2713,6 +2717,16 @@ impl Journal {
 
     /// Keep a sign-in handoff, card or sign-in (`crate::logins`): hosts,
     /// names and causes only.
+    /// The kinds of work the person stopped (`crate::stops`).
+    pub fn stops(&self) -> crate::stops::Store<'_> {
+        crate::stops::Store(&self.conn)
+    }
+
+    /// The person's requests (`crate::requests`).
+    pub fn requests(&self) -> crate::requests::Store<'_> {
+        crate::requests::Store(&self.conn)
+    }
+
     pub fn record_login(&self, entry: &crate::logins::Entry) -> Result<()> {
         crate::logins::insert(&self.conn, entry, now() - KEPT_FOR_RETROS)?;
         Ok(())
