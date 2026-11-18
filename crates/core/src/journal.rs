@@ -1781,6 +1781,35 @@ impl Journal {
         self.set_meta("signal_states", &serde_json::to_string(states).unwrap_or_else(|_| "{}".into()))
     }
 
+    /// What went live lately in the squad's projects, the newest first (`crate::deploys`).
+    pub fn deploys(&self) -> Vec<equipe_protocol::deploys::Deploy> {
+        self.meta("deploys").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_deploys(&self, deploys: &[equipe_protocol::deploys::Deploy]) -> Result<()> {
+        self.set_meta("deploys", &serde_json::to_string(deploys).unwrap_or_else(|_| "[]".into()))
+    }
+
+    /// Where each project's main was last seen live and how it goes live, by its path.
+    pub fn deploy_watch(&self) -> std::collections::BTreeMap<String, crate::deploys::Watch> {
+        self.meta("deploy_watch").and_then(|json| serde_json::from_str(&json).ok()).unwrap_or_default()
+    }
+
+    pub fn set_deploy_watch(&self, watch: &std::collections::BTreeMap<String, crate::deploys::Watch>) -> Result<()> {
+        self.set_meta("deploy_watch", &serde_json::to_string(watch).unwrap_or_else(|_| "{}".into()))
+    }
+
+    /// The person's requests `tickets` serve, by ticket.
+    pub fn requests_of(&self, tickets: &[TicketId]) -> std::collections::HashMap<TicketId, crate::deploys::RequestOf> {
+        let store = self.requests();
+        let mut out = std::collections::HashMap::new();
+        for &ticket in tickets {
+            let Some(row) = store.of_ticket(ticket).and_then(|id| store.get(id)) else { continue };
+            out.insert(ticket, crate::deploys::RequestOf { id: row.id, title: row.title, session: row.session });
+        }
+        out
+    }
+
     /// Hours an empty board waits before the PM is woken; 0: never.
     pub fn idle_wake_hours(&self) -> u32 {
         self.meta("idle_wake_hours").and_then(|h| h.parse().ok()).unwrap_or(crate::protocol::routines::IDLE_WAKE_HOURS)

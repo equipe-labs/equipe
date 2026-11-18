@@ -35,6 +35,8 @@ pub mod heartbeat;
 pub mod helpers;
 pub mod desktop;
 pub mod desktop_gate;
+pub mod deploys;
+pub mod release_notes;
 pub mod permission_chore;
 pub mod disk;
 pub mod leftovers;

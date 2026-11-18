@@ -150,6 +150,10 @@
 //! `FAKE_PAIR=ask` has a phone ask 1.5 s after the code shows (`allow` pairs
 //! it); `relay` fails as an unreachable relay would; `silent` never answers,
 //! as a daemon older than the app.
+//!
+//! `FAKE_DEPLOYS=1`: what went live — web on its site twenty minutes ago and
+//! yesterday, app only onto its main — for the sidebar's line and a project's
+//! "What's live" (`ptab:live`).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -1102,6 +1106,72 @@ fn fake_requests() -> Vec<equipe_core::protocol::requests::Request> {
     ]
 }
 
+/// web went live on its site twenty minutes ago with two things the person
+/// asked for and some internal work, and yesterday with one more; app has
+/// no deploy, so what landed on its main is all equipe can say.
+fn fake_deploys() -> Vec<equipe_core::protocol::deploys::Deploy> {
+    use equipe_core::protocol::deploys::{Deploy, DeploySource, NoteItem};
+    let now = unix();
+    let item = |title: &str, tickets: Vec<equipe_core::protocol::TicketId>, request: Option<(u64, &str)>| NoteItem {
+        title: title.into(),
+        tickets,
+        request: request.map(|r| r.0),
+        request_title: request.map(|r| r.1.to_owned()),
+        session: request.map(|_| 4),
+    };
+    let input = Some((12, "A new input box, a new left menu, and the Claude icon in the picker"));
+    vec![
+        Deploy {
+            id: 3,
+            project: "web".into(),
+            path: repo("web"),
+            source: DeploySource::Deployment,
+            environment: Some("Production".into()),
+            url: Some("https://tinumi.example.com".into()),
+            from: Some("4e1a9c2f0b".into()),
+            to: "9b7d3e1a55".into(),
+            at: now - 20 * 60,
+            last_at: now - 20 * 60,
+            items: vec![item("Apply the composer to Tinumi chat", vec![3613], input), item("Make the left menu a sidebar", vec![3591], input), item("Fix the footer links", vec![3540], None)],
+            internal: 3,
+            tickets: vec![3613, 3591, 3540, 3639, 3641, 3642],
+            told: true,
+        },
+        Deploy {
+            id: 2,
+            project: "app".into(),
+            path: repo("app"),
+            source: DeploySource::Main,
+            environment: None,
+            url: None,
+            from: Some("77aa01bc22".into()),
+            to: "c0ffee1234".into(),
+            at: now - 3 * 3600,
+            last_at: now - 3 * 3600,
+            items: vec![item("Offline banner on the home screen", vec![3600], None)],
+            internal: 0,
+            tickets: vec![3600],
+            told: true,
+        },
+        Deploy {
+            id: 1,
+            project: "web".into(),
+            path: repo("web"),
+            source: DeploySource::Deployment,
+            environment: Some("Production".into()),
+            url: Some("https://tinumi.example.com".into()),
+            from: Some("1234abcd99".into()),
+            to: "4e1a9c2f0b".into(),
+            at: now - 26 * 3600,
+            last_at: now - 26 * 3600,
+            items: vec![item("Spec the Tinumi composer", vec![3565], input)],
+            internal: 1,
+            tickets: vec![3565, 3570],
+            told: true,
+        },
+    ]
+}
+
 fn fake_stops() -> Vec<equipe_core::protocol::requests::Stop> {
     vec![equipe_core::protocol::requests::Stop {
         id: 1,
@@ -1891,6 +1961,8 @@ async fn serve(stream: UnixStream, events: broadcast::Sender<Event>, turns: Turn
                             // `FAKE_REQUESTS=1`: the person's requests, and a kind of work they stopped.
                             requests: if std::env::var_os("FAKE_REQUESTS").is_some() { fake_requests() } else { Vec::new() },
                             stops: if std::env::var_os("FAKE_REQUESTS").is_some() { fake_stops() } else { Vec::new() },
+                            // `FAKE_DEPLOYS=1`: what went live in web lately, and app's main.
+                            deploys: if std::env::var_os("FAKE_DEPLOYS").is_some() { fake_deploys() } else { Vec::new() },
                             role_models: switching::role_models(),
                             // `FAKE_SECRET=1`: backend waits for the NAS login, typed into a card.
                             secret_asks: if std::env::var("FAKE_SECRET").is_ok_and(|v| v == "store") {

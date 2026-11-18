@@ -103,6 +103,7 @@ mod usage_digest;
 mod team;
 mod heartbeat;
 mod signals;
+mod deploys;
 mod tickets;
 mod compact;
 mod hygiene;
@@ -852,6 +853,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         tmp_budget_told: HashSet::new(),
         tidied_at: None,
         signals_running: std::collections::HashSet::new(),
+        deploys_looking: HashSet::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
@@ -1301,6 +1303,9 @@ enum Internal {
     AuthRecheck(Engine),
     /// A signal's command ran off the loop: its reading.
     SignalRead { squad: String, key: String, reading: crate::signals::Reading },
+    /// A squad's projects were looked at off the loop for what went live:
+    /// each project's watch now, and what the look found.
+    DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)> },
     /// Where the engines stand, as just looked at off the loop.
     Engines(Vec<equipe_protocol::EngineStatus>),
     /// A sign-in (the one numbered so) ended.
@@ -1556,6 +1561,8 @@ struct Runtime {
     tidied_at: Option<std::time::Instant>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
+    /// Squads whose projects are being looked at for what went live (`deploys`).
+    deploys_looking: HashSet<String>,
     /// Decisions in the person's words waiting on them (`words`).
     words: words::Words,
     /// Handed-in work put to the person to confirm, by squad (`accept`).
@@ -1816,6 +1823,7 @@ impl Wake {
             Wake::Internal(Internal::TurnEndsDue) => Borrowed("a paused run's time"),
             Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
+            Wake::Internal(Internal::DeploysLooked { .. }) => Borrowed("a look at what went live"),
             Wake::Request(Some(Request::Disk(_))) => Borrowed("a look at the disk"),
             Wake::Request(Some(Request::DiskClean(..))) => Borrowed("a clean of the disk"),
             Wake::Internal(Internal::Engines(_)) => Borrowed("where the engines stand"),
@@ -2088,6 +2096,7 @@ impl Runtime {
                 Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
+                Internal::DeploysLooked { squad, looks } => self.deploys_looked(&squad, looks),
                 Internal::DiskTrimmed(freed, lines) => self.on_disk_trimmed(freed, lines),
                 Internal::LaneTmpLooked(look) => self.lane_tmp_looked(*look),
                 Internal::TurnEndsDue => self.turn_ends_due(now_secs()),
@@ -2229,6 +2238,8 @@ impl Runtime {
         self.wake_idle_pms().await;
         pulse.step("minute tick: signals");
         self.run_due_signals();
+        pulse.step("minute tick: deploys");
+        self.deploys_tick();
         pulse.step("minute tick: engines");
         self.engines_tick().await;
         pulse.step("minute tick: calls");
@@ -3794,6 +3805,7 @@ impl Runtime {
         self.accepts_declined.remove(squad);
         self.design_watch.remove(squad);
         self.signals_running.retain(|(q, _)| q != squad);
+        self.deploys_looking.remove(squad);
         // Its checks waiting in line: none will run. One running ends on its own.
         for queue in self.gates.values_mut() {
             let mut at = 0;
@@ -4298,13 +4310,22 @@ runbooks and reports live there, and work across the projects or on running them
     /// It is about the project of the ticket it names (none named: the whole
     /// squad); a turn under way about another goes on about its own after it.
     fn show_news(&mut self, pm: SessionId, text: String) {
+        self.show_news_about(pm, text, None);
+    }
+
+    /// [`Runtime::show_news`], about `project` when it is given — else the
+    /// project of the ticket the news names.
+    fn show_news_about(&mut self, pm: SessionId, text: String, project: Option<String>) {
         // Not into a conversation the person opened: those are theirs.
         let at = self.sessions.iter().find(|(_, s)| !s.kept && s.lane.as_ref().is_some_and(|(of, _)| *of == pm)).map_or(pm, |(&lane, _)| lane);
         let desk = self.sessions.get(&at).filter(|s| s.work.is_none()).map(|s| (scope::current(s.transcript.entries()).flatten(), s.is_working(), s.squad.clone()));
         let Some((now, working, Some(squad))) = desk else {
             return self.publish(Event::Notice { undo: None, session: at, text });
         };
-        let about = self.news_project(&squad, &text);
+        let about = match project {
+            Some(project) => Some(project),
+            None => self.news_project(&squad, &text),
+        };
         if about == now {
             return self.publish(Event::Notice { undo: None, session: at, text });
         }
@@ -10662,6 +10683,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         let idle_wake_hours = self.journals.get(squad).map(Journal::idle_wake_hours);
         let subagents_at_once = self.subagents_at_once(Some(squad));
         let signals = self.signal_views(squad);
+        let deploys = self.deploy_views(squad);
         // Nemotron's reviews of the tickets shown.
         let shown: Vec<TicketId> = tickets.iter().map(|t| t.id).collect();
         let reviews = self.journals.get(squad).and_then(|j| j.reviews(&shown).ok()).unwrap_or_default();
@@ -10670,6 +10692,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         let hand_overs = self.hand_overs(squad);
         Snapshot {
             signals,
+            deploys,
             reviews,
             put_away,
             routines,

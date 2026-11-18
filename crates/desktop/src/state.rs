@@ -398,6 +398,8 @@ pub struct Model {
     pub stops: Vec<equipe_core::protocol::requests::Stop>,
     /// What the PM decided for the person in the last day without a card.
     pub decided: Vec<equipe_core::protocol::requests::Decided>,
+    /// What went live lately in the squad's projects, the newest first.
+    pub deploys: Vec<equipe_core::protocol::deploys::Deploy>,
     /// The logins members sign in with, as the daemon keeps them (no passwords).
     pub logins: Vec<equipe_core::protocol::vault::Login>,
     /// Login autopilot as a whole (Settings › Accounts).
@@ -657,6 +659,7 @@ impl Model {
             requests: Vec::new(),
             stops: Vec::new(),
             decided: Vec::new(),
+            deploys: Vec::new(),
             logins: Vec::new(),
             autopilot: Default::default(),
             login_insights: None,
@@ -1403,6 +1406,7 @@ impl Model {
         self.requests = snapshot.requests.clone();
         self.stops = snapshot.stops.clone();
         self.decided = snapshot.decided.clone();
+        self.deploys = snapshot.deploys.clone();
         self.words.load(snapshot.words.clone(), snapshot.words_all);
         // An older daemon: the banner over the conversation says so, with its button.
         self.daemon_version = version;
@@ -1620,6 +1624,14 @@ impl Model {
             // A request's milestone, told once by the daemon in its conversation: a notice too.
             Event::RequestNews { squad, request, title, session, member, line, .. } if *squad == self.squad => {
                 self.alerts.push(Alert::Request { request: *request, title: title.clone(), session: *session, member: member.clone(), line: line.clone() });
+            }
+            Event::DeploysChanged { squad, deploys } if *squad == self.squad => {
+                self.deploys = deploys.clone();
+                self.revision += 1;
+            }
+            // Told once by the daemon, in the conversations too: a notice of its own.
+            Event::Deployed { squad, deploy, line } if *squad == self.squad => {
+                self.alerts.push(Alert::Live { deploy: deploy.id, project: deploy.project.clone(), live: deploy.source.is_live(), line: line.clone() });
             }
             Event::RestingChanged { squad, resting } if *squad == self.squad => {
                 self.resting = resting.clone();

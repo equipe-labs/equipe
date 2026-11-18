@@ -739,6 +739,8 @@ pub enum ProjectTab {
     Work,
     /// Its briefs and plans: what was thought through before it was built.
     Docs,
+    /// What went live in it, and what each deploy brought (`live.rs`).
+    Live,
 }
 
 /// A project's briefs and plans, newest first — a brief before the plan of

@@ -627,6 +627,7 @@ fn general(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
         ping(Ping::Failed, t!("settings.ping_failed"), t!("settings.ping_failed_desc"), cx),
         ping(Ping::Replies, t!("settings.ping_replies"), t!("settings.ping_replies_desc"), cx),
         ping(Ping::Merged, t!("settings.ping_merged"), t!("settings.ping_merged_desc"), cx),
+        ping(Ping::Live, t!("settings.ping_live"), t!("settings.ping_live_desc"), cx),
         ping(Ping::Update, t!("settings.ping_update"), t!("settings.ping_update_desc"), cx),
         ping(Ping::Sound, t!("settings.ping_sound"), t!("settings.ping_sound_desc"), cx),
         Line::new(t!("settings.ping_badge"), t!("settings.ping_badge_desc"))
