@@ -1243,7 +1243,9 @@ impl Sandbox {
     /// The files the branch changed since where it started, by path.
     pub fn changed_files(&self) -> Result<Vec<String>> {
         let out = git(&self.repo, &["-c", "core.quotePath=false", "diff", "--name-only", &format!("{}..{}", self.base, self.branch)])?;
-        Ok(out.lines().filter(|l| !l.is_empty() && !l.ends_with(".gitkeep")).map(str::to_owned).collect())
+        // Nor the ignore files equipe keeps under a squad folder's `outputs/` (`design::captures::raw`).
+        let equipes = |l: &str| l.strip_prefix("outputs/").is_some_and(|rest| rest == ".gitignore" || rest.split_once('/').is_some_and(|(_, name)| name == ".gitignore"));
+        Ok(out.lines().filter(|l| !l.is_empty() && !l.ends_with(".gitkeep") && !equipes(l)).map(str::to_owned).collect())
     }
 
     /// The files the worktree differs in from where the branch started —
