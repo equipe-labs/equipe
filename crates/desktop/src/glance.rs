@@ -84,13 +84,20 @@ mod tests {
     fn needs_you_says_what_a_wait_asks_how_long_and_which_request_it_holds_up() {
         let mut t = ticket("Infra: AWS console access");
         t.note = Some(waiting_note_headed(&["Sign in to AWS in the browser card".to_owned(), "Say which region".to_owned()], None, Some("Sign in to AWS")));
+        // (Other tests switch the language while this runs: the words around the facts aren't checked.)
         let below = needs_below(&t, Some("Infra: AWS console access"), Some("5h"), Some((3, "Deploy the ERP"))).unwrap();
-        assert_eq!(below, "☐ Sign in to AWS in the browser card · ☐ Say which region · waiting 5h · holds up R-3 “Deploy the ERP” · Infra: AWS console access");
+        let parts: Vec<&str> = below.split(" · ").collect();
+        assert_eq!(parts.len(), 5, "{below}");
+        assert_eq!(&parts[..2], ["☐ Sign in to AWS in the browser card", "☐ Say which region"], "{below}");
+        assert!(parts[2].contains("5h"), "how long: {below}");
+        assert!(parts[3].contains("R-3") && parts[3].contains("Deploy the ERP"), "the request it holds up: {below}");
+        assert_eq!(parts[4], "Infra: AWS console access");
         t.asks = (1..=5).map(|i| format!("Step {i}")).collect();
         assert!(needs_below(&t, None, None, None).unwrap().ends_with("☐ Step 3 · +2"));
         // Not waiting on them: no checklist, just what else there is to say.
         t.status = TicketStatus::Review;
-        assert_eq!(needs_below(&t, None, Some("2h"), None).as_deref(), Some("waiting 2h"));
+        let review = needs_below(&t, None, Some("2h"), None).unwrap();
+        assert!(review.contains("2h") && !review.contains('☐'), "{review}");
         assert_eq!(needs_below(&t, None, None, None), None);
     }
 
