@@ -24,11 +24,17 @@
 //!   a ticket in progress handed over. So does a Shift for a member whose
 //!   ticket, as it estimated it, would outlast the plan.
 //! - **Exhausted** (100%, or refused): no new turns. A reset within the hour is
-//!   waited for; one further off hands the work over.
+//!   waited for; one further off hands the work over — to the other engine
+//!   whenever it has room at all (under [`NEARLY_OUT_AT`]), however recently
+//!   the member moved: carrying on there beats waiting days for the reset.
+//!   Nothing has room: the work waits, and the person is told when it resets.
+//! - **Nearly out** (a window ≥ [`NEARLY_OUT_AT`]): the next turn would hit
+//!   the limit mid-work, so the drain moves members to any engine with more
+//!   room than that, at the end of their turn, before it does.
 //! - Five hours nearly gone with 30 minutes or less to its reset and a week
 //!   under 75%: waited for rather than moved — a new engine reads everything
 //!   again, which costs more than half an hour.
-//! - The other engine must be no worse than Watch and have 30 points more room;
+//! - Otherwise the other engine must be no worse than Watch and have 30 points more room;
 //!   when both run low, nothing moves, and the work goes on: a lighter model or
 //!   less thinking on the same engine is offered on a card, never made on its
 //!   own (quality is the person's call), and tickets keep starting until the
@@ -60,6 +66,9 @@ pub const SHIFT_AT: u8 = 85;
 pub const DRAIN_FIVE_HOUR_AT: u8 = 95;
 pub const DRAIN_WEEKLY_AT: u8 = 92;
 pub const EXHAUSTED_AT: u8 = 100;
+/// A window this used is as good as out: the next turn would hit its limit
+/// mid-work. Off it, any engine under this takes the work, room to spare or not.
+pub const NEARLY_OUT_AT: u8 = 95;
 /// A week this used, with this long left and the burn running it out, shifts.
 pub const LONG_WEEK_AT: u8 = 75;
 pub const LONG_WEEK_LEFT: i64 = 48 * HOUR;
@@ -384,7 +393,10 @@ impl Mate {
     fn may_move(&self, now: i64, why: Why) -> bool {
         let last = self.switched.iter().max().copied();
         let pin_ok = !self.pinned || matches!(why, Why::Exhausted | Why::Return);
-        pin_ok && !self.waiting && last.is_none_or(|t| now - t >= MIN_STAY.max(COOLDOWN))
+        // Off an engine that ran out the work would otherwise wait for its
+        // reset, for days maybe: no cooldown holds it there.
+        let rested = why == Why::Exhausted || last.is_none_or(|t| now - t >= MIN_STAY.max(COOLDOWN));
+        pin_ok && !self.waiting && rested
     }
 
     fn load(&self) -> u32 {
@@ -432,16 +444,22 @@ fn shifts(to: Engine, role: &str) -> bool {
     }
 }
 
+/// The lighter model of the same engine a member on `model` can carry on
+/// on when `model`'s own limit is reached (Claude's Opus weekly cap, Codex's
+/// top model): Opus to Sonnet, Astra to Sol. `None`: nothing lighter to go to.
+pub fn lighter_model(engine: Engine, model: Option<&str>) -> Option<&'static str> {
+    match (engine, model) {
+        (Engine::Claude, Some(m)) if m.contains("opus") => Some("sonnet"),
+        (Engine::Codex, Some(m)) if m.contains("astra") => Some("gpt-6.1-sol"),
+        _ => None,
+    }
+}
+
 /// One step lighter on the same engine: Claude's Opus to Sonnet, Codex's Astra
 /// to Sol, else one notch less thinking — a reviewer (`role`) never under
 /// medium, its tier's floor. `None`: as light as it goes.
 pub fn step_down(engine: Engine, role: &str, model: Option<&str>, effort: Option<&str>) -> Option<(Option<String>, Option<String>)> {
-    let model_down = match (engine, model) {
-        (Engine::Claude, Some(m)) if m.contains("opus") => Some("sonnet"),
-        (Engine::Codex, Some(m)) if m.contains("astra") => Some("gpt-6.1-sol"),
-        _ => None,
-    };
-    if let Some(lighter) = model_down {
+    if let Some(lighter) = lighter_model(engine, model) {
         return Some((Some(lighter.to_owned()), effort.map(str::to_owned)));
     }
     const LEVELS: [&str; 7] = ["minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
@@ -570,9 +588,18 @@ pub fn decide(squad: &Squad<'_>, memory: &mut Memory) -> Decision {
             }
             continue;
         };
-        let fits = target.level <= Level::Watch && target.room() >= 100u8.saturating_sub(source.used).saturating_add(HEADROOM);
-        if !fits && target.level < Level::Shift {
-            // Not enough room there to be worth the move: stay, and say so.
+        // Out, or about to be mid-turn: any room there beats waiting for the
+        // reset. Else the move must be worth what a new engine reads again.
+        let gone = exhausted || source.worst >= NEARLY_OUT_AT;
+        let fits = if gone {
+            target.level < Level::Exhausted && target.worst < NEARLY_OUT_AT
+        } else {
+            target.level <= Level::Watch && target.room() >= 100u8.saturating_sub(source.used).saturating_add(HEADROOM)
+        };
+        // Not enough room there to be worth the move: stay, and say so. Out
+        // with nowhere to go, a lighter setting wouldn't run either: the work
+        // waits for the reset, as the notice told.
+        if !fits && (exhausted || target.level < Level::Shift) {
             continue;
         }
         if !fits {

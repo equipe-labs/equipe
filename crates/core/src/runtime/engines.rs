@@ -132,6 +132,9 @@ struct SquadEngines {
     holds: Vec<Hold>,
     /// Holds the person was told keep tickets waiting, as (engine, until).
     told_held: Vec<(Engine, i64)>,
+    /// Cards offering a lighter model to a member whose model reached its own
+    /// limit mid-ticket ([`Runtime::offer_lighter`]): their id, and the member.
+    lighter_cards: Vec<(u64, String)>,
 }
 
 struct Due {
@@ -185,6 +188,11 @@ struct Home {
 
 fn unix_now() -> i64 {
     now_secs() as i64
+}
+
+/// A model as people say it: Claude's by its family (`Opus`), another's by its id.
+pub(super) fn model_word(model: &str) -> String {
+    crate::models::family(model).map_or_else(|| crate::model_providers::display(model).to_owned(), |f| f.name.to_owned())
 }
 
 fn engine_name(engine: Engine) -> &'static str {
@@ -285,7 +293,7 @@ impl Runtime {
         self.save_engines_record(squad, &record);
     }
 
-    fn switching_mode(&mut self, squad: &str) -> Switching {
+    pub(super) fn switching_mode(&mut self, squad: &str) -> Switching {
         self.journal(squad).map(Journal::engine_switching).unwrap_or_default()
     }
 
@@ -431,6 +439,21 @@ impl Runtime {
     /// another engine waits for it.
     pub(super) fn moving_to(&self, squad: &str, name: &str) -> Option<Engine> {
         self.engines.squads.get(squad)?.due.iter().find(|d| d.mv.member == name && !d.mv.in_place()).map(|d| d.mv.to)
+    }
+
+    /// Whether `engine`'s plan, as read fresh, has clear room — not out, every
+    /// window under [`rules::NEARLY_OUT_AT`]. `None`: no fresh reading says.
+    pub(super) fn engine_clear(&self, squad: &str, engine: Engine) -> Option<bool> {
+        let fallback = Memory::default();
+        let memory = self.engines.squads.get(squad).map_or(&fallback, |s| &s.memory);
+        let reading = self.readings().into_iter().find(|r| r.engine == engine)?;
+        let assessed = rules::assess(&reading, memory, unix_now());
+        (!assessed.stale).then_some(assessed.level != Level::Exhausted && assessed.worst < rules::NEARLY_OUT_AT)
+    }
+
+    /// Whether a card offering member `name` a lighter model waits for the person.
+    pub(super) fn lighter_offered(&self, squad: &str, name: &str) -> bool {
+        self.engines.squads.get(squad).is_some_and(|s| s.lighter_cards.iter().any(|(_, n)| n == name))
     }
 
     /// An engine's plan just read: kept with the time, and each squad looks again.
@@ -717,6 +740,10 @@ impl Runtime {
 
     fn close_proposal(&mut self, squad: &str, id: u64, applied: bool) {
         let mine = self.engines_of(squad);
+        // A lighter model turned down (or replaced): its runs wait for the reset, as before.
+        if !applied {
+            mine.lighter_cards.retain(|(p, _)| *p != id);
+        }
         let before = mine.proposals.len();
         mine.proposals.retain(|p| p.id != id);
         if mine.proposals.len() != before {
@@ -824,8 +851,10 @@ impl Runtime {
     /// For moves already made, the card goes; the moves stay.
     pub(super) fn dismiss_engine_proposal(&mut self, squad: &str, id: u64) {
         let Some(proposal) = self.engines_of(squad).proposals.iter().find(|p| p.id == id).cloned() else { return };
+        let lighter = self.engines_of(squad).lighter_cards.iter().any(|(p, _)| *p == id);
         if !proposal.applied {
-            if let Some(engine) = proposal.engine {
+            // A lighter model for one member's model limit says nothing of the plans.
+            if let Some(engine) = proposal.engine.filter(|_| !lighter) {
                 self.engines_of(squad).memory.decline(engine, proposal.why, proposal.resets_at);
             }
             self.log_engines(squad, format!("the person left {:?} as it is", proposal.why));
@@ -926,6 +955,27 @@ impl Runtime {
         let text = say!(self, "notice.provider_move", model = shown, provider = provider);
         self.publish(Event::Notice { undo: None, session, text });
         self.apply_engine_moves(squad).await;
+    }
+
+    /// Member `name`'s run hit `model`'s own limit on `ticket` — its plan has
+    /// room — and the squad asks before switching: a card offers to carry on
+    /// on the engine's `lighter` model, one tap, until `until`. The run waits
+    /// meanwhile, as any limit does.
+    pub(super) fn offer_lighter(&mut self, squad: &str, name: &str, engine: Engine, (model, lighter): (&str, &str), ticket: TicketId, until: i64) {
+        if self.engines_of(squad).lighter_cards.iter().any(|(_, n)| n == name) {
+            return;
+        }
+        let role = self.mates(squad).into_iter().find(|m| m.name == name).map(|m| m.role).unwrap_or_default();
+        let mv = Move { member: name.to_owned(), role, from: engine, to: engine, model: Some(lighter.to_owned()), effort: None, was_model: Some(model.to_owned()), done: false, now: true };
+        let proposal = Proposal { id: equipe_protocol::new_session_id(), why: Why::StepDown, engine: Some(engine), window: None, used_percent: 0, resets_at: until, moves: vec![mv], applied: false, proposed_at: now_secs(), forecast: None };
+        let (shown, lighter_shown) = (model_word(model), model_word(lighter));
+        self.log_engines(squad, format!("proposed {name} on {lighter_shown} for T-{ticket} ({shown}'s own limit reached)"));
+        let mine = self.engines_of(squad);
+        mine.lighter_cards.push((proposal.id, name.to_owned()));
+        mine.proposals.push(proposal.clone());
+        self.publish(Event::EngineProposed { squad: squad.to_owned(), proposal });
+        let text = say!(self, "news.model_limit_ask", name = name, model = shown, lighter = lighter_shown, id = ticket);
+        self.brief_pm(squad, format!("equipe: {text}"), Some(text));
     }
 
     pub(super) fn show_engine_setup(&mut self, squad: &str) {
@@ -1151,6 +1201,16 @@ impl Runtime {
     /// start it, it starts again where it was. Whether it moved.
     async fn switch_member(&mut self, squad: &str, id: SessionId, due: &Due) -> bool {
         let mv = &due.mv;
+        // The person's yes to a lighter model for a model's own limit: the
+        // runs it paused carry on on it now, back on theirs after the reset.
+        let card = self.engines_of(squad).lighter_cards.iter().position(|(p, _)| *p == due.proposal);
+        if let Some(at) = card.filter(|_| mv.in_place()) {
+            self.engines_of(squad).lighter_cards.remove(at);
+            if let Some(lighter) = mv.model.clone() {
+                self.lighten_parked(squad, id, mv.from, &lighter);
+            }
+            return true;
+        }
         let Some(s) = self.sessions.get(&id) else { return false };
         let (name, role, access, mode, briefing, effort) = (mv.member.clone(), mv.role.clone(), s.access, s.mode, s.briefing.clone(), s.effort.clone());
         if mv.in_place() {

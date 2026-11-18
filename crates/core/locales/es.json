@@ -777,6 +777,8 @@
   "news.squad_resumed": "Los motores vuelven a funcionar: los tickets en pausa continúan solos.",
   "news.ticket_failing": "El motor de T-{id} sigue fallando ({cause}); equipe sigue intentándolo, esperando más cada vez · {title}.",
   "news.limit_paused": "{engine} alcanzó su límite de uso durante T-{id}: lo que se cortó queda en pausa donde estaba y continuará solo — en el otro motor si los miembros se pasan a él, o cuando {engine} tenga margen.",
+  "news.model_limit_lighter": "{name} pasa a {lighter} para T-{id} (límite de {model} alcanzado; vuelve tras el reinicio)",
+  "news.model_limit_ask": "{name} alcanzó el límite propio de {model} en T-{id} — ¿seguir con {lighter} hasta el reinicio? T-{id} espera tu respuesta en la tarjeta.",
   "error.autopilot": "Piloto automático de acceso: {why}",
   "error.autopilot_totp": "No se guardó esa semilla del autenticador: {why}",
   "error.autopilot_no_qr": "equipe no encontró ningún código QR de autenticador: abre la página de configuración de la verificación en dos pasos del sitio en el navegador de equipe (tu propia pestaña en ese sitio) e inténtalo de nuevo, o pega en su lugar el secreto que muestra el sitio.",

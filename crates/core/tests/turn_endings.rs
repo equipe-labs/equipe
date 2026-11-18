@@ -55,6 +55,9 @@ enum Mode {
     LostOnResume,
     /// It ends on Claude Code's limit message.
     Limited,
+    /// On Opus it ends on Opus's own weekly limit; on another model it
+    /// takes three seconds, then answers in a line.
+    OpusLimited,
     /// It goes on until it is stopped.
     Hangs,
 }
@@ -82,6 +85,7 @@ case "$mode" in
   lost) echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: sess-0"]}}'; exit 1;;
   lost_on_resume) case "$*" in *--resume*) echo '{{"type":"result","subtype":"error_during_execution","is_error":true,"errors":["No conversation found with session ID: sess-1"]}}'; exit 1;; esac;;
   limited) echo '{{"type":"result","subtype":"success","is_error":false,"result":"Claude AI usage limit reached|1900000000","usage":{{"input_tokens":3,"output_tokens":1}}}}'; exit 0;;
+  opus_limited) case "$*" in *"--model opus"*|*"--model claude-opus"*) echo '{{"type":"result","subtype":"success","is_error":false,"result":"Opus weekly limit reached - resets Nov 20, 3pm","usage":{{"input_tokens":3,"output_tokens":1}}}}'; exit 0;; esac; sleep 3;;
   hangs) exec sleep 30;;
   slow) sleep 2;;
 esac
@@ -108,6 +112,7 @@ echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usag
             Mode::Lost => "lost",
             Mode::LostOnResume => "lost_on_resume",
             Mode::Limited => "limited",
+            Mode::OpusLimited => "opus_limited",
             Mode::Hangs => "hangs",
         };
         std::fs::write(self.bin.with_file_name("mode"), word).unwrap();
@@ -500,6 +505,70 @@ async fn a_turn_cut_short_by_the_engines_limit_pauses_and_goes_on_when_it_has_ro
     handle.shutdown().await;
 }
 
+/// The squad's frontend on Opus, its plan with room: the Opus weekly cap
+/// reached mid-ticket, so the run carries on at once on Sonnet in the same
+/// conversation (switching in auto), the person told in a line — and back on
+/// Opus at its first turn after the limit started over.
+fn plan(week_resets_in: i64) -> PlanUsage {
+    let now = now() as i64;
+    PlanUsage { five_hour: Some(PlanWindow { used_percent: 10, resets_at: now + 3 * 3600 }), seven_day: Some(PlanWindow { used_percent: 40, resets_at: now + week_resets_in }) }
+}
+
+#[tokio::test]
+async fn a_models_own_limit_mid_ticket_carries_on_on_the_lighter_model_and_goes_back_after_the_reset() {
+    let engine = Engine0::new(Mode::OpusLimited);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home, true));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    handle.send(Command::SetModel { session: 2, model: "opus".into() });
+    // The week starts over in moments: back on Opus soon after.
+    handle.usage_read(Engine::Claude, plan(3));
+    create(&handle, "Hero", "frontend").await;
+    engine.prompt_with("You're on T-1").await;
+    let lighter = engine.prompt_with("reached its own usage limit").await;
+    assert!(lighter.contains("--model sonnet") && lighter.contains("--resume sess-1"), "on Sonnet, the same conversation: {lighter}");
+    until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("frontend moved to Sonnet for T-1 (Opus limit reached; back after the reset)"))).await;
+    assert_eq!(counted(&home, turn_ending::LIMITED), 1);
+    // Its next turn, after the limit started over: on Opus again.
+    let next = engine.prompt_with("ended without ending the work").await;
+    assert!(next.contains("--model opus"), "back on its own model: {next}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_models_own_limit_asks_first_in_suggest_and_waits_in_off() {
+    use equipe_core::protocol::engines::{Switching, Why};
+    for mode in [Switching::Suggest, Switching::Off] {
+        let engine = Engine0::new(Mode::OpusLimited);
+        let (home, repo) = squad();
+        let (handle, mut events) = runtime::start(config(&engine.bin, &home, true));
+        add(&handle, &mut events, 1, member(&repo, "pm")).await;
+        add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+        handle.send(Command::SetEngineSwitching { squad: "acme".into(), mode });
+        handle.send(Command::SetModel { session: 2, model: "opus".into() });
+        handle.usage_read(Engine::Claude, plan(4 * 86_400));
+        create(&handle, "Hero", "frontend").await;
+        paused(&handle, 1, PauseWhy::EngineLimit).await;
+        let cards = handle.snapshot("acme").await.engine_proposals;
+        if mode == Switching::Off {
+            assert!(cards.iter().all(|p| p.why != Why::StepDown), "off: it waits, as before: {cards:#?}");
+            within(&mut events, Duration::from_millis(500)).await;
+            assert!(engine.said("reached its own usage limit").is_empty());
+            handle.shutdown().await;
+            continue;
+        }
+        let card = cards.iter().find(|p| p.why == Why::StepDown && !p.applied).expect("a card to answer");
+        assert_eq!(card.moves.iter().map(|m| (m.member.as_str(), m.model.as_deref())).collect::<Vec<_>>(), [("frontend", Some("sonnet"))]);
+        assert!(engine.said("reached its own usage limit").is_empty(), "nothing before the person's yes");
+        handle.send(Command::ApplyEngineProposal { squad: "acme".into(), id: card.id, now: false });
+        let lighter = engine.prompt_with("reached its own usage limit").await;
+        assert!(lighter.contains("--model sonnet") && lighter.contains("--resume sess-1"), "{lighter}");
+        going(&handle, 1).await;
+        handle.shutdown().await;
+    }
+}
+
 /// An engine out of its plan, read so, with the other engine's room: the
 /// switching rules move the member, and its paused ticket goes with it —
 /// handed over, not stalled.
@@ -517,6 +586,25 @@ async fn a_ticket_paused_for_an_engines_limit_goes_with_its_member_to_the_other_
     handle.usage_read(Engine::Claude, PlanUsage { five_hour: Some(PlanWindow { used_percent: 100, resets_at: resets - 3 * 86_400 }), seven_day: Some(PlanWindow { used_percent: 100, resets_at: resets }) });
     let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.note.as_deref().is_some_and(|n| n.starts_with("Handed over from Claude to Codex")))).await;
     assert!(!seen.iter().any(|e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.execution.as_ref().is_some_and(|x| x.state == ExecutionState::Stalled))), "never stalled");
+    handle.shutdown().await;
+}
+
+/// Claude's week out for days and Codex's at 77%: not the 30 points of room a
+/// move otherwise wants, but room — the paused ticket goes to Codex, handed
+/// over, rather than waiting days for Claude's reset.
+#[tokio::test]
+async fn a_ticket_paused_for_a_plan_out_for_days_goes_to_any_room_on_the_other_engine() {
+    let engine = Engine0::new(Mode::Limited);
+    let (home, repo) = squad();
+    let (handle, mut events) = runtime::start(config(&engine.bin, &home, true));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "qa")).await;
+    create(&handle, "Checks", "qa").await;
+    paused(&handle, 1, PauseWhy::EngineLimit).await;
+    let resets = now() as i64 + 6 * 86_400;
+    handle.usage_read(Engine::Codex, PlanUsage { five_hour: Some(PlanWindow { used_percent: 20, resets_at: now() as i64 + 3 * 3600 }), seven_day: Some(PlanWindow { used_percent: 77, resets_at: resets - 86_400 }) });
+    handle.usage_read(Engine::Claude, PlanUsage { five_hour: Some(PlanWindow { used_percent: 30, resets_at: now() as i64 + 3 * 3600 }), seven_day: Some(PlanWindow { used_percent: 100, resets_at: resets }) });
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.note.as_deref().is_some_and(|n| n.starts_with("Handed over from Claude to Codex")))).await;
     handle.shutdown().await;
 }
 
