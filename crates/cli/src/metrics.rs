@@ -88,7 +88,8 @@ fn table(r: &HogqlResult) -> String {
             .iter()
             .zip(&sizes)
             .map(|(c, w)| {
-                let c: String = if c.chars().count() > *w { format!("{}…", c.chars().take(w.saturating_sub(1)).collect::<String>()) } else { c.clone() };
+                let w = *w;
+                let c: String = if c.chars().count() > w { format!("{}…", c.chars().take(w.saturating_sub(1)).collect::<String>()) } else { c.clone() };
                 format!("{c:<w$}")
             })
             .collect();
@@ -119,6 +120,6 @@ mod tests {
             limit: 200,
             took_ms: 5,
         };
-        assert_eq!(table(&r), "event          n\n-------------  --\nquestion_sent  42\nx              null\n");
+        assert_eq!(table(&r), "event          n\n-------------  ----\nquestion_sent  42\nx              null\n");
     }
 }
