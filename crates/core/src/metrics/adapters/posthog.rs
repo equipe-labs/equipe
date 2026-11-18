@@ -48,7 +48,7 @@ const NORTH_DAYS: u32 = 91;
 const MOST_DAYS: u32 = 92;
 /// The pause between two queries of a fetch, so a fresh connection's
 /// queries don't land on PostHog's query capacity back to back.
-const QUERY_GAP: std::time::Duration = std::time::Duration::from_millis(if cfg!(test) { 1 } else { 1500 });
+pub const QUERY_GAP: std::time::Duration = std::time::Duration::from_millis(if cfg!(test) { 1 } else { 1500 });
 
 impl Adapter for Posthog {
     fn spec(&self) -> SourceSpec {
@@ -306,23 +306,46 @@ impl Asking<'_, '_> {
 /// Send one HogQL query, asked again while PostHog says it is busy and the
 /// fetch's patience lasts; its rows.
 async fn run(fetch: &Fetch<'_>, key: &str, query: &str, patience: &mut Patience) -> Result<Vec<Value>, FetchError> {
-    let host = fetch.settings.get("host").map(|h| h.trim().trim_end_matches('/')).filter(|h| !h.is_empty()).unwrap_or(US);
+    let v = ask(fetch.client, fetch.settings, key, query, "equipe metrics", patience).await?;
+    v.get("results").and_then(Value::as_array).cloned().ok_or_else(|| error(ErrorCode::BadResponse, "PostHog's answer had no results"))
+}
+
+/// One ad-hoc query (`metrics.hogql`, [`crate::metrics::hogql`]): its column
+/// names and rows, through the same host and project checks, patience and
+/// refusals as a fetch. The caller has checked it is a single `SELECT`.
+pub async fn hogql(
+    client: &reqwest::Client,
+    settings: &BTreeMap<String, String>,
+    keys: &BTreeMap<String, String>,
+    query: &str,
+    patience: &mut Patience,
+) -> Result<(Vec<String>, Vec<Vec<Value>>), FetchError> {
+    let key = keys.get("api_key").map(|k| k.trim()).filter(|k| !k.is_empty()).ok_or_else(|| error(ErrorCode::Auth, "no API key"))?;
+    let v = ask(client, settings, key, query, "equipe metrics query", patience).await?;
+    let rows = v.get("results").and_then(Value::as_array).ok_or_else(|| error(ErrorCode::BadResponse, "PostHog's answer had no results"))?;
+    let rows = rows.iter().map(|r| r.as_array().cloned().unwrap_or_else(|| vec![r.clone()])).collect();
+    let columns = v.get("columns").and_then(Value::as_array).map(|c| c.iter().map(|n| n.as_str().map_or_else(|| n.to_string(), str::to_owned)).collect()).unwrap_or_default();
+    Ok((columns, rows))
+}
+
+/// Send one HogQL query and PostHog's whole answer.
+async fn ask(client: &reqwest::Client, settings: &BTreeMap<String, String>, key: &str, query: &str, name: &str, patience: &mut Patience) -> Result<Value, FetchError> {
+    let host = settings.get("host").map(|h| h.trim().trim_end_matches('/')).filter(|h| !h.is_empty()).unwrap_or(US);
     if !(host.starts_with("https://") || host.starts_with("http://127.0.0.1")) {
         return Err(error(ErrorCode::Other, format!("{host} isn't an https address")));
     }
-    let project = fetch.settings.get("project_id").map(|p| p.trim()).unwrap_or_default();
+    let project = settings.get("project_id").map(|p| p.trim()).unwrap_or_default();
     if project.is_empty() || !project.chars().all(|c| c.is_ascii_digit()) {
         return Err(error(ErrorCode::Other, "the project ID is a number"));
     }
-    let body = json!({ "query": { "kind": "HogQLQuery", "query": query }, "name": "equipe metrics" }).to_string();
+    let body = json!({ "query": { "kind": "HogQLQuery", "query": query }, "name": name }).to_string();
     let url = format!("{host}/api/projects/{project}/query/");
-    let request = || fetch.client.post(&url).bearer_auth(key).header(reqwest::header::CONTENT_TYPE, "application/json").body(body.clone());
+    let request = || client.post(&url).bearer_auth(key).header(reqwest::header::CONTENT_TYPE, "application/json").body(body.clone());
     let answer = patience.send(SERVICE, request).await?;
     if !(200..300).contains(&answer.status) {
         return Err(refusal(&answer));
     }
-    let v = json(SERVICE, &answer)?;
-    v.get("results").and_then(Value::as_array).cloned().ok_or_else(|| error(ErrorCode::BadResponse, "PostHog's answer had no results"))
+    json(SERVICE, &answer)
 }
 
 fn refusal(answer: &Answer) -> FetchError {

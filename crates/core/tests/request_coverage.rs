@@ -290,17 +290,22 @@ async fn three_requests_in_a_row_each_get_their_own_work_none_is_dropped_nor_clo
     let refused = tool(&handle, "frontend", "close_request", json!({ "request": 3, "why": "done" })).await;
     assert!(refused.is_error && refused.text.contains("asked of pm"), "{refused:?}");
 
-    // Words that ask for no work: closed with why, never listed.
+    // An acknowledgement asks for nothing: no request opens, nothing for the PM to close.
     handle.send(Command::Submit { session: 1, text: "thanks!".into(), about: None });
-    let mut thanks = tool(&handle, "pm", "close_request", json!({ "request": 4, "why": "just thanks" })).await;
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } if text == "thanks!")).await;
+    let after = tool(&handle, "pm", "close_request", json!({ "request": 4, "why": "just thanks" })).await;
+    assert!(after.is_error && after.text.contains("no request R-4"), "{after:?}");
+    // Something longer that asks for no work: the PM closes it with why, and it is never listed.
+    handle.send(Command::Submit { session: 1, text: "that's all for today, see you tomorrow".into(), about: None });
+    let mut bye = tool(&handle, "pm", "close_request", json!({ "request": 4, "why": "just a goodbye" })).await;
     for _ in 0..50 {
-        if !thanks.is_error {
+        if !bye.is_error {
             break;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
-        thanks = tool(&handle, "pm", "close_request", json!({ "request": 4, "why": "just thanks" })).await;
+        bye = tool(&handle, "pm", "close_request", json!({ "request": 4, "why": "just a goodbye" })).await;
     }
-    assert!(!thanks.is_error, "{thanks:?}");
+    assert!(!bye.is_error, "{bye:?}");
     assert!(requests(&handle).await.iter().all(|r| r.id != 4));
     handle.shutdown().await;
 }

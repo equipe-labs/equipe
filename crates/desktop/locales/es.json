@@ -2967,6 +2967,8 @@
   "settings.auto_put_away_desc": "Se guardan las conversaciones sin actividad durante 3 días. No se borra nada; puedes recuperar cualquiera cuando quieras. Las fijadas se quedan.",
   "sidebar.work_working": "{n} en curso",
   "sidebar.work_needs_you": "{n} te necesitan",
+  "needs.waited": "esperando {span}",
+  "needs.holds_request": "frena R-{id} «{title}»",
   "header.squad_wide": "Todo el equipo",
   "menu.palette": "Paleta de comandos…",
   "menu.toggle_board": "Cambiar tablero / conversación",
@@ -4863,5 +4865,12 @@
   "autonomy.allowances_foot": "Cada uso queda registrado y se avisa en una línea. Si revocas uno, ese tipo vuelve a preguntar.",
   "autonomy.picks": "Decisiones que tomaron los miembros",
   "autonomy.dock_line": "{name} eligió «{picked}»{why}",
-  "autonomy.dock_title": "No hubo respuesta a tiempo, así que los miembros tomaron su recomendación ({n}). Cambia lo que elegirías distinto."
+  "autonomy.dock_title": "No hubo respuesta a tiempo, así que los miembros tomaron su recomendación ({n}). Cambia lo que elegirías distinto.",
+  "keys.group_members": "Guardadas por los miembros",
+  "keys.group_connections": "Conexiones",
+  "keys.metrics_connection": "Conexión de métricas",
+  "keys.use_daily_fetch": "Consulta diaria de métricas",
+  "keys.last_fetched": "Última consulta {when}",
+  "keys.never_fetched": "Aún sin consultar",
+  "keys.manage_connection": "Reemplazar o eliminar"
 }

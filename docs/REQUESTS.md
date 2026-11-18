@@ -23,7 +23,10 @@ runtime's side is `crates/core/src/runtime/requests.rs`; the wire types are
   news told in the PM's conversation.
 - A message that only asks after a request ("how's the input box going?"), or
   that names a ticket already on the board ("T-12: …", "merge T-3"), is not a
-  new one.
+  new one — nor is an acknowledgement or chit-chat: no question mark, at most
+  16 characters, and nothing but emoji or the words of `requests.small_talk`
+  (every language's, in the locale files: "ok", "thanks!", "merci", "了解です",
+  "alles klar"). It opens nothing the PM would have to close.
 
 ## Which request a ticket serves
 
@@ -80,6 +83,18 @@ request's tickets never close it, nor do equipe's checks. New work joining a
 closed request opens it again (a check joining doesn't), and its "all done" is
 told anew.
 
+Finished code work means **live**, not merely on main. In a project that goes
+live by a deploy — its own go-live command (`.equipe/deploy.json`, or one the
+PM confirmed with `set_deploy`; see [USAGE.md](USAGE.md#going-live)), a
+production deployment or a deploy workflow GitHub confirmed, or one whose PM
+was asked to confirm a deploy command its files suggest — a part whose work
+landed is "on main, not live yet" until a deploy equipe saw succeed carried
+its merge, and the request stays open. When the deploy fails, couldn't start,
+has a file that can't be read, or waits for the person's yes, the part says
+why ("on main, not live: its deploy failed"). A project that doesn't deploy
+(no remote, or GitHub shows no deploy and nothing is declared) is live once on
+main (`requests::Shipped`).
+
 `close_request` (the PM, or the member it was asked of) closes one that asks
 for no work — thanks, a question answered — or no longer does, with why in a
 few words. The person is told in the conversation they asked in ("Your
@@ -91,20 +106,21 @@ that line. Its open tickets stay on the board unless the member cancels them.
 
 Each part reads as how far its open tickets got — stopped (its run stalled),
 someone on it, in review, up next — and, once none is open, as what was done:
-live in main since a time, accepted but not on main yet, done, dropped. What
+live since a time, on main and not live yet (and why, when its deploy
+failed), accepted but not on main yet, done, dropped. What
 waits on the person (a ticket put down for them, or one with a question open
 to them) is said apart, with a count. When every part is finished and nothing
 waits, it is "all done".
 
-> Spec the Tinumi composer — live in main since 07:58 · Left menu — frontend
+> Spec the Tinumi composer — live since 07:58 · Left menu — frontend
 > is on it · 2 things wait for you (Check the new composer on r…, Decide if the
 > layout needs…)
 
 ## News, once each
 
 A ticket's state is news when it **waits on the person**, its run **stopped**,
-it is **done**, or its work is **on main** — and the request is news when it is
-**all done**. Being worked on, handed in, sent back and handed in again, and
+it is **done**, its work is **on main** (not live yet), its deploy **failed**,
+or its work is **live** — and the request is news when it is **all done**. Being worked on, handed in, sent back and handed in again, and
 everything about equipe's own checks are not. Each of those marks is told once
 per ticket (kept in the request's `told`), so a retry or a second wait on the
 same ticket says nothing new.

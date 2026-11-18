@@ -32,6 +32,7 @@ mod notify;
 mod autonomy;
 mod usage;
 mod mcp_servers;
+mod metrics;
 mod onboard;
 mod open;
 mod remote;
@@ -399,6 +400,11 @@ enum Command {
         #[command(subcommand)]
         action: logins::LoginsAction,
     },
+    /// A squad's product analytics: `query` asks its PostHog connection one read-only HogQL SELECT through the daemon
+    Metrics {
+        #[command(subcommand)]
+        action: metrics::MetricsAction,
+    },
     /// The keys, tokens and passwords members obtained and equipe keeps: `list`, `show <name>`, `delete <name>`
     Secrets {
         #[command(subcommand)]
@@ -679,6 +685,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
         Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
         Command::Logins { action } => logins::command(action).map_err(Failure::new),
+        Command::Metrics { action } => metrics::command(action).await.map_err(Failure::new),
         Command::Secrets { action } => secrets::command(action).map_err(Failure::new),
         Command::Usage(args) => usage::command(args).map_err(Failure::new),
         Command::Flow(args) => flow::command(args).map_err(Failure::new),

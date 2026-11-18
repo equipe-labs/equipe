@@ -20,13 +20,14 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::protocol::metrics::{
-    Bucket, ConnectParams, Connection, DisconnectParams, Disconnected, ErrorCode, FetchError, Fetched, MetricDef, MetricValue,
+    Bucket, ConnectParams, Connection, DisconnectParams, Disconnected, ErrorCode, FetchError, Fetched, HogqlParams, HogqlResult, MetricDef, MetricValue,
     Point, QueryParams, QueryResult, RefreshParams, SCHEMA, Sample, Shape, Share, Snapshot, SourceKind, Sources, SourcesParams,
     Summary, SummaryParams, Tile,
 };
 use crate::routines::Clock;
 
 pub mod adapters;
+pub mod hogql;
 pub mod tool;
 
 /// The Keychain service the keys are kept under.
@@ -187,6 +188,10 @@ pub const BAD_SETTINGS: i64 = -32011;
 pub const NOT_FOUND: i64 = -32012;
 pub const KEYCHAIN: i64 = -32013;
 pub const STORAGE: i64 = -32014;
+/// An ad-hoc query over its connection's hourly budget ([`hogql::PER_HOUR`]).
+pub const OVER_BUDGET: i64 = -32015;
+/// The service refused an ad-hoc query, failed or didn't answer in time.
+pub const SERVICE_FAILED: i64 = -32016;
 
 fn refuse(code: i64, message: impl Into<String>) -> Refused {
     Refused { code, message: message.into() }
@@ -273,6 +278,28 @@ fn merged(snapshots: &[Snapshot]) -> BTreeMap<(String, i64), Point> {
 
 // ---- The service ----
 
+/// The daemon's [`Metrics`] by home, so a member's `metrics_query` asks
+/// through the one that holds the keys, its pacing and budget.
+static SHARED: Mutex<Vec<(PathBuf, std::sync::Weak<Metrics>)>> = Mutex::new(Vec::new());
+
+/// Make `metrics` the one [`shared`] answers for its home.
+pub fn share(metrics: &Arc<Metrics>) {
+    let mut all = SHARED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    all.retain(|(home, m)| m.strong_count() > 0 && home != &metrics.home);
+    all.push((metrics.home.clone(), Arc::downgrade(metrics)));
+}
+
+/// The daemon's [`Metrics`] for `home`, or one of its own on the Keychain
+/// when none was shared (shared from then on).
+pub fn shared(home: &Path) -> Arc<Metrics> {
+    if let Some(m) = SHARED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|(h, _)| h == home).and_then(|(_, m)| m.upgrade()) {
+        return m;
+    }
+    let m = Arc::new(Metrics::open(home));
+    share(&m);
+    m
+}
+
 /// The daemon's metrics: connections, keys and fetches. Shared by every
 /// screen's connection and the daily fetch.
 pub struct Metrics {
@@ -290,6 +317,8 @@ pub struct Metrics {
     fetching: Mutex<HashSet<String>>,
     /// Offer the fake source.
     pub with_fake: bool,
+    /// Ad-hoc queries' turn, gaps and hourly budget.
+    adhoc: hogql::Pacing,
 }
 
 impl Metrics {
@@ -303,6 +332,7 @@ impl Metrics {
             file: Mutex::new(()),
             fetching: Mutex::new(HashSet::new()),
             with_fake: std::env::var_os("EQUIPE_METRICS_FAKE").is_some(),
+            adhoc: hogql::Pacing::default(),
         }
     }
 
@@ -346,6 +376,7 @@ impl Metrics {
             m::REFRESH => answer(self.refresh(&parse(method, params)?, now, today).await?),
             m::QUERY => answer(query(&self.home, &parse(method, params)?, today)?),
             m::SUMMARY => answer(summary(&self.home, &parse(method, params)?, today)?),
+            m::HOGQL => answer(self.hogql(&parse(method, params)?, now).await?),
             _ => Err(refuse(-32601, "unknown method")),
         }
     }
@@ -485,6 +516,72 @@ impl Metrics {
 
     fn lock_keys(&self) -> std::sync::MutexGuard<'_, Box<dyn Keys>> {
         self.keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// One ad-hoc read-only query through a squad's connection
+    /// ([`hogql`]): checked to be a single `SELECT` before anything is read
+    /// or sent, its rows capped, the whole ask timed, paced and budgeted per
+    /// connection. The key is read and used here alone; every error and row
+    /// has it cut out.
+    pub async fn hogql(&self, p: &HogqlParams, now: u64) -> Result<HogqlResult, Refused> {
+        if !valid_name(&p.squad) {
+            return Err(refuse(BAD_PARAMS, "name a squad"));
+        }
+        let query = hogql::select_only(&p.query).map_err(|e| refuse(BAD_PARAMS, e))?;
+        let rows = hogql::rows_asked(p.limit);
+        let queryable = |c: &Connection| c.kind == SourceKind::Posthog;
+        let of = self.of(&p.squad, p.project.as_deref());
+        let connection = match &p.connection {
+            Some(id) => {
+                let c = of.into_iter().find(|c| &c.id == id).ok_or_else(|| refuse(NOT_FOUND, format!("{} has no connection {id}", p.squad)))?;
+                if !queryable(&c) {
+                    return Err(refuse(BAD_PARAMS, format!("{id} is {}: only PostHog connections answer queries", kind_label(c.kind))));
+                }
+                c
+            }
+            None => {
+                let mut all: Vec<Connection> = of.into_iter().filter(queryable).collect();
+                match all.len() {
+                    0 => return Err(refuse(NOT_FOUND, format!("{} has no PostHog connection to query", p.squad))),
+                    1 => all.remove(0),
+                    _ => {
+                        let named: Vec<String> = all.iter().map(|c| format!("{}{}", c.id, c.project.as_deref().map(|p| format!(" ({p})")).unwrap_or_default())).collect();
+                        return Err(refuse(BAD_PARAMS, format!("{} has several PostHog connections: name one ({})", p.squad, named.join(", "))));
+                    }
+                }
+            }
+        };
+        let id = connection.id.clone();
+        self.adhoc.take(&id, now).map_err(|wait| refuse(OVER_BUDGET, format!("{id} has had {} queries this hour; try again in {} min", hogql::PER_HOUR, wait.div_ceil(60))))?;
+        let sent = hogql::capped(&query, rows);
+        let started = std::time::Instant::now();
+        let asked = async {
+            let _turn = self.adhoc.wait_turn(&id, adapters::posthog::QUERY_GAP).await;
+            let keys = {
+                let (keys, id) = (self.keys.clone(), id.clone());
+                self.ask_keychain(move || keys.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&id)).await.and_then(|got| got)
+            };
+            let keys = keys.map_err(|e| refuse(KEYCHAIN, format!("the key couldn't be read from the Keychain ({e})")))?;
+            let mut patience = adapters::Patience::new();
+            let got = adapters::posthog::hogql(&self.client, &connection.settings, &keys, &sent, &mut patience).await;
+            match got {
+                Ok((columns, mut all)) => {
+                    hogql::redact_rows(&mut all, &keys);
+                    Ok((columns, all))
+                }
+                // "PostHog said 400: <its words>", keys cut out.
+                Err(e) => Err(refuse(SERVICE_FAILED, redact(&e.message, &keys))),
+            }
+        };
+        let (columns, mut all) = match tokio::time::timeout(hogql::WAIT, asked).await {
+            Ok(got) => got?,
+            Err(_) => return Err(refuse(SERVICE_FAILED, format!("the query didn't finish within {}s", hogql::WAIT.as_secs()))),
+        };
+        let took_ms = started.elapsed().as_millis() as u64;
+        let truncated = all.len() > rows as usize;
+        all.truncate(rows as usize);
+        crate::daemon_log!("equipe: metrics {id}: an ad-hoc query answered {} rows in {took_ms} ms", all.len());
+        Ok(HogqlResult { connection: id, kind: connection.kind, query: sent, columns, rows: all, truncated, limit: rows, took_ms })
     }
 
     /// Fetch the squad's connections (or one) now; answers once all are done.

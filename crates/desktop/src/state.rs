@@ -2357,8 +2357,10 @@ impl Model {
     /// Everything waiting for the person, in one list, by section: requests
     /// for permission, tickets put down for them, work handed in, proposals,
     /// work accepted but not on main. The one definition the sidebar's count,
-    /// Needs you and notifications all read. Tickets follow the project in focus
-    /// and leave once the person acted on them; requests always show.
+    /// Needs you and notifications all read. Whatever project is in focus, it
+    /// holds every project's and the PM desk's (a task in the squad's own
+    /// folder has no project): what waits on the person never hides behind a
+    /// focus. Tickets leave once the person acted on them.
     pub fn needs_you(&self) -> Vec<(Section, Need)> {
         let mut out: Vec<(Section, Need)> = self.approvals.open_items().map(|a| (Section::Permission, Need::Permission(a.id))).collect();
         out.extend(self.questions_waiting().into_iter().map(|(s, _)| (Section::Decide, Need::Questions(s.id))));
@@ -2375,7 +2377,7 @@ impl Model {
         // A sign-in that waits for them — or ran out, with a new link a tap away.
         out.extend(self.cli_sign_ins.iter().filter(|c| c.phase != equipe_core::protocol::cli_signin::Phase::SignedIn).map(|c| (Section::Waiting, Need::SignIn(c.id))));
         for section in &Section::TICKETS {
-            let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| self.section_of(t) == Some(*section) && self.in_focus(t) && !self.is_acted(t)).collect();
+            let mut tickets: Vec<&Ticket> = self.tickets.iter().filter(|t| self.section_of(t) == Some(*section) && !self.is_acted(t)).collect();
             let since = |t: &Ticket| self.since.get(&t.id).copied().unwrap_or(0);
             match section {
                 // What it unblocks first, then the longest waiting.
@@ -2385,7 +2387,7 @@ impl Model {
             out.extend(tickets.into_iter().map(|t| (*section, Need::Ticket(t.id))));
         }
         // A design handed in or accepted, to look at: light, under the review it may belong to.
-        out.extend(self.new_designs().map(|d| (Section::Review, Need::Design(d.ticket))));
+        out.extend(self.design_news.iter().filter(|d| !self.design_seen.contains(&d.ticket)).map(|d| (Section::Review, Need::Design(d.ticket))));
         out
     }
 
@@ -3968,6 +3970,27 @@ mod tests {
     }
 
     #[test]
+    fn what_waits_on_the_person_shows_from_every_project_and_the_pm_desk_whatever_is_in_focus() {
+        // The owner's report: approvals and sign-ins the PM's desk put down for them never showed
+        // while a project was in focus — a task in the squad's own folder has no project.
+        let mut model = Model::new("acme");
+        model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
+        model.projects = vec!["/code/site".into(), "/code/app".into()];
+        let mut desk = ticket(5, "waiting", Some("Waiting on you:\n- [ ] Sign in to AWS"));
+        desk.kind = TicketKind::Task;
+        let mut app = ticket(6, "waiting", Some("Waiting on you:\n- [ ] Pick an approval line"));
+        app.project = Some("/code/app".into());
+        model.tickets = vec![desk, app];
+        let everything = vec![(Section::Waiting, Need::Ticket(5)), (Section::Waiting, Need::Ticket(6))];
+        assert_eq!(model.needs_you(), everything);
+        for focus in ["site", "app"] {
+            model.set_focus(Some(focus.into()));
+            assert_eq!(model.needs_you(), everything, "in focus: {focus}");
+            assert_eq!(model.needs_you_count(), 2, "the squad row's count too");
+        }
+    }
+
+    #[test]
     fn a_project_in_focus_narrows_the_tickets_not_the_conversation() {
         let mut model = Model::new("acme");
         model.apply(hello(vec![session(1, "pm", "pm", SessionState::Ready)]), T0);
@@ -3983,7 +4006,7 @@ mod tests {
         assert_eq!(model.needs_you(), vec![(Section::Review, Need::Ticket(3))]);
         assert!(!model.in_focus(&model.tickets[1].clone()));
         model.set_focus(Some("app".into()));
-        assert!(model.needs_you().is_empty(), "the review is site's");
+        assert_eq!(model.needs_you(), vec![(Section::Review, Need::Ticket(3))], "what waits on the person shows whatever is in focus");
         assert!(model.set_focus(None));
         assert!(model.in_focus(&model.tickets[1].clone()));
     }

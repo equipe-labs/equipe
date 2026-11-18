@@ -2894,6 +2894,8 @@
   "settings.auto_put_away_desc": "3 天沒有動靜的對話會被收起。不會刪除，隨時可以找回。釘選的對話不受影響。",
   "sidebar.work_working": "進行中 {n}",
   "sidebar.work_needs_you": "待你確認 {n}",
+  "needs.waited": "已等 {span}",
+  "needs.holds_request": "卡住了 R-{id}「{title}」",
   "header.squad_wide": "整個小隊",
   "menu.palette": "命令面板…",
   "menu.toggle_board": "切換看板 / 對話",
@@ -4736,5 +4738,12 @@
   "autonomy.allowances_foot": "每次使用都會記錄並用一行告訴你。撤銷後，這類請求會重新詢問。",
   "autonomy.picks": "成員自行做出的選擇",
   "autonomy.dock_line": "{name} 選了「{picked}」{why}",
-  "autonomy.dock_title": "你沒有及時回答，成員採用了推薦方案（{n}）。想選別的就更改。"
+  "autonomy.dock_title": "你沒有及時回答，成員採用了推薦方案（{n}）。想選別的就更改。",
+  "keys.group_members": "成員保管的",
+  "keys.group_connections": "連線",
+  "keys.metrics_connection": "指標連線",
+  "keys.use_daily_fetch": "每日指標擷取",
+  "keys.last_fetched": "上次擷取：{when}",
+  "keys.never_fetched": "尚未擷取",
+  "keys.manage_connection": "取代或刪除"
 }

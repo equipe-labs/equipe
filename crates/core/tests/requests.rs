@@ -38,7 +38,8 @@ fn write_script(path: &Path, script: &str) {
 
 /// A stand-in `claude` that writes down every turn's arguments (the prompt
 /// first, as `-p`), one file a call; a prompt saying LONG keeps its turn
-/// going a long while, and a ticket's run leaves a change in its worktree.
+/// going a long while, one saying SLOW a few seconds, and a ticket's run
+/// leaves a change in its worktree.
 fn recording_claude() -> (PathBuf, PathBuf) {
     let calls = scratch("calls");
     let bin = scratch("bin").join("claude");
@@ -47,7 +48,7 @@ fn recording_claude() -> (PathBuf, PathBuf) {
 if [ \"$2\" = --input-format ] && IFS= read -r line; then set -- -p \"$(printf '%s' \"$line\" | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"message\"][\"content\"], end=\"\")')\" \"$@\"; fi\n\
 n=0\nwhile ! mkdir '{dir}/.n-'$n 2>/dev/null; do n=$((n+1)); done\n\
 for a in \"$@\"; do printf '%s\\n<<arg>>\\n' \"$a\"; done > '{dir}/.call-'$$\nmv '{dir}/.call-'$$ '{dir}/call-'$(printf %03d $n)-$$\n\
-case \"$*\" in *LONG*) exec sleep 30;; *\"You're on T-\"*) echo made > HERO.md;; esac\n\
+case \"$*\" in *LONG*) exec sleep 30;; *SLOW*) sleep 3; echo made > HERO.md;; *\"You're on T-\"*) echo made > HERO.md;; esac\n\
 cat <<EOF\n{{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"claude-test\",\"session_id\":\"sess-1\"}}\n\
 {{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\",\"usage\":{{\"input_tokens\":3,\"output_tokens\":1}}}}\nEOF\n",
         dir = calls.display()
@@ -377,7 +378,9 @@ async fn questions_about_a_settled_ticket_are_withdrawn_and_swept_from_before() 
         let (handle, mut events) = runtime::start(config(&claude, &home));
         add(&handle, &mut events, 1, member(&repo, "pm")).await;
         add(&handle, &mut events, 2, member(&repo, "frontend")).await;
-        tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+        // Its run takes a few seconds: the question and the hand-in below come from a run still going
+        // (one that ended at once raced them, and lost on a slow machine).
+        tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "SLOW", "owner": "frontend" })).await;
         until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
         let asked = tool_on(&handle, "frontend", 1, "ask_decision", json!({ "questions": [{ "question": "Which hero photo goes on the landing page?", "options": ["The team photo", "The product shot"] }] })).await;
         assert!(!asked.is_error, "{asked:?}");

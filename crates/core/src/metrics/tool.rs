@@ -2,6 +2,11 @@
 //! before it — from the snapshots the daemon keeps. Read only: connecting,
 //! keys and fetching are the person's, on their screens. Nothing it answers
 //! comes from the Keychain.
+//!
+//! `metrics_query`: the PM, data and marketing members ask one read-only
+//! HogQL `SELECT` through the squad's PostHog connection
+//! ([`super::Metrics::hogql`]). The daemon sends it with the key it keeps;
+//! the member sees rows, never the key.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -10,9 +15,76 @@ use serde_json::{Value, json};
 
 use super::query;
 use crate::routines::Clock as _;
-use crate::protocol::metrics::{Bucket, QueryParams, Shape};
+use crate::protocol::metrics::{Bucket, HogqlParams, HogqlResult, QueryParams, Shape};
 
 pub const METRICS: &str = "metrics";
+pub const QUERY: &str = "metrics_query";
+
+/// Rows a member's query answers when it doesn't say, and at most.
+const QUERY_ROWS: u32 = 50;
+const QUERY_MOST_ROWS: u32 = 500;
+
+/// The roles that ask ad-hoc queries: the PM and the data-minded ones.
+pub fn may_query(role: &str) -> bool {
+    matches!(role, crate::roles::PM | "data" | crate::roles::MARKETING)
+}
+
+pub fn query_tool() -> Value {
+    json!({
+        "name": QUERY,
+        "description": "Ask the squad's connected PostHog one read-only HogQL query — a single SELECT (or WITH … SELECT) \
+over `events`, `persons` and the other HogQL tables — for numbers the `metrics` tool doesn't keep: a funnel, an event's \
+count by day, where people drop off. equipe sends it with the key it keeps; you get rows, never the key. Anything but one \
+SELECT is refused; no comments. Rows are capped (50 unless `limit` says, 500 at most) and each connection has an hourly \
+budget, so aggregate in the query (count(), uniq(), GROUP BY) rather than pulling raw events, and keep personal data — \
+names, emails — out of what you ask and what you write down.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hogql": { "type": "string", "description": "The SELECT, in HogQL." },
+                "connection": { "type": "string", "description": "The connection's id (m1…) when the squad has several PostHog ones." },
+                "project": { "type": "string", "description": "Only a connection of this project." },
+                "limit": { "type": "integer", "description": "Rows answered at most: 50 unless said, 500 at most." },
+            },
+            "required": ["hogql"],
+        },
+    })
+}
+
+/// A member's `metrics_query` call as the daemon's ask.
+pub fn query_params(squad: &str, args: &Value) -> Result<HogqlParams, String> {
+    let text = |key: &str| args.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
+    let query = text("hogql").ok_or("Give the query as `hogql`: one SELECT.")?;
+    let limit = args.get("limit").and_then(Value::as_u64).map_or(QUERY_ROWS, |l| l.clamp(1, u64::from(QUERY_MOST_ROWS)) as u32);
+    Ok(HogqlParams { squad: squad.to_owned(), connection: text("connection"), project: text("project"), query, limit: Some(limit) })
+}
+
+/// A query's rows as a member reads them: a Markdown table, long cells clipped.
+pub fn query_answer(r: &HogqlResult) -> String {
+    let cell = |v: &Value| {
+        let s = match v {
+            Value::String(s) => s.clone(),
+            Value::Null => "null".into(),
+            other => other.to_string(),
+        };
+        let s = s.replace('|', "\\|").replace('\n', " ");
+        if s.chars().count() > super::hogql::CELL { format!("{}…", s.chars().take(super::hogql::CELL).collect::<String>()) } else { s }
+    };
+    let mut out = format!("{} rows from {} in {} ms{}.\n\n", r.rows.len(), r.connection, r.took_ms, if r.truncated { format!(" (more rows were there: only the first {})", r.limit) } else { String::new() });
+    if r.rows.is_empty() {
+        out.push_str("No rows.");
+        return out;
+    }
+    let width = r.columns.len().max(r.rows.iter().map(Vec::len).max().unwrap_or(0));
+    let names: Vec<String> = (0..width).map(|i| r.columns.get(i).cloned().unwrap_or_else(|| format!("col{}", i + 1))).collect();
+    let _ = writeln!(out, "| {} |", names.join(" | "));
+    let _ = writeln!(out, "|{}", "---|".repeat(width));
+    for row in &r.rows {
+        let cells: Vec<String> = (0..width).map(|i| row.get(i).map_or_else(String::new, cell)).collect();
+        let _ = writeln!(out, "| {} |", cells.join(" | "));
+    }
+    out
+}
 
 /// Labels of a breakdown shown, at most.
 const SHARES: usize = 6;

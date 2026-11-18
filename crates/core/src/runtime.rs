@@ -1345,7 +1345,7 @@ enum Internal {
     SignalRead { squad: String, key: String, reading: crate::signals::Reading },
     /// A squad's projects were looked at off the loop for what went live:
     /// each project's watch now, and what the look found.
-    DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)> },
+    DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)>, declared: Vec<(String, bool)> },
     /// What a project goes live with, read off the loop after a landing
     /// pushed main (`go_live`); whether GitHub confirmed a deploy channel.
     GoLiveRead { squad: String, project: PathBuf, found: crate::go_live::Found, channel_known: bool },
@@ -2215,7 +2215,7 @@ impl Runtime {
                 Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
-                Internal::DeploysLooked { squad, looks } => self.deploys_looked(&squad, looks),
+                Internal::DeploysLooked { squad, looks, declared } => self.deploys_looked(&squad, looks, declared),
                 Internal::GoLiveRead { squad, project, found, channel_known } => self.go_live_read(&squad, project, found, channel_known),
                 Internal::GoLiveDue { squad, project } => self.go_live_due(&squad, project),
                 Internal::GoLiveRan { squad, project, tickets, outcome } => self.go_live_ran(&squad, project, tickets, outcome),
@@ -4364,6 +4364,32 @@ runbooks and reports live there, and work across the projects or on running them
     /// Who a tool call comes from: the run it names, while that run still
     /// holds its ticket's current generation; the member itself when it
     /// names none. `Err` for a run that holds it no longer — a stale call.
+    /// `metrics_query`: a PM, data or marketing member's ad-hoc read-only
+    /// query, asked through the daemon's metrics (which hold the key) off the
+    /// runtime's loop.
+    fn metrics_query(&mut self, call: &ToolCall, reply: oneshot::Sender<ToolResult>) {
+        let role = self.member_id(&call.squad, &call.member).and_then(|id| self.sessions.get(&id)).and_then(|s| s.member.as_ref()).map(|m| m.role.clone());
+        if !role.as_deref().is_some_and(crate::metrics::tool::may_query) {
+            let _ = reply.send(ToolResult::error("Only the PM and the data and marketing members ask ad-hoc queries; ask the PM, or read the kept numbers with `metrics`."));
+            return;
+        }
+        let params = match crate::metrics::tool::query_params(&call.squad, &call.arguments) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = reply.send(ToolResult::error(e));
+                return;
+            }
+        };
+        let metrics = crate::metrics::shared(&self.config.home);
+        tokio::spawn(async move {
+            let result = match metrics.hogql(&params, now_secs()).await {
+                Ok(r) => ToolResult { text: crate::metrics::tool::query_answer(&r), is_error: false, image: None },
+                Err(e) => ToolResult::error(e.message),
+            };
+            let _ = reply.send(result);
+        });
+    }
+
     fn caller(&self, call: &ToolCall) -> Result<SessionId, String> {
         let Some(member) = self.member_id(&call.squad, &call.member) else {
             return Err(format!("{} isn't on the squad {}.", call.member, call.squad));
@@ -9008,6 +9034,9 @@ It starts when {owner} is free."
         }
         if call.name == crate::plan_use::TOOL {
             return self.plan_use_answer(&call, reply);
+        }
+        if call.name == crate::metrics::tool::QUERY {
+            return self.metrics_query(&call, reply);
         }
         if call.name == crate::helpers::HELPER_RESULT {
             return self.helper_result(call, reply);

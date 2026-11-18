@@ -2356,10 +2356,43 @@ fn footer(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> impl IntoElemen
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_popup(Popup::Account, cx)))
                 .child(div().w(px(MARK_BOX)).flex_none().flex().items_center().justify_center().child(dot(if connected { p.accent } else { p.muted }, 7.)))
                 .child(div().flex_none().max_w(relative(0.6)).truncate().text_size(px(TEXT)).font_weight(FontWeight::MEDIUM).text_color(p.text).child(squad))
+                // What waits on the person in this squad, from anywhere: its count on the squad's
+                // own row, Needs you a click away.
+                .children(needs_badge(p, shell, "account-needs", cx))
                 .child(machine_label(p, shell))
                 .child(icon(IconName::ChevronsUpDown, 12., p.muted)),
         )
         .child(icon_button(p, "settings", IconName::Settings, true, None).tip(p, t!("sidebar.settings"), Some("⌘,")).on_click(cx.listener(|this, _, window, cx| this.open_settings(None, window, cx))))
+}
+
+/// The squad row's count of what waits on the person (every project's and
+/// the PM desk's), as the sidebar's Needs you counts it; a click opens Needs
+/// you. `None` when nothing waits.
+fn needs_badge(p: Palette, shell: &Shell, id: &'static str, cx: &mut Context<Shell>) -> Option<AnyElement> {
+    let needs = shell.model.needs_you_count();
+    if needs == 0 {
+        return None;
+    }
+    let hot = shell.model.needs_pressing();
+    Some(
+        count_box()
+            .id(id)
+            .rounded(px(9.))
+            .px(px(5.))
+            .bg(if hot { p.red } else { p.orange })
+            .text_color(p.on_accent)
+            .text_size(px(11.))
+            .font_weight(FontWeight::SEMIBOLD)
+            .cursor_pointer()
+            .aria_label(format!("{}, {needs}", t!("board.menu_inbox")))
+            .tip_at(p, format!("{}, {needs}\n{}", t!("board.menu_inbox"), t!("sidebar.needs_tip", n = needs)), None, gpui_kit::base::Placement::Right)
+            .on_click(cx.listener(|this, _, _, cx| {
+                cx.stop_propagation();
+                this.open_side_menu(Menu::Inbox, cx);
+            }))
+            .child(needs.to_string())
+            .into_any_element(),
+    )
 }
 
 /// The foot's machine: this Mac quietly; another machine plainly, with its
@@ -2428,9 +2461,12 @@ fn popup(p: Palette, shell: &Shell, cx: &mut Context<Shell>) -> Option<AnyElemen
             for (ix, name) in shell.squads.iter().enumerate() {
                 let (target, away_to) = (name.clone(), name.clone());
                 let group = SharedString::from(format!("squad-row-{ix}"));
+                let here = *name == shell.model.squad;
                 rows.push(
-                    item(SharedString::from(format!("squad-{ix}")), name.clone(), *name == shell.model.squad)
+                    item(SharedString::from(format!("squad-{ix}")), name.clone(), here)
                         .group(group.clone())
+                        // This squad's: what waits on the person, counted where the squads are listed.
+                        .children(here.then(|| needs_badge(p, shell, "squad-needs", cx)).flatten())
                         // ⌘-click: that squad in a new window; this one stays where it is.
                         .on_click(cx.listener(move |this, e: &ClickEvent, window, cx| {
                             this.board.popup = None;

@@ -64,7 +64,7 @@ fn word(key: String, fallback: &str) -> String {
     crate::i18n::catalog().own(&key).map_or_else(|| fallback.to_owned(), str::to_owned)
 }
 
-fn service(kind: SourceKind, spec: Option<&SourceSpec>) -> String {
+pub(crate) fn service(kind: SourceKind, spec: Option<&SourceSpec>) -> String {
     word(format!("metrics.kind.{}", kind.as_str()), spec.map_or(kind.as_str(), |s| s.label.as_str()))
 }
 
@@ -697,7 +697,7 @@ fn done_card(shell: &Shell, sources: &Sources, kind: SourceKind, cx: &mut Contex
 
 impl Shell {
     /// One request off the UI thread; `done` gets the answer on it.
-    fn metrics_ask<T: serde::de::DeserializeOwned + Send + 'static>(&mut self, method: &'static str, params: impl serde::Serialize + Send + 'static, wait: Duration, cx: &mut Context<Self>, done: impl FnOnce(&mut Shell, Result<T, String>, &mut Context<Shell>) + 'static) {
+    pub(crate) fn metrics_ask<T: serde::de::DeserializeOwned + Send + 'static>(&mut self, method: &'static str, params: impl serde::Serialize + Send + 'static, wait: Duration, cx: &mut Context<Self>, done: impl FnOnce(&mut Shell, Result<T, String>, &mut Context<Shell>) + 'static) {
         let Some(door) = self.link.as_ref().map(|l| l.uploader()) else {
             done(self, Err(t!("daemon.not_connected").into()), cx);
             return;
