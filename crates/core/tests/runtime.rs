@@ -5914,6 +5914,41 @@ async fn with_the_gate_on_nothing_changed_and_clean_passes_without_a_designer_tu
     handle.shutdown().await;
 }
 
+/// T-1 marked as built from the live prototype the person picked with "Use this".
+fn from_picked_prototype(journal: &Journal) {
+    journal.ticket_event(1, "equipe", equipe_core::design::session::APPROVED_PROTOTYPE, "http://localhost:5173/proto/b").unwrap();
+}
+
+#[tokio::test]
+async fn a_screen_built_from_the_picked_prototype_passes_on_its_precheck_without_a_designer_turn() {
+    use equipe_core::design_qa::{GateMode, Mode};
+    // The squad's gate only in shadow, and the screen new (its picture changed): still no designer turn.
+    let (handle, mut events, _recorded, home) = hand_in_in_mode(Mode::PerTicket, GateMode::Shadow, precheck_report(true, serde_json::json!([])), SPEC_BODY, from_picked_prototype).await;
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 2 && ticket.status == TicketStatus::Done)).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn");
+    let checked = Journal::for_squad(&home, "acme").unwrap().ticket(1).unwrap().unwrap();
+    assert_eq!(checked.status, TicketStatus::Review, "on to the person");
+    assert!(!checked.images.is_empty(), "the built screens, one tap from the review");
+    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
+    assert_eq!((run.decision.as_deref(), run.acted, run.verdict_by.as_deref()), (Some("auto_pass"), true, Some("equipe")));
+    let qa = Journal::for_squad(&home, "acme").unwrap().ticket(2).unwrap().unwrap();
+    assert!(qa.note.as_deref().is_some_and(|n| n.contains("prototype the person picked") && n.contains("See the result: /tmp/settings.png") && n.contains("http://localhost:5173/proto/b")), "{:?}", qa.note);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_screen_built_from_the_picked_prototype_whose_precheck_fails_goes_to_the_designer() {
+    use equipe_core::design_qa::{GateMode, Mode};
+    let blocker = serde_json::json!([{ "rule": "text-clipped", "severity": "blocker", "class": "content", "key": "settings/main/default",
+        "conditions": ["390.light.text-200"], "selector": "button.save", "text": "Save", "evidence": "cut short with an ellipsis (a control's label)", "new": true }]);
+    let (handle, mut events, _recorded, home) = hand_in_in_mode(Mode::PerTicket, GateMode::On, precheck_report(true, blocker), SPEC_BODY, from_picked_prototype).await;
+    let qa = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 2, .. })).await;
+    assert!(!qa.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 1, .. })), "to the designer, not straight back to the engineer");
+    let run = Journal::for_squad(&home, "acme").unwrap().design_qa_run(2).unwrap();
+    assert_eq!((run.decision.as_deref(), run.acted), (Some("designer"), false));
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn with_the_gate_on_a_definite_failure_goes_back_to_its_engineer_without_a_designer_turn() {
     use equipe_core::design_qa::GateMode;

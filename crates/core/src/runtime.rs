@@ -76,6 +76,7 @@ mod room;
 mod engines;
 mod design;
 mod design_session;
+mod revise;
 mod live_preview;
 mod refcards;
 mod briefs;
@@ -792,6 +793,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         focus: HashMap::new(),
         said_about: None,
         previews: crate::live_preview::Watched::default(),
+        design_sessions: HashMap::new(),
         on_phone: false,
         builds_trimmed: None,
         compactions: compact::CompactTimes::default(),
@@ -1418,6 +1420,10 @@ struct Runtime {
     said_about: Option<Option<String>>,
     /// The pages of members' the person's screens have open in a live preview.
     previews: crate::live_preview::Watched,
+    /// The design sessions on, by the designer's conversation
+    /// (`crate::design::session::Active`): their turns open with the
+    /// prototype round's rules, and the person's words cut into them.
+    design_sessions: HashMap<SessionId, crate::design::session::Active>,
     /// While a command the person sent from their phone is handled ([`Command::OnPhone`]).
     on_phone: bool,
     /// When members' build caches were last looked at.
@@ -2737,6 +2743,7 @@ impl Runtime {
                 self.person_said(session, &text);
                 let busy = self.sessions.get(&session).is_some_and(Session::is_working);
                 self.submit(session, text.clone()).await;
+                self.person_first(session, &text).await;
                 // Asking after a request while its member is busy: answered from the board now.
                 if busy {
                     self.answer_from_board(session, &text);
@@ -3220,6 +3227,11 @@ impl Runtime {
             Command::TryReference { squad, project, card } => self.try_reference(squad, project, card),
             Command::StartDesignSession { squad, project, page, from } => self.start_design_session(squad, project, page, from).await,
             Command::LivePreview { squad, session, url, open } => self.live_preview(squad, session, url, open),
+            Command::EndDesignSession { squad, designer } => self.end_design_session(&squad, designer),
+            Command::UseDesignVariant { squad, designer, project, page, variant, url } => {
+                let picked = crate::design::session::Picked { page, project, variant, url };
+                self.use_design_variant(&squad, designer, picked).await;
+            }
         }
     }
 
@@ -4992,6 +5004,10 @@ runbooks and reports live there, and work across the projects or on running them
         let requests = self.requests_context(id);
         // The kinds of work the person stopped: nothing of them is filed.
         let stops = self.sessions.get(&id).and_then(|s| s.squad.clone()).and_then(|squad| self.stops_context(&squad));
+        // A design session on: each turn is a quick prototype round.
+        let designing = self.design_note(id);
+        // Its cards still open: a message that settles one has it withdrawn, not answered for the person.
+        let cards = self.open_cards_note(id);
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -5017,6 +5033,12 @@ runbooks and reports live there, and work across the projects or on running them
         }
         if let Some(stops) = stops {
             prompt = format!("{stops}\n\n{prompt}");
+        }
+        if let Some(designing) = designing {
+            prompt = format!("[equipe: {designing}]\n\n{prompt}");
+        }
+        if let Some(cards) = cards {
+            prompt = format!("[equipe: {cards}]\n\n{prompt}");
         }
         // Read on the phone: the member answers for its screen. Before the
         // project's word, which opens the message as the conversation reads it.
@@ -7937,6 +7959,15 @@ with what else waits.]"
         self.brief_pm(squad, line, Some(shown));
     }
 
+    /// A ticket asked to become what it already is — cancelled again, done
+    /// again, from a card or a screen that hadn't caught up: no banner (the
+    /// person asked for what is so), only the ticket sent again so every
+    /// screen shows it as it is.
+    fn already_so(&mut self, squad: &str, ticket: Ticket) {
+        crate::daemon_log!("equipe: {squad}: T-{} is already {:?}; nothing to do", ticket.id, ticket.status);
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
+    }
+
     /// The person accepts a ticket: it is done, and its branch stays to merge.
     async fn accept(&mut self, squad: &str, ticket: TicketId, by: crate::telemetry::Accepter) {
         // The person's word comes before a designer's.
@@ -7947,6 +7978,10 @@ with what else waits.]"
         // A proposal accepted is taken on: ready for its owner, not done.
         if found.status == TicketStatus::Proposed {
             return self.take_on(squad, found).await;
+        }
+        // Already as asked (a card or a screen behind): nothing to say, the screens mend.
+        if found.status == TicketStatus::Done {
+            return self.already_so(squad, found);
         }
         if found.status.is_closed() {
             let message = say!(self, "error.already_closed", id = ticket, status = crate::i18n::label::status(self.config.lang, found.status));
@@ -8404,6 +8439,9 @@ It starts when {owner} is free."
         let Some(found) = self.find_ticket(squad, ticket) else {
             return;
         };
+        if found.status == TicketStatus::Cancelled {
+            return self.already_so(squad, found);
+        }
         if found.status.is_closed() {
             let message = say!(self, "error.already_closed", id = ticket, status = crate::i18n::label::status(self.config.lang, found.status));
             return self.squad_error(squad, message);
@@ -9881,7 +9919,11 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             board::BOARD => {
                 // A long board comes in pages (`status`, `after`), one answer at most `tool_cap`'s ceiling.
                 let paged = self.journal(&squad).is_none_or(Journal::context_tool_caps);
-                let limit = if paged { crate::tool_cap::MAX_TOOL_CHARS } else { usize::MAX };
+                // A member's page is a third of the PM's: the whole board at every look
+                // (38k characters on a busy squad) filled a designer's conversation within
+                // the hour, and it rarely needs more than its own corner — the rest is a page away.
+                let page = if is_pm { crate::tool_cap::MAX_TOOL_CHARS } else { crate::tool_cap::MAX_TOOL_CHARS / 3 };
+                let limit = if paged { page } else { usize::MAX };
                 let (status, after) = (board::arg_str(&args, "status"), board::arg_id(&args, "after"));
                 let mut text = board::render_page(&self.tickets(&squad), status, after, limit);
                 let resting = self.journal(&squad).map(|j| j.resting()).unwrap_or_default();
@@ -10248,6 +10290,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
+            board::WITHDRAW_DECISION => self.withdraw_decision(&squad, &member, id, &args),
+            board::REVISE_TICKET => self.revise_ticket(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             crate::cli_signin::CLI_SIGN_IN => self.cli_sign_in(&squad, &member, id, &args),
             crate::connections::REQUEST => self.request_secret(&squad, &member, id, &args),

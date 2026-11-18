@@ -54,7 +54,7 @@ impl Runtime {
 
     /// Dependencies the person gave: every one on the board, none the ticket
     /// itself, and no loop of waiting.
-    fn check_dependencies(&mut self, squad: &str, ticket: TicketId, depends_on: &[TicketId]) -> Result<(), String> {
+    pub(super) fn check_dependencies(&mut self, squad: &str, ticket: TicketId, depends_on: &[TicketId]) -> Result<(), String> {
         let tickets = self.tickets(squad);
         if let Some(missing) = depends_on.iter().find(|d| !tickets.iter().any(|t| t.id == **d)) {
             return Err(say!(self, "error.no_ticket", id = missing));
@@ -73,6 +73,14 @@ impl Runtime {
     /// to its ticket: a line in its conversation and words with its next
     /// message. The PM is told on its own.
     pub(super) fn brief_member(&mut self, squad: &str, name: &str, line: &str, shown: &str) {
+        if let Some(id) = self.brief_member_quietly(squad, name, line) {
+            self.publish(Event::Notice { undo: None, session: id, text: shown.to_owned() });
+        }
+    }
+
+    /// [`Self::brief_member`] with no line in its conversation: words with
+    /// its next message only. The member told, if one was.
+    pub(super) fn brief_member_quietly(&mut self, squad: &str, name: &str, line: &str) -> Option<SessionId> {
         let by_name = self.member_id(squad, name);
         let by_role = || {
             self.sessions
@@ -81,17 +89,15 @@ impl Runtime {
                 .min_by_key(|(_, s)| (s.name() != Some(name), s.joined))
                 .map(|(&id, _)| id)
         };
-        let Some(id) = by_name.or_else(by_role) else {
-            return;
-        };
+        let id = by_name.or_else(by_role)?;
         if self.pm_of(squad) == Some(id) {
-            return;
+            return None;
         }
         if let Some(session) = self.sessions.get_mut(&id) {
             session.briefing.push(line.to_owned());
         }
         self.save_waiting(id);
-        self.publish(Event::Notice { undo: None, session: id, text: shown.to_owned() });
+        Some(id)
     }
 
     /// The PM and the members a change concerns hear of it.
@@ -116,12 +122,12 @@ impl Runtime {
     /// the PM to give one.
     pub(super) async fn person_creates(&mut self, squad: &str, draft: TicketDraft) {
         match self.new_ticket(squad, draft) {
-            Ok(()) => self.dispatch(squad).await,
+            Ok(_) => self.dispatch(squad).await,
             Err(message) => self.squad_error(squad, message),
         }
     }
 
-    fn new_ticket(&mut self, squad: &str, draft: TicketDraft) -> Result<(), String> {
+    pub(super) fn new_ticket(&mut self, squad: &str, draft: TicketDraft) -> Result<TicketId, String> {
         let title = draft.title.trim().to_owned();
         if title.is_empty() {
             return Err(say!(self, "error.ticket_title"));
@@ -203,7 +209,7 @@ impl Runtime {
             ),
         };
         self.tell_about(squad, &[owner], line, shown);
-        Ok(())
+        Ok(id)
     }
 
     // ── edit ──
@@ -551,10 +557,21 @@ impl Runtime {
         match self.worker_on(squad, id) {
             // On it now: it's the person talking to it (the PM hears, as always).
             Some(worker) => self.submit(worker, format!("[T-{id}] {text}")).await,
+            // Nobody on it: its owner and the PM read it with their next
+            // message. Only the PM's conversation — the squad's news — shows a
+            // line of it: in a member's chat about something else "You
+            // commented on T-…" read as if the person had said it there.
             None => {
                 let line = format!("The person commented on T-{id} ({}): {text}", found.title);
                 let shown = say!(self, "news.commented", id = id, text = clip(&text, 120));
-                self.tell_about(squad, &[found.assignee.clone(), found.owner.clone()], line, shown);
+                let mut told: Vec<String> = Vec::new();
+                for name in [found.assignee.clone(), found.owner.clone()].into_iter().flatten() {
+                    if !told.contains(&name) {
+                        self.brief_member_quietly(squad, &name, &line);
+                        told.push(name);
+                    }
+                }
+                self.brief_pm(squad, line, Some(shown));
             }
         }
     }

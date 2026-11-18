@@ -2018,6 +2018,7 @@ impl App {
                 | Event::Allowed { .. }
                 | Event::Design { .. }
                 | Event::DesignSessionStarted { .. }
+                | Event::DesignVariantUsed { .. }
                 | Event::OpenTasteTuner { .. }
                 | Event::ProjectDocs { .. }
                 | Event::DocsFound { .. }

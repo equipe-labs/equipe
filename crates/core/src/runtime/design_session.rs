@@ -9,6 +9,7 @@
 use equipe_protocol::decide::{Answer, QuestionSet};
 use equipe_protocol::design::TasteSignal;
 use equipe_protocol::design_session::{SessionFrom, SessionProposal, page_name};
+use equipe_protocol::{TicketDraft, TicketEdit, TicketKind, TicketStatus};
 
 use super::*;
 use crate::design::session::{self, Choose, Proposed};
@@ -34,8 +35,131 @@ impl Runtime {
         let words = say!(self, "design_session.kickoff", page = page.clone());
         let text = session::kickoff(&page, project.as_deref(), &from, profile.as_ref(), &words);
         crate::daemon_log!("equipe: {squad}: a design session on {page} with the designer");
-        self.publish(Event::DesignSessionStarted { squad, designer, project: project.clone(), page, from });
-        Box::pin(self.handle(Command::Submit { session: designer, text, about: Some(project) })).await;
+        self.publish(Event::DesignSessionStarted { squad: squad.clone(), designer, project: project.clone(), page: page.clone(), from });
+        Box::pin(self.handle(Command::Submit { session: designer, text, about: Some(project.clone()) })).await;
+        // On from here: its later turns open with the round's rules (the kickoff says them itself).
+        self.design_sessions.insert(designer, session::Active::new(&squad, project.as_deref(), &page, now_secs()));
+    }
+
+    /// The prototype the person picked for `ticket` with "Use this", when it was built from one.
+    pub(super) fn approved_prototype(&mut self, squad: &str, ticket: TicketId) -> Option<String> {
+        let entries = self.journal(squad)?.ticket_entries(ticket).ok()?;
+        entries.into_iter().rev().find(|e| e.kind == session::APPROVED_PROTOTYPE).map(|e| e.text)
+    }
+
+    /// The person ended the session on its screen.
+    pub(super) fn end_design_session(&mut self, squad: &str, designer: SessionId) {
+        if self.design_sessions.get(&designer).is_some_and(|a| a.squad == squad) {
+            self.design_sessions.remove(&designer);
+            crate::daemon_log!("equipe: {squad}: the design session with the designer ended");
+        }
+    }
+
+    /// The note `id`'s next turn opens with while a design session is on with it.
+    pub(super) fn design_note(&mut self, id: SessionId) -> Option<String> {
+        let now = now_secs();
+        if self.design_sessions.get(&id).is_some_and(|a| !a.on(now)) {
+            self.design_sessions.remove(&id);
+        }
+        self.design_sessions.get(&id).filter(|a| a.rounds(now)).map(session::Active::note)
+    }
+
+    /// The person's message `text` to `id` was just taken in: in a design
+    /// session on with it, it comes before the designer's own next step — a
+    /// command running is stopped so the step comes at once, and an engine
+    /// that can't read mid-turn has its turn stopped so the message goes in
+    /// now ([`session::preempt`]). Elsewhere, nothing changes.
+    pub(super) async fn person_first(&mut self, id: SessionId, text: &str) {
+        let now = now_secs();
+        let Some(active) = self.design_sessions.get_mut(&id) else { return };
+        if !active.on(now) {
+            self.design_sessions.remove(&id);
+            return;
+        }
+        active.last = now;
+        if active.picked {
+            return;
+        }
+        let squad = active.squad.clone();
+        let Some(s) = self.sessions.get(&id).filter(|s| s.is_working()) else { return };
+        let steered = s.steering.iter().any(|t| t == text);
+        if !steered && !s.queued.iter().any(|t| t == text) {
+            return;
+        }
+        match session::preempt(steered, self.command_running(id)) {
+            session::Preempt::Nothing => {}
+            session::Preempt::StopCommand => {
+                crate::daemon_log!("equipe: {squad}: the person spoke in the design session: the designer's command is stopped so it reads them now");
+                self.stop_command(id);
+            }
+            session::Preempt::Interrupt => {
+                crate::daemon_log!("equipe: {squad}: the person spoke in the design session: the designer's turn is stopped so it reads them now");
+                Box::pin(self.interrupt(id)).await;
+            }
+        }
+    }
+
+    /// "Use this" on a session's prototype: the implementation ticket opened
+    /// with the picked variant as its spec — or the one this session opened
+    /// before updated, while it hasn't started — the designer told the
+    /// rounds are over, and the session ended.
+    pub(super) async fn use_design_variant(&mut self, squad: &str, designer: SessionId, mut picked: session::Picked) {
+        if !crate::squads::valid_name(squad) || !self.sessions.get(&designer).is_some_and(|s| s.squad.as_deref() == Some(squad)) {
+            return;
+        }
+        let Some(page) = page_name(&picked.page) else {
+            let message = say!(self, "design_session.no_page");
+            return self.squad_error(squad, message);
+        };
+        picked.page = page.clone();
+        picked.variant = picked.variant.as_deref().and_then(session::variant_label);
+        picked.url = picked.url.filter(|u| session::is_page_address(u));
+        let title = match &picked.variant {
+            Some(variant) => say!(self, "design_session.use_title_variant", page = page.clone(), variant = variant.clone()),
+            None => say!(self, "design_session.use_title", page = page.clone()),
+        };
+        let body = session::implementation_body(&say!(self, "design_session.use_intro"), &picked);
+        let before = self.design_sessions.get(&designer).and_then(|a| a.implementation).and_then(|t| self.find_ticket(squad, t)).filter(|t| t.status == TicketStatus::Todo).map(|t| t.id);
+        let (ticket, updated) = match before {
+            Some(id) => {
+                let edit = TicketEdit { title: Some(title), body: Some(body), ..TicketEdit::default() };
+                Box::pin(self.person_edits(squad, id, edit)).await;
+                (id, true)
+            }
+            None => {
+                let frontend = self.sessions.values().any(|s| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| m.role == "frontend"));
+                let draft = TicketDraft {
+                    title,
+                    body,
+                    project: picked.project.clone().map(PathBuf::from),
+                    assignee: frontend.then(|| "frontend".to_owned()),
+                    kind: Some(TicketKind::Code),
+                    ..TicketDraft::default()
+                };
+                match self.new_ticket(squad, draft) {
+                    Ok(id) => (id, false),
+                    Err(message) => return self.squad_error(squad, message),
+                }
+            }
+        };
+        crate::daemon_log!("equipe: {squad}: the person picked {} of the design session on {page}: T-{ticket}", picked.variant.as_deref().map_or("the prototype".to_owned(), |v| format!("variant {v}")));
+        // Its design QA: the precheck alone, against what they picked (`design_qa::gate_prototype`).
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.ticket_event(ticket, "equipe", session::APPROVED_PROTOTYPE, picked.url.as_deref().unwrap_or(&page));
+        }
+        if let Some(session) = self.sessions.get_mut(&designer) {
+            session.briefing.push(session::picked_line(&picked, ticket, updated));
+        }
+        self.save_waiting(designer);
+        // The rounds are over: the designer's next turns are ticket work again;
+        // a later pick in the same session updates this ticket while it hasn't started.
+        let active = self.design_sessions.entry(designer).or_insert_with(|| session::Active::new(squad, picked.project.as_deref(), &page, now_secs()));
+        active.implementation = Some(ticket);
+        active.picked = true;
+        self.publish(Event::DesignVariantUsed { squad: squad.to_owned(), designer, ticket, variant: picked.variant.clone(), updated });
+        if !updated {
+            self.dispatch(squad).await;
+        }
     }
 
     /// What the person did that tells their taste, kept with its profile.

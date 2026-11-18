@@ -53,6 +53,9 @@ pub struct Shown {
     pub live: Option<Live>,
     pub count: usize,
     pub done: Vec<(u32, String)>,
+    /// The prototype's variants shown, by letter (`A`…), each at the page it
+    /// was last shown at, in letter order: put side by side.
+    pub variants: Vec<(String, String)>,
 }
 
 /// [`Shown`], from `entries` past `since`.
@@ -73,6 +76,13 @@ pub fn shown(entries: &[Entry], since: usize) -> Shown {
                     out.live = Some(Live::Render(path));
                     out.count += 1;
                 }
+                Marker::Variant { label, url } => {
+                    out.variants.retain(|(l, _)| *l != label);
+                    out.variants.push((label, url.clone()));
+                    out.variants.sort();
+                    out.live = Some(Live::Page(url));
+                    out.count += 1;
+                }
                 Marker::Done { n, what } => {
                     out.done.retain(|(m, _)| *m != n);
                     out.done.push((n, what));
@@ -81,6 +91,71 @@ pub fn shown(entries: &[Entry], since: usize) -> Shown {
         }
     }
     out
+}
+
+/// The variant whose page is live, when it is one of them.
+pub fn variant_in_front(variants: &[(String, String)], live: Option<&Live>) -> Option<String> {
+    let Some(Live::Page(url)) = live else { return None };
+    variants.iter().find(|(_, u)| same_page(u, url)).map(|(l, _)| l.clone())
+}
+
+/// What "Use this" picks: the variant picked (else the one live) and its
+/// page, or — no variants — the page live. `None`: nothing live to pick, or
+/// variants side by side with none picked yet.
+pub fn picked(shown: &Shown, variant: Option<&str>, side_by_side: bool) -> Option<(Option<String>, String)> {
+    let Some(Live::Page(live)) = &shown.live else { return None };
+    if let Some(v) = variant
+        && let Some((l, url)) = shown.variants.iter().find(|(l, _)| l == v)
+    {
+        return Some((Some(l.clone()), url.clone()));
+    }
+    if side_by_side {
+        return None;
+    }
+    match variant_in_front(&shown.variants, shown.live.as_ref()) {
+        Some(l) => Some((Some(l), live.clone())),
+        None => Some((None, live.clone())),
+    }
+}
+
+/// The page that puts the prototype's variants side by side in the live
+/// preview, as a `data:` address: each variant in a frame at its address on
+/// this screen (`here`: `None` when it can't be reached from here, and it is
+/// left out), laid out `width` CSS pixels wide and scaled to its column, its
+/// letter over it. `None` with fewer than two to show.
+pub fn side_by_side_page(variants: &[(String, String)], here: impl Fn(&str) -> Option<String>, width: u32) -> Option<String> {
+    let shown: Vec<(String, String)> = variants.iter().filter_map(|(l, u)| here(u).map(|h| (l.clone(), h))).collect();
+    if shown.len() < 2 {
+        return None;
+    }
+    let escape = |t: &str| t.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;").replace('>', "&gt;");
+    let columns: String = shown
+        .iter()
+        .map(|(label, url)| format!("<section><header>{}</header><div class=\"f\"><iframe src=\"{}\" width=\"{width}\"></iframe></div></section>", escape(label), escape(url)))
+        .collect();
+    let html = format!(
+        "<!doctype html><meta charset=\"utf-8\"><style>html,body{{margin:0;height:100%;background:#f4f4f5;font:600 12px -apple-system,system-ui,sans-serif}}\
+@media (prefers-color-scheme:dark){{html,body{{background:#18181b;color:#e4e4e7}}}}\
+main{{display:flex;gap:8px;height:100%;padding:8px;box-sizing:border-box}}section{{flex:1;min-width:0;display:flex;flex-direction:column}}\
+header{{padding:2px 4px 6px}}.f{{flex:1;position:relative;overflow:hidden;border-radius:6px;background:#fff}}\
+iframe{{position:absolute;left:0;top:0;border:0;transform-origin:0 0}}</style><main>{columns}</main>\
+<script>function fit(){{for(const f of document.querySelectorAll('.f')){{const i=f.firstChild,s=f.clientWidth/{width};\
+i.style.transform='scale('+s+')';i.style.height=(f.clientHeight/s)+'px';}}}}addEventListener('resize',fit);fit();</script>"
+    );
+    Some(format!("data:text/html;charset=utf-8,{}", percent(&html)))
+}
+
+/// `text` as it may stand in a `data:` address.
+fn percent(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() * 2);
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~ !*'(),;:@/?=+$".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out.replace(' ', "%20")
 }
 
 /// How the live page reaches this screen. Always through the daemon: a
@@ -303,6 +378,9 @@ pub struct Pending {
     /// there, and the element the click was on.
     pub width: Option<u32>,
     pub selector: Option<String>,
+    /// The element's words and its box in the page, when the page said.
+    pub text: Option<String>,
+    pub bounds: Option<[u32; 4]>,
 }
 
 impl Session {
@@ -341,12 +419,18 @@ impl Session {
 
     /// [`Self::drop_pin`] on a page laid out `width` CSS pixels wide (the live preview's).
     pub fn drop_pin_wide(&mut self, x: u32, y: u32, width: u32, note: &str, reasons: Vec<PickReason>, selector: Option<String>) -> Option<u32> {
+        self.drop_pin_on(x, y, width, note, reasons, selector, None, None)
+    }
+
+    /// [`Self::drop_pin_wide`] with the element's words and box, as the live preview's page says them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn drop_pin_on(&mut self, x: u32, y: u32, width: u32, note: &str, reasons: Vec<PickReason>, selector: Option<String>, text: Option<String>, bounds: Option<[u32; 4]>) -> Option<u32> {
         let note = Pin::tidy(note);
         if note.is_empty() && reasons.is_empty() {
             return None;
         }
         let n = next_number(&self.pins);
-        let pin = Pin { n, x, y, width, note, selector, reasons, crop: None };
+        let pin = Pin { n, x, y, width, note, selector, reasons, crop: None, text, bounds };
         self.pins.push(PinUi { pin, sent: false, done: None });
         Some(n)
     }
@@ -438,6 +522,46 @@ mod tests {
         let mut session = Session::new("acme", 2, None, "Pricing", SessionFrom::DesignScreen, 1, 0);
         assert!(session.should_reload(&got));
         assert!(!session.should_reload(&got), "once per change");
+    }
+
+    #[test]
+    fn the_prototypes_variants_are_kept_by_letter_for_side_by_side() {
+        let entries = vec![
+            tool("design-session: variant B http://localhost:5173/proto/b", true),
+            tool("design-session: variant A http://localhost:5173/proto/a", true),
+            tool("design-session: variant B http://localhost:5173/proto/b2", true),
+        ];
+        let got = shown(&entries, 0);
+        assert_eq!(got.variants, [("A".to_owned(), "http://localhost:5173/proto/a".to_owned()), ("B".to_owned(), "http://localhost:5173/proto/b2".to_owned())]);
+        assert_eq!(got.live, Some(Live::Page("http://localhost:5173/proto/b2".into())), "the latest shown is the one in front");
+        assert_eq!(got.count, 3, "each one shown reloads");
+    }
+
+    #[test]
+    fn use_this_picks_the_variant_in_front_or_the_page_shown() {
+        let variants = vec![("A".to_owned(), "http://localhost:5173/a".to_owned()), ("B".to_owned(), "http://localhost:5173/b".to_owned())];
+        let shown = Shown { live: Some(Live::Page("http://localhost:5173/b/".into())), count: 2, done: vec![], variants: variants.clone() };
+        assert_eq!(variant_in_front(&shown.variants, shown.live.as_ref()), Some("B".into()));
+        assert_eq!(picked(&shown, None, false), Some((Some("B".into()), "http://localhost:5173/b/".into())), "the one live");
+        assert_eq!(picked(&shown, Some("A"), false), Some((Some("A".into()), "http://localhost:5173/a".into())), "the one picked");
+        assert_eq!(picked(&shown, None, true), None, "side by side: pick one first");
+        let one = Shown { live: Some(Live::Page("http://localhost:3000/".into())), count: 1, ..Shown::default() };
+        assert_eq!(picked(&one, None, false), Some((None, "http://localhost:3000/".into())));
+        assert_eq!(picked(&Shown { live: Some(Live::Render("/w/r.png".into())), ..Shown::default() }, None, false), None, "a picture is no prototype");
+    }
+
+    #[test]
+    fn the_variants_go_side_by_side_in_one_page_at_their_addresses_here() {
+        let variants = vec![("A".to_owned(), "http://localhost:5173/a".to_owned()), ("B".to_owned(), "http://localhost:5173/b?x=1&y=2".to_owned()), ("C".to_owned(), "http://localhost:9999/c".to_owned())];
+        let here = |u: &str| u.strip_prefix("http://localhost:5173").map(|rest| format!("http://localhost:61000{rest}"));
+        let page = side_by_side_page(&variants, here, 1440).unwrap();
+        assert!(page.starts_with("data:text/html;charset=utf-8,"));
+        assert!(!page.contains(' ') && !page.contains('"') && !page.contains('#') && !page.contains('<'), "{page}");
+        let html = page.replace("%22", "\"").replace("%3C", "<").replace("%3E", ">").replace("%26", "&").replace("%20", " ");
+        assert!(html.contains("<iframe src=\"http://localhost:61000/a\" width=\"1440\">"), "{html}");
+        assert!(html.contains("src=\"http://localhost:61000/b?x=1&amp;y=2\""), "{html}");
+        assert!(!html.contains("9999"), "one not reachable from here is left out");
+        assert_eq!(side_by_side_page(&variants[..1], here, 1440), None);
     }
 
     #[test]

@@ -77,6 +77,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::EditTickets { .. }
         | C::MoveTicket { .. }
         | C::CommentTicket { .. }
+        // "Use this" on a prototype opens the implementation ticket.
+        | C::UseDesignVariant { .. }
         | C::RestoreDesign { .. } => true,
         // What widens what members may do, or changes how they run: modes, who
         // accepts, how many, engine switching, subagents, parallel work, scaling, idle wake,
@@ -246,7 +248,8 @@ pub fn person_only(command: &Command) -> bool {
         // A preview the person's screen opened or closed: what a member is told to keep running.
         | C::LivePreview { .. }
         // The person's message to the designer, as Submit is.
-        | C::StartDesignSession { .. } => false,
+        | C::StartDesignSession { .. }
+        | C::EndDesignSession { .. } => false,
     }
 }
 

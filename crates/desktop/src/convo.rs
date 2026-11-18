@@ -147,6 +147,8 @@ pub struct Convo {
     watch: Option<CommandWatch>,
     /// The person asked to stop that command, and it hasn't answered yet.
     pub stopping_command: bool,
+    /// What the turn under way has written so far, in tokens ([`Event::Output`]).
+    pub turn_tokens: Option<u64>,
 }
 
 /// The transcript line where reasoning ended: `THOUGHT` + its number + `:` +
@@ -189,6 +191,7 @@ impl Convo {
             step_since: None,
             watch: None,
             stopping_command: false,
+            turn_tokens: None,
         }
     }
 
@@ -223,7 +226,11 @@ impl Convo {
     /// Fold one event of this session in. True when what the conversation
     /// shows may differ (the token counter's ticks don't count).
     pub fn on_event(&mut self, event: &Event, now: Instant, at: Clock) -> bool {
-        if matches!(event, Event::Output { .. } | Event::ModelKnown { .. }) {
+        if let Event::Output { tokens, .. } = event {
+            self.turn_tokens = Some(*tokens);
+            return false;
+        }
+        if matches!(event, Event::ModelKnown { .. }) {
             return false;
         }
         if let Event::Thinking { text, .. } = event {
@@ -256,6 +263,9 @@ impl Convo {
                 self.desk = project.clone();
             }
             Event::UserMessage { .. } => {
+                if self.working_since.is_none() {
+                    self.turn_tokens = None;
+                }
                 self.working_since.get_or_insert(now);
                 self.suggestion = None;
                 // The memos of one project are delivered together, into its
@@ -447,6 +457,7 @@ impl Convo {
 
     /// Its turn ended: leave a quiet line saying how long it took.
     fn stop_working(&mut self, now: Instant, at: Clock, _outcome: TurnOutcome) {
+        self.turn_tokens = None;
         if let Some(since) = self.working_since.take() {
             let took = now.saturating_duration_since(since);
             if took >= Duration::from_secs(1) {
@@ -2043,7 +2054,10 @@ mod tests {
     fn the_token_counter_is_not_a_change() {
         let mut c = convo(false);
         assert!(!c.on_event(&Event::Output { session: 1, tokens: 9 }, Instant::now(), T));
+        assert_eq!(c.turn_tokens, Some(9), "kept for the live line all the same");
         assert!(c.on_event(&Event::TextDelta { session: 1, text: "x".into() }, Instant::now(), T));
+        c.on_event(&Event::TurnEnded { session: 1, outcome: TurnOutcome::Completed, usage: None }, Instant::now(), T);
+        assert_eq!(c.turn_tokens, None, "the next turn counts from nothing");
     }
 
     #[test]

@@ -77,7 +77,8 @@ can't be taken back — then give `why`."
     pub(super) fn tell_decided(&mut self, squad: &str) {
         let decided = self.decided_for_person(squad);
         let key: Vec<(TicketId, u64)> = decided.iter().map(|d| (d.ticket, d.at)).collect();
-        if self.decided_told.get(squad) == Some(&key) {
+        // Nothing told yet and nothing to tell: no news either.
+        if self.decided_told.get(squad).map_or(key.is_empty(), |told| *told == key) {
             return;
         }
         self.decided_told.insert(squad.to_owned(), key);

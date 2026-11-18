@@ -17,8 +17,11 @@ use std::time::Duration;
 #[derive(Debug, Clone, PartialEq)]
 pub enum WebEvent {
     /// A pin dropped on the page: CSS pixels from its top left (scrolling
-    /// included), the viewport's width, and the element's selector.
-    Pin { x: u32, y: u32, width: u32, selector: Option<String> },
+    /// included), the viewport's width, and the element there.
+    Pin { x: u32, y: u32, width: u32, selector: Option<String>, element: Option<Element> },
+    /// The crop of the page around a pin just dropped, as PNG bytes: a
+    /// snapshot of the web view's own drawing (never the screen).
+    Crop(Vec<u8>),
     /// Esc typed in the page and not taken by it.
     Escape,
     /// ⌘⇧F typed in the page.
@@ -27,20 +30,70 @@ pub enum WebEvent {
     Loaded(String),
 }
 
+/// The element under a pin: its words, its box in the page (CSS pixels,
+/// scrolling included), and where it and the click sit in the visible part
+/// of the page — what the crop is cut from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Element {
+    pub text: Option<String>,
+    /// x, y, width, height in the page.
+    pub bounds: [u32; 4],
+    /// The element's box in the viewport, and the click's spot there (CSS pixels).
+    pub in_view: (f64, f64, f64, f64),
+    pub click: (f64, f64),
+    /// The viewport's size (CSS pixels).
+    pub viewport: (f64, f64),
+}
+
 /// What the page's script posts, as read back here.
 pub fn read_message(body: &str) -> Option<WebEvent> {
     let v: serde_json::Value = serde_json::from_str(body).ok()?;
     match v.get("t")?.as_str()? {
-        "pin" => Some(WebEvent::Pin {
-            x: v.get("x")?.as_f64()?.max(0.).round() as u32,
-            y: v.get("y")?.as_f64()?.max(0.).round() as u32,
-            width: v.get("w")?.as_f64()?.max(0.).round() as u32,
-            selector: v.get("sel").and_then(|s| s.as_str()).map(|s| s.chars().take(300).collect::<String>()).filter(|s| !s.is_empty()),
-        }),
+        "pin" => {
+            let num = |k: &str| v.get(k).and_then(serde_json::Value::as_f64).filter(|n| n.is_finite());
+            let element = (|| {
+                let (bx, by, bw, bh) = (num("bx")?, num("by")?, num("bw")?, num("bh")?);
+                let px = |n: f64| n.max(0.).round() as u32;
+                Some(Element {
+                    text: v.get("txt").and_then(|s| s.as_str()).map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(200).collect::<String>()).filter(|s| !s.is_empty()),
+                    bounds: [px(bx), px(by), px(bw), px(bh)],
+                    in_view: (num("vx")?, num("vy")?, bw, bh),
+                    click: (num("cx")?, num("cy")?),
+                    viewport: (num("vw")?, num("vh")?),
+                })
+            })();
+            Some(WebEvent::Pin {
+                x: v.get("x")?.as_f64()?.max(0.).round() as u32,
+                y: v.get("y")?.as_f64()?.max(0.).round() as u32,
+                width: v.get("w")?.as_f64()?.max(0.).round() as u32,
+                selector: v.get("sel").and_then(|s| s.as_str()).map(|s| s.chars().take(300).collect::<String>()).filter(|s| !s.is_empty()),
+                element,
+            })
+        }
         "esc" => Some(WebEvent::Escape),
         "full" => Some(WebEvent::ToggleFull),
         _ => None,
     }
+}
+
+/// The part of the visible page a pin's crop shows, in CSS pixels of the
+/// viewport: the element with some room around it — or, for one too big to
+/// say much (a whole section), a box around the click — kept inside the
+/// viewport. `None` when nothing of it is visible.
+pub fn crop_rect(element: &Element) -> Option<(f64, f64, f64, f64)> {
+    const PAD: f64 = 16.;
+    const MOST: (f64, f64) = (640., 400.);
+    const AROUND: (f64, f64) = (480., 300.);
+    let (vw, vh) = element.viewport;
+    let (x, y, w, h) = element.in_view;
+    let (x, y, w, h) = if w + 2. * PAD <= MOST.0 && h + 2. * PAD <= MOST.1 {
+        (x - PAD, y - PAD, w + 2. * PAD, h + 2. * PAD)
+    } else {
+        (element.click.0 - AROUND.0 / 2., element.click.1 - AROUND.1 / 2., AROUND.0, AROUND.1)
+    };
+    let (left, top) = (x.max(0.), y.max(0.));
+    let (right, bottom) = ((x + w).min(vw), (y + h).min(vh));
+    (right - left >= 4. && bottom - top >= 4.).then_some((left, top, right - left, bottom - top))
 }
 
 /// Whether the web view may go to an address: web pages (and the inline
@@ -106,7 +159,12 @@ pub const SCRIPT: &str = r#"(() => {
     e.preventDefault();
     e.stopPropagation();
     window.__equipe.pinning(false);
-    post({ t: 'pin', x: e.clientX + window.scrollX, y: e.clientY + window.scrollY, w: window.innerWidth, sel: selector(e.target) });
+    const el = e.target;
+    const r = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: e.clientX, top: e.clientY, width: 0, height: 0 };
+    const words = (el.innerText || el.getAttribute && (el.getAttribute('aria-label') || el.getAttribute('alt') || el.getAttribute('placeholder')) || '').slice(0, 400);
+    post({ t: 'pin', x: e.clientX + window.scrollX, y: e.clientY + window.scrollY, w: window.innerWidth, sel: selector(el),
+      txt: words, bx: r.left + window.scrollX, by: r.top + window.scrollY, bw: r.width, bh: r.height, vx: r.left, vy: r.top,
+      cx: e.clientX, cy: e.clientY, vw: window.innerWidth, vh: window.innerHeight });
   }, true);
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !e.defaultPrevented) {
@@ -176,6 +234,7 @@ impl PreviewWebView {
     pub fn set_dark(&mut self, _: Option<bool>) {}
     pub fn run(&self, _: &str) {}
     pub fn focus(&self) {}
+    pub fn snapshot(&self, _: (f64, f64, f64, f64), _: tokio::sync::mpsc::UnboundedSender<WebEvent>) {}
 }
 
 #[cfg(target_os = "macos")]
@@ -302,6 +361,78 @@ mod mac {
         pub fn focus(&self) {
             let _ = self.webview.focus();
         }
+
+        /// A snapshot of `rect` (CSS pixels of the visible page) as the web
+        /// view draws it — WebKit's own rendering of this view, offscreen,
+        /// never a capture of the screen — sent as [`WebEvent::Crop`].
+        pub fn snapshot(&self, rect: (f64, f64, f64, f64), to: UnboundedSender<WebEvent>) {
+            use objc2::runtime::{AnyClass, AnyObject};
+            use objc2::{Encode, Encoding, msg_send};
+            use wry::WebViewExtMacOS as _;
+
+            #[repr(C)]
+            #[derive(Clone, Copy)]
+            struct Rect {
+                x: f64,
+                y: f64,
+                w: f64,
+                h: f64,
+            }
+            // SAFETY: laid out as CGRect (two CGFloat pairs), which is what the encoding says.
+            unsafe impl Encode for Rect {
+                const ENCODING: Encoding = Encoding::Struct("CGRect", &[Encoding::Struct("CGPoint", &[f64::ENCODING, f64::ENCODING]), Encoding::Struct("CGSize", &[f64::ENCODING, f64::ENCODING])]);
+            }
+
+            let Some(config_class) = AnyClass::get(c"WKSnapshotConfiguration") else { return };
+            let Some(rep_class) = AnyClass::get(c"NSBitmapImageRep") else { return };
+            let Some(dict_class) = AnyClass::get(c"NSDictionary") else { return };
+            let zoom = self.zoom;
+            let at = Rect { x: rect.0 * zoom, y: rect.1 * zoom, w: rect.2 * zoom, h: rect.3 * zoom };
+            let view = self.webview.webview();
+            let view: *mut AnyObject = objc2::rc::Retained::as_ptr(&view) as *mut AnyObject;
+            let rep_class: &'static AnyClass = rep_class;
+            let dict_class: &'static AnyClass = dict_class;
+            let done = block2::RcBlock::new(move |image: *mut AnyObject, _error: *mut AnyObject| {
+                if image.is_null() {
+                    return;
+                }
+                // SAFETY: AppKit calls on the NSImage WebKit handed over, on
+                // the main thread: its TIFF data, a bitmap of it, that as PNG.
+                let png = unsafe {
+                    let tiff: *mut AnyObject = msg_send![image, TIFFRepresentation];
+                    if tiff.is_null() {
+                        return;
+                    }
+                    let rep: *mut AnyObject = msg_send![rep_class, imageRepWithData: tiff];
+                    if rep.is_null() {
+                        return;
+                    }
+                    let props: *mut AnyObject = msg_send![dict_class, dictionary];
+                    // NSBitmapImageFileTypePNG = 4.
+                    let data: *mut AnyObject = msg_send![rep, representationUsingType: 4usize, properties: props];
+                    if data.is_null() {
+                        return;
+                    }
+                    let len: usize = msg_send![data, length];
+                    let bytes: *const u8 = msg_send![data, bytes];
+                    if bytes.is_null() || len == 0 {
+                        return;
+                    }
+                    std::slice::from_raw_parts(bytes, len).to_vec()
+                };
+                let _ = to.send(WebEvent::Crop(png));
+            });
+            // SAFETY: `+new` on WebKit's snapshot configuration, its rect set,
+            // and `-takeSnapshotWithConfiguration:completionHandler:` on the
+            // web view this preview owns, on the main thread; the block lives
+            // as long as WebKit holds it.
+            unsafe {
+                let config: Option<objc2::rc::Retained<AnyObject>> = msg_send![config_class, new];
+                let Some(config) = config else { return };
+                let _: () = msg_send![&*config, setRect: at];
+                let _: () = msg_send![view, takeSnapshotWithConfiguration: &*config, completionHandler: &*done];
+            }
+        }
     }
 }
 
@@ -313,13 +444,27 @@ mod tests {
     fn the_page_posts_pins_and_keys_and_nothing_else() {
         assert_eq!(
             read_message(r##"{"t":"pin","x":120.4,"y":2210.6,"w":1440,"sel":"main > section:nth-of-type(2) > h2"}"##),
-            Some(WebEvent::Pin { x: 120, y: 2211, width: 1440, selector: Some("main > section:nth-of-type(2) > h2".into()) })
+            Some(WebEvent::Pin { x: 120, y: 2211, width: 1440, selector: Some("main > section:nth-of-type(2) > h2".into()), element: None })
         );
-        assert_eq!(read_message(r#"{"t":"pin","x":-3,"y":5,"w":390,"sel":""}"#), Some(WebEvent::Pin { x: 0, y: 5, width: 390, selector: None }));
+        let full = r#"{"t":"pin","x":130,"y":1210,"w":1440,"sel":"main > button","txt":"  Start\n  free trial ","bx":100,"by":1190,"bw":160,"bh":40,"vx":100,"vy":190,"cx":130,"cy":210,"vw":1440,"vh":900}"#;
+        let Some(WebEvent::Pin { element: Some(el), .. }) = read_message(full) else { panic!() };
+        assert_eq!(el.text.as_deref(), Some("Start free trial"));
+        assert_eq!(el.bounds, [100, 1190, 160, 40]);
+        assert_eq!((el.in_view, el.click, el.viewport), ((100., 190., 160., 40.), (130., 210.), (1440., 900.)));
+        assert_eq!(read_message(r#"{"t":"pin","x":-3,"y":5,"w":390,"sel":""}"#), Some(WebEvent::Pin { x: 0, y: 5, width: 390, selector: None, element: None }));
         assert_eq!(read_message(r#"{"t":"esc"}"#), Some(WebEvent::Escape));
         assert_eq!(read_message(r#"{"t":"full"}"#), Some(WebEvent::ToggleFull));
         assert_eq!(read_message(r#"{"t":"eval","js":"x"}"#), None);
         assert_eq!(read_message("not json"), None);
+    }
+
+    #[test]
+    fn a_pins_crop_is_its_element_with_room_or_a_box_around_the_click_inside_the_view() {
+        let el = |in_view, click| Element { text: None, bounds: [0, 0, 0, 0], in_view, click, viewport: (1440., 900.) };
+        assert_eq!(crop_rect(&el((100., 190., 160., 40.), (130., 210.))), Some((84., 174., 192., 72.)), "a button, with room around");
+        assert_eq!(crop_rect(&el((0., 0., 1440., 2000.), (700., 450.))), Some((460., 300., 480., 300.)), "a whole section: around the click");
+        assert_eq!(crop_rect(&el((1420., 880., 40., 40.), (1430., 890.))), Some((1404., 864., 36., 36.)), "kept inside the view");
+        assert_eq!(crop_rect(&el((2000., 2000., 10., 10.), (5., 5.))), None, "nothing of it visible");
     }
 
     #[test]

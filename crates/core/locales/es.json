@@ -278,6 +278,10 @@
   "news.cannot_start": "✗ T-{id} no pudo empezar para {name}: {reason}",
   "news.changes_declined": "No devolviste {tickets}: sigue en revisión",
   "news.commented": "Comentaste en T-{id}: {text}",
+  "news.card_withdrawn": "{name} retiró su tarjeta: {question}",
+  "news.card_withdrawn_on": "{name} retiró su tarjeta de T-{id}: {question}",
+  "news.member_revised": "{name} actualizó T-{id} · {title}",
+  "news.member_dropped": "{name} descartó T-{id} · {title}",
   "news.decision.one": "{name} te pide que decidas · {question}",
   "news.decision.other": "{name} te pide que decidas {count} cosas · {question}",
   "news.desk_saved": "✎ {name} {what} en la carpeta del equipo · /home undo lo deshace",
@@ -863,5 +867,8 @@
   "design_session.go_ahead": "Que el diseñador siga solo",
   "design_session.kickoff": "Trabajemos juntos en {page}, en rondas cortas.",
   "design_session.no_designer": "Aún no hay diseñador en el equipo para una sesión de diseño. Pide al PM que añada uno.",
-  "design_session.no_page": "Indica la página o pantalla de la sesión de diseño."
+  "design_session.no_page": "Indica la página o pantalla de la sesión de diseño.",
+  "design_session.use_title": "Construir {page} a partir del prototipo elegido",
+  "design_session.use_title_variant": "Construir {page} a partir del prototipo {variant}",
+  "design_session.use_intro": "Elegido en una sesión de diseño con «Usar este»: construir este prototipo en el producto."
 }

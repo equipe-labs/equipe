@@ -17,6 +17,9 @@ pub enum SessionAction {
     Show {
         /// file.html, http://localhost:5173/path, or render.png
         target: String,
+        /// One of the prototype's variants (A, B or C): the person's screen puts the variants side by side
+        #[arg(long)]
+        variant: Option<String>,
     },
     /// Mark a pin the person dropped as addressed, with what changed in one line
     Done {
@@ -60,17 +63,29 @@ pub enum TunerAction {
     },
 }
 
+/// A page shown as one of the prototype's variants: a live page only, by
+/// its letter.
+fn with_variant(marker: Marker, variant: Option<&str>) -> Result<Marker, String> {
+    let Some(raw) = variant else { return Ok(marker) };
+    let label = session::variant_label(raw).ok_or_else(|| format!("A variant is one letter, A to {}: `--variant B`.", (b'A' + session::VARIANTS_MAX as u8 - 1) as char))?;
+    match marker {
+        Marker::Show(url) => Ok(Marker::Variant { label, url }),
+        _ => Err("Only a live page (an HTML file or a dev server's address) can be a variant; show a render on its own.".into()),
+    }
+}
+
 fn design_dir(dir: Option<PathBuf>) -> PathBuf {
     dir.unwrap_or_else(|| PathBuf::from("design"))
 }
 
 pub fn session_command(action: SessionAction) -> Result<(), String> {
     match action {
-        SessionAction::Show { target } => {
+        SessionAction::Show { target, variant } => {
             let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
-            let marker = session::target(&target, &cwd)?;
+            let marker = with_variant(session::target(&target, &cwd)?, variant.as_deref())?;
             let shown = match &marker {
                 Marker::Show(url) => format!("Live beside the session: {url}. It reloads each time you show it."),
+                Marker::Variant { label, url } => format!("Variant {label} live beside the session, next to the others: {url}. It reloads each time you show it."),
                 Marker::Render(path) => format!("Shown beside the session: {path}."),
                 Marker::Done { .. } => unreachable!("a target is never a pin"),
             };

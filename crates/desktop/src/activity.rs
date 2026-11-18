@@ -285,6 +285,13 @@ const NEWS: &[(&str, NewsKind)] = &[
     ("news.cannot_start", NewsKind::CannotStart),
     ("news.desk_saved", NewsKind::DeskSaved),
     ("news.you_told", NewsKind::YouTold),
+    // The person's comment on a ticket nobody works: the squad's news, never their words in this chat.
+    ("news.commented", NewsKind::YouTold),
+    // A member changing its own work after the person's word in conversation.
+    ("news.card_withdrawn", NewsKind::Cancelled),
+    ("news.card_withdrawn_on", NewsKind::Cancelled),
+    ("news.member_dropped", NewsKind::Cancelled),
+    ("news.member_revised", NewsKind::DeskSaved),
     ("news.stale.one", NewsKind::Stale),
     ("news.stale.other", NewsKind::Stale),
     ("news.disk_build_failed", NewsKind::DiskShort),
@@ -806,6 +813,10 @@ mod tests {
         let old = news_of("backend handed in T-118 for your review · 주문 API.").unwrap();
         assert_eq!(old, News { kind: NewsKind::HandedIn, text: "backend가 T-118을 검토해 달라고 넘겼어요 · 주문 API.".into() });
         assert_eq!(news_of("You accepted T-58 · 헤더.").unwrap().kind, NewsKind::Accepted);
+        // The person's comment on a ticket nobody works: a line of news, never their words in the chat.
+        assert_eq!(news_of("You commented on T-3561: [owner] tighter spacing").unwrap().kind, NewsKind::YouTold);
+        assert_eq!(news_of("designer withdrew its card on T-3567: Which left menu?").unwrap().kind, NewsKind::Cancelled);
+        assert_eq!(news_of("designer updated T-3567 · References first, then a live prototype").unwrap().kind, NewsKind::DeskSaved);
         assert_eq!(news_of("pm이(가) T-9을(를) 제안했습니다: 로그인").unwrap().kind, NewsKind::Proposed);
         // Its particles as the names took them, or as kept from before they did.
         let handed = news_of("backend가 T-118을 검토해 달라고 넘겼어요 · 주문 API.").unwrap();

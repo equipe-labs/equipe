@@ -103,6 +103,7 @@ mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
 mod status;
+mod status_line;
 mod models;
 mod picker;
 mod orchestra;
@@ -1280,6 +1281,12 @@ impl Shell {
                         // A design session began: its screen opens here when this screen asked, or the PM brought it.
                         if let daemon::Update::Event(event @ Event::DesignSessionStarted { .. }) = &update {
                             this.design_session_started(event, window, cx);
+                            changed = true;
+                            continue;
+                        }
+                        // "Use this" on a session's prototype: the ticket it opened, said over the composer.
+                        if let daemon::Update::Event(event @ Event::DesignVariantUsed { .. }) = &update {
+                            this.design_variant_used(event, cx);
                             changed = true;
                             continue;
                         }
