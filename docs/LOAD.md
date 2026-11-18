@@ -128,6 +128,15 @@ The practice, for a project's dependencies on a squad's Mac:
 
 1. A new worktree gets `node_modules` as an APFS clone (`clonefile`) of a checkout's, but only when the lockfile is
    byte-for-byte the same. A clone costs no download and almost no disk.
+   - The source is checked before cloning. An empty `node_modules` (an install cut short), or one whose
+     `.package-lock.json` doesn't match `package-lock.json`, is installed again in that checkout first, then cloned.
+     That repair runs `nice npm ci`, one at a time across the daemon, and is not retried for an hour after a
+     failure. The log gets one line: "repaired …'s node_modules once (it was empty): npm ci took 7s; worktrees clone
+     it from now on".
+   - On production, one empty source `node_modules` was cloned into 182 worktrees, and a project script then ran
+     `npm ci` in each of them.
+   - A link inside it that points into the checkout by an absolute path is pointed at the same place in the worktree.
+     The whole folder used to be left out instead.
 2. `npm ci` only when the lockfile changed: the ticket's branch adds or bumps a package.
 3. To add a package, use `npm install <package>` on top of the clone.
 4. A project that uses pnpm shares one store across all worktrees (pnpm's default content-addressed store), so even

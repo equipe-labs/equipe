@@ -195,20 +195,9 @@ fn npm_ci_in(words: &[String], cwd: &Path, home: Option<&Path>) -> Option<PathBu
 }
 
 /// Whether `dir`'s `node_modules` is installed for exactly its
-/// `package-lock.json`: npm's own record of what it installed
-/// (`node_modules/.package-lock.json`) names the same packages.
+/// `package-lock.json` ([`crate::worktree::npm_installed_for_lockfile`]).
 fn installed_for_its_lockfile(dir: &Path) -> bool {
-    let packages = |path: PathBuf| -> Option<Value> {
-        let text = std::fs::read_to_string(path).ok()?;
-        let mut packages = serde_json::from_str::<Value>(&text).ok()?.get_mut("packages")?.take();
-        // The project itself is in the lockfile only.
-        packages.as_object_mut()?.remove("");
-        Some(packages)
-    };
-    match (packages(dir.join("package-lock.json")), packages(dir.join("node_modules/.package-lock.json"))) {
-        (Some(wanted), Some(installed)) => wanted.as_object().is_some_and(|w| !w.is_empty()) && wanted == installed,
-        _ => false,
-    }
+    crate::worktree::npm_installed_for_lockfile(dir) == Some(true)
 }
 
 /// What a member is told when `npm ci` would reinstall what is installed.

@@ -541,16 +541,155 @@ pub fn seed_dependencies(worktree: &Path) -> Vec<String> {
             continue;
         };
         let (from, to) = (source.join(&rel), worktree.join(&rel));
-        if let Some(link) = absolute_link_into(&from, source) {
-            notes.push(format!("left {} out: {} links into {} by an absolute path", rel.display(), link.display(), source.display()));
-            continue;
+        // A broken source isn't cloned into every worktree: an empty or stale
+        // node_modules (an install cut short) is installed again once, there.
+        if kind.folder == "node_modules" {
+            match source_state(&from, &source.join(lock_dir)) {
+                SourceState::Sound => {}
+                state @ (SourceState::Empty | SourceState::Stale) => match repair_source(&source.join(lock_dir), state) {
+                    Ok(line) => notes.push(line),
+                    Err(why) => {
+                        notes.push(format!("left {} out: {} is {} and couldn't be installed again: {why}", rel.display(), from.display(), state.word()));
+                        continue;
+                    }
+                },
+            }
         }
-        notes.push(match clone_new(&from, &to) {
-            Ok(()) => format!("cloned {} from {}", rel.display(), source.display()),
+        // A link into the source by an absolute path would write through to
+        // it: pointed at the same place in this worktree instead.
+        let retarget = absolute_link_into(&from, source).map(|_| (source.as_path(), worktree));
+        notes.push(match clone_new(&from, &to, retarget) {
+            Ok(0) => format!("cloned {} from {}", rel.display(), source.display()),
+            Ok(n) => format!("cloned {} from {} ({n} links into it pointed at this worktree instead)", rel.display(), source.display()),
             Err(err) => format!("couldn't clone {} from {}: {err}", rel.display(), source.display()),
         });
     }
     notes
+}
+
+/// How a checkout's `node_modules` stands, as a source to clone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SourceState {
+    Sound,
+    /// There, with nothing in it: an install cut short.
+    Empty,
+    /// npm's record of what it installed doesn't match `package-lock.json`.
+    Stale,
+}
+
+impl SourceState {
+    fn word(self) -> &'static str {
+        match self {
+            SourceState::Sound => "sound",
+            SourceState::Empty => "empty",
+            SourceState::Stale => "out of date with its package-lock.json",
+        }
+    }
+}
+
+/// How `modules` (a checkout's `node_modules`) stands against the lockfile
+/// in `lock_dir`: empty, or — with npm's lockfile — installed for another one.
+pub fn source_state(modules: &Path, lock_dir: &Path) -> SourceState {
+    if std::fs::read_dir(modules).map_or(true, |mut d| d.next().is_none()) {
+        return SourceState::Empty;
+    }
+    match npm_installed_for_lockfile(lock_dir) {
+        Some(false) => SourceState::Stale,
+        _ => SourceState::Sound,
+    }
+}
+
+/// Whether `dir`'s `node_modules` is installed for exactly its
+/// `package-lock.json`: npm's own record of what it installed
+/// (`node_modules/.package-lock.json`) names the same packages. `None` where
+/// there's no npm lockfile to tell by.
+pub fn npm_installed_for_lockfile(dir: &Path) -> Option<bool> {
+    let packages = |path: PathBuf| -> Option<serde_json::Value> {
+        let text = std::fs::read_to_string(path).ok()?;
+        let mut packages = serde_json::from_str::<serde_json::Value>(&text).ok()?.get_mut("packages")?.take();
+        // The project itself is in the lockfile only.
+        packages.as_object_mut()?.remove("");
+        Some(packages)
+    };
+    let wanted = packages(dir.join("package-lock.json"))?;
+    Some(wanted.as_object().is_some_and(|w| !w.is_empty()) && packages(dir.join("node_modules/.package-lock.json")).is_some_and(|installed| installed == wanted))
+}
+
+/// How long installing a checkout's dependencies again may take.
+const REPAIR_TIMEOUT: Duration = Duration::from_secs(600);
+/// A repair that failed isn't tried again for this long.
+const REPAIR_AGAIN_AFTER: Duration = Duration::from_secs(3600);
+
+/// Install `lock_dir`'s dependencies again with `npm ci` — at low priority,
+/// one repair at a time in the whole daemon, a failed one not retried for an
+/// hour — so the worktrees cloning from it get a whole `node_modules`. Only
+/// npm's lockfile: what another package manager installs is left as it is.
+/// The line for the log.
+fn repair_source(lock_dir: &Path, state: SourceState) -> Result<String> {
+    static REPAIRING: std::sync::Mutex<Option<HashMap<PathBuf, std::time::Instant>>> = std::sync::Mutex::new(None);
+    if !lock_dir.join("package-lock.json").is_file() {
+        return Err("only an npm project is installed again by equipe".into());
+    }
+    let mut tried = REPAIRING.lock().map_err(|_| "another repair failed")?;
+    // Another worktree's seeding may have repaired it while this one waited.
+    if source_state(&lock_dir.join("node_modules"), lock_dir) == SourceState::Sound {
+        return Ok(format!("{}'s node_modules was installed again a moment ago", lock_dir.display()));
+    }
+    let tried = tried.get_or_insert_with(HashMap::new);
+    if tried.get(lock_dir).is_some_and(|at| at.elapsed() < REPAIR_AGAIN_AFTER) {
+        return Err("a repair failed less than an hour ago".into());
+    }
+    tried.insert(lock_dir.to_owned(), std::time::Instant::now());
+    let npm = crate::browser::find_npx().and_then(|npx| npx.parent().map(|bin| bin.join("npm"))).filter(|npm| npm.is_file()).ok_or("npm isn't installed")?;
+    let began = std::time::Instant::now();
+    let mut command = Command::new("nice");
+    command.args(["-n", "10"]).arg(&npm).args(["ci", "--no-audit", "--no-fund", "--loglevel=error"]).current_dir(lock_dir);
+    if let Some(bin) = npm.parent() {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let joined = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(std::env::split_paths(&path))).unwrap_or(path);
+        command.env("PATH", joined);
+    }
+    let out = output_within(command, REPAIR_TIMEOUT)?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("npm ci failed").to_owned());
+    }
+    // Worked: needed again later only once the lockfile moves on.
+    tried.remove(lock_dir);
+    let line = format!(
+        "repaired {}'s node_modules once (it was {}): npm ci took {:.0}s; worktrees clone it from now on",
+        lock_dir.display(),
+        state.word(),
+        began.elapsed().as_secs_f64()
+    );
+    crate::daemon_log!("equipe: {line}");
+    Ok(line)
+}
+
+/// Each link under `folder` whose target is an absolute path inside
+/// `source`, pointed at the same place inside `worktree`. How many.
+fn retarget_links(folder: &Path, source: &Path, worktree: &Path) -> usize {
+    let roots = [source.to_owned(), source.canonicalize().unwrap_or_else(|_| source.to_owned())];
+    let mut n = 0;
+    let mut stack = vec![folder.to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            let Some(target) = kind.is_symlink().then(|| std::fs::read_link(entry.path()).ok()).flatten().filter(|t| t.is_absolute()) else { continue };
+            // As written and as resolved: `/var/…` is `/private/var/…` on a Mac.
+            let real = target.canonicalize().unwrap_or_else(|_| target.clone());
+            let Some(inside) = roots.iter().find_map(|r| target.strip_prefix(r).or_else(|_| real.strip_prefix(r)).ok()) else { continue };
+            let new = worktree.join(inside);
+            #[cfg(unix)]
+            if std::fs::remove_file(entry.path()).is_ok() && std::os::unix::fs::symlink(&new, entry.path()).is_ok() {
+                n += 1;
+            }
+        }
+    }
+    n
 }
 
 /// A link under `folder` whose target is an absolute path inside `checkout`,
@@ -582,7 +721,7 @@ fn absolute_link_into(folder: &Path, checkout: &Path) -> Option<PathBuf> {
 /// there by then (a member's own install may have begun). The clone is made
 /// beside it under another name and moved in whole, so `to` is either
 /// absent or complete; on failure nothing is left behind.
-fn clone_new(from: &Path, to: &Path) -> Result<()> {
+fn clone_new(from: &Path, to: &Path, retarget: Option<(&Path, &Path)>) -> Result<usize> {
     let (Some(parent), Some(name)) = (to.parent(), to.file_name()) else {
         return Err("no folder to put it in".to_owned());
     };
@@ -592,14 +731,22 @@ fn clone_new(from: &Path, to: &Path) -> Result<()> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let staging = parent.join(format!(".{}.equipe-seed-{}-{n}", name.to_string_lossy(), std::process::id()));
-    let done = clone_tree(from, &staging).and_then(|()| rename_new(&staging, to));
+    // Links into the source pointed at the worktree before the clone is moved in.
+    let mut retargeted = 0;
+    let done = clone_tree(from, &staging)
+        .map(|()| {
+            if let Some((source, worktree)) = retarget {
+                retargeted = retarget_links(&staging, source, worktree);
+            }
+        })
+        .and_then(|()| rename_new(&staging, to));
     if done.is_err() {
         let _ = std::fs::remove_dir_all(&staging);
         if made_parent {
             let _ = std::fs::remove_dir(parent);
         }
     }
-    done
+    done.map(|()| retargeted)
 }
 
 /// APFS's `clonefile`: the whole folder at once, sharing every block.
@@ -1855,7 +2002,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_folder_with_an_absolute_link_into_its_checkout_is_left_out() {
+    fn an_absolute_link_into_its_checkout_is_pointed_at_the_worktree_and_the_rest_cloned() {
         if !CAN_CLONE {
             return;
         }
@@ -1864,10 +2011,34 @@ mod tests {
         std::os::unix::fs::symlink(repo.join("packages/b"), repo.join("node_modules/b")).unwrap();
         let sandbox = create(&repo, &home, "t1-a", "x").unwrap();
         let notes = seed_dependencies(&sandbox.path);
-        assert!(notes.iter().any(|n| n.starts_with("left node_modules out")), "{notes:?}");
-        assert!(!sandbox.path.join("node_modules").exists());
+        if cfg!(target_os = "linux") && notes.iter().all(|n| n.starts_with("couldn't")) {
+            return;
+        }
+        assert!(notes.iter().any(|n| n.starts_with("cloned node_modules") && n.contains("1 links into it pointed at this worktree instead")), "{notes:?}");
+        assert_eq!(std::fs::read_link(sandbox.path.join("node_modules/b")).unwrap(), sandbox.path.join("packages/b"), "never through to the checkout");
+        assert!(sandbox.path.join("node_modules/x/index.js").is_file(), "the rest cloned");
+        assert_eq!(std::fs::read_link(repo.join("node_modules/b")).unwrap(), repo.join("packages/b"), "the checkout's own link as it was");
         let _ = std::fs::remove_dir_all(&home);
         let _ = std::fs::remove_dir_all(&repo);
+    }
+
+    #[test]
+    fn a_checkouts_node_modules_is_told_empty_stale_or_sound() {
+        let dir = scratch("source-state");
+        let modules = dir.join("node_modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::write(dir.join("package-lock.json"), r#"{"lockfileVersion":3,"packages":{"":{"name":"site"},"node_modules/react":{"version":"19.0.0"}}}"#).unwrap();
+        assert_eq!(source_state(&modules, &dir), SourceState::Empty, "an install cut short");
+        std::fs::create_dir_all(modules.join("react")).unwrap();
+        std::fs::write(modules.join(".package-lock.json"), r#"{"packages":{"node_modules/react":{"version":"18.3.1"}}}"#).unwrap();
+        assert_eq!(source_state(&modules, &dir), SourceState::Stale, "installed for another lockfile");
+        std::fs::write(modules.join(".package-lock.json"), r#"{"packages":{"node_modules/react":{"version":"19.0.0"}}}"#).unwrap();
+        assert_eq!(source_state(&modules, &dir), SourceState::Sound);
+        assert_eq!(npm_installed_for_lockfile(&dir), Some(true));
+        std::fs::remove_file(dir.join("package-lock.json")).unwrap();
+        assert_eq!(source_state(&modules, &dir), SourceState::Sound, "no npm lockfile to tell by: what is there is used");
+        assert_eq!(npm_installed_for_lockfile(&dir), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[cfg(unix)]
