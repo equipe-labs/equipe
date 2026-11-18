@@ -1,37 +1,44 @@
 //! The person's requests (`crate::requests` has the rules). A request is
-//! recorded when a member puts the first ticket on the board in answer to
-//! what the person said in a conversation — or when the person puts one
-//! there themselves; tickets made while working on its tickets join it by
+//! recorded when the person asks a member for something in a conversation —
+//! or when they put a ticket on the board themselves. A ticket a member puts
+//! on the board from that conversation in answer serves it: the member names
+//! which (`request`) whenever more than one could be it, and is asked to
+//! when it doesn't. Tickets made while working on its tickets join it by
 //! their lineage (made during a turn on one, a design follow-up of one, its
-//! design QA), and a member can name it (`request`). Where each stands goes
-//! to the screens whenever a ticket of it moves; a milestone — done, live,
-//! waiting on the person, stopped, all done — is told once, in one line, in
-//! the conversation it was asked in, a couple of minutes after the first
-//! change so what moves together is said together; a member's turn there
-//! starts with where each stands; and while the member is busy, a message
-//! asking after one is answered from the board at once.
+//! design QA), and follow their parent when it moves. Only work covers a
+//! request: one no work ticket serves a few minutes after it was asked is
+//! put to the PM and shown as such, and it closes only when its work is done
+//! — or a member closes it with a reason the person sees. Where each stands
+//! goes to the screens whenever a ticket of it moves; a milestone — done,
+//! live, waiting on the person, stopped, all done — is told once, in one
+//! line, in the conversation it was asked in, a couple of minutes after the
+//! first change so what moves together is said together; a member's turn
+//! there starts with where each stands; and while the member is busy, a
+//! message asking after one is answered from the board at once.
 
 use equipe_protocol::requests::{Link, Request, RequestId};
 
 use super::*;
-use crate::requests::{self as rules, Row};
+use crate::requests::{self as rules, NO_REQUEST, Row};
 
-/// What the person last said in a conversation: a ticket a member puts on
-/// the board in answer serves it — every ticket from the same words, the
-/// same request.
+/// What the person last said in a conversation.
 #[derive(Debug, Clone)]
 pub(super) struct Said {
     text: String,
     at: u64,
-    request: Option<RequestId>,
     /// Their latest words there, whatever they were — asking after a request too.
     last: (String, u64),
 }
 
+/// The request a ticket about to be put on the board serves: which, the
+/// ticket of it the new one came of, and how it joins. `None`: none.
+pub(super) type Serving = Option<(RequestId, Option<TicketId>, Link)>;
+
 impl Runtime {
     /// The person said `text` in conversation `session` (a member's, or a
     /// lane of it). Words asking after a request of theirs there aren't a new
-    /// one: what they said before stays what a ticket made now answers.
+    /// one; anything else they ask there is, from now on — so two things
+    /// asked minutes apart are two requests, each a ticket must serve.
     pub(super) fn person_said(&mut self, session: SessionId, text: &str) {
         let Some(squad) = self.sessions.get(&session).filter(|s| s.member.is_some()).and_then(|s| s.squad.clone()) else { return };
         if text.trim().is_empty() {
@@ -39,10 +46,36 @@ impl Runtime {
         }
         let now = now_secs();
         let asks_after = !rules::asked_after(text, &self.requests_in(&squad, session)).is_empty();
-        let said = self.person_said.entry(session).or_insert_with(|| Said { text: String::new(), at: now, request: None, last: (String::new(), now) });
+        if !asks_after {
+            self.record_request(&squad, session, text, now);
+        }
+        let said = self.person_said.entry(session).or_insert_with(|| Said { text: String::new(), at: now, last: (String::new(), now) });
         said.last = (text.to_owned(), now);
         if !asks_after {
-            *said = Said { text: text.to_owned(), at: now, request: None, last: (text.to_owned(), now) };
+            said.text = text.to_owned();
+            said.at = now;
+        }
+    }
+
+    /// The person's words `text` in conversation `session`, kept as a request
+    /// — unless they are about a ticket already on the board ("T-12: …",
+    /// "merge T-3"), or said beside a ticket's run, whose words are about that
+    /// ticket, or in a design session's rounds, whose words steer its prototype.
+    fn record_request(&mut self, squad: &str, session: SessionId, text: &str, now: u64) -> Option<RequestId> {
+        if self.sessions.get(&session)?.work.is_some() || self.design_sessions.get(&session).is_some_and(|a| a.rounds(now)) {
+            return None;
+        }
+        let name = self.sessions.get(&self.member_session(session))?.name()?.to_owned();
+        let journal = self.journal(squad)?;
+        if rules::ticket_numbers(text).into_iter().any(|t| journal.ticket(t).ok().flatten().is_some()) {
+            return None;
+        }
+        match journal.requests().create(&rules::title_of(text), text, Some(session), Some(&name), now, true) {
+            Ok(request) => Some(request),
+            Err(err) => {
+                crate::daemon_log!("equipe: {squad}: what the person asked {name} wasn't kept as a request: {err}");
+                None
+            }
         }
     }
 
@@ -57,16 +90,21 @@ impl Runtime {
             .collect()
     }
 
-    /// `request`, as a member names it on a ticket (`R-3` or `3`): checked
-    /// before the ticket is made. `Ok(None)` when it names none.
+    /// `request`, as a member names it on a ticket (`R-3` or `3`; `0`, none
+    /// of them: [`NO_REQUEST`]): checked before the ticket is made.
+    /// `Ok(None)` when it names none.
     pub(super) fn request_arg(&mut self, squad: &str, args: &Value) -> Result<Option<RequestId>, String> {
         let named = match args.get("request") {
             None | Some(Value::Null) => return Ok(None),
             Some(Value::Number(n)) => n.as_u64(),
+            Some(Value::String(s)) if s.trim().eq_ignore_ascii_case("none") => Some(NO_REQUEST),
             Some(Value::String(s)) => s.trim().trim_start_matches(['R', 'r']).trim_start_matches('-').parse().ok(),
             Some(_) => None,
         };
-        let Some(id) = named else { return Err("`request` is the R-number equipe gave the person's request, e.g. 3 for R-3.".into()) };
+        let Some(id) = named else { return Err("`request` is the R-number equipe gave the person's request, e.g. 3 for R-3 (0 for none).".into()) };
+        if id == NO_REQUEST {
+            return Ok(Some(id));
+        }
         if !self.journal(squad).is_some_and(|j| j.requests().exists(id)) {
             return Err(format!("There is no request R-{id}. Leave `request` out: tickets you make while working on a request's ticket join it by themselves."));
         }
@@ -78,58 +116,72 @@ impl Runtime {
         self.sessions.get(&id).and_then(|s| s.run_of.or(s.lane.as_ref().map(|(of, _)| *of))).unwrap_or(id)
     }
 
-    /// Ticket `new`, just put on the board from session `id` (its
-    /// `create_ticket`), joins a request: the one `named`; else the one the
-    /// ticket `id` works serves; else — from a member's own conversation, not
-    /// at work on a ticket — the one for what the person last said there,
-    /// made now if it is the first ticket of those words. A line for the
-    /// tool's reply when it joined one.
-    pub(super) fn ticket_made(&mut self, squad: &str, id: SessionId, new: TicketId, named: Option<RequestId>) -> Option<String> {
-        let now = now_secs();
+    /// The request a ticket session `id` is about to put on the board serves
+    /// — checked before it is made. The one `named` (none for
+    /// [`NO_REQUEST`]); else the one the ticket `id` works serves; else —
+    /// from a member's own conversation — the one request of the person's
+    /// that it could answer there. When more than one could be it, the
+    /// member is asked which, each in one line: a ticket is never put with
+    /// whichever was asked last.
+    pub(super) fn serving(&self, squad: &str, id: SessionId, named: Option<RequestId>) -> Result<Serving, String> {
+        let Some(journal) = self.journals.get(squad) else { return Ok(None) };
+        let store = journal.requests();
         let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
-        let (request, parent, link) = if let Some(request) = named {
-            (request, None, Link::Linked)
-        } else if let Some(on) = working {
-            let request = self.journal(squad)?.requests().of_ticket(on)?;
-            (request, Some(on), Link::Made)
-        } else {
-            let request = self.asked_in(squad, id, now)?;
-            (request, None, Link::Asked)
-        };
+        Ok(match (named, working) {
+            (Some(NO_REQUEST), _) => None,
+            (Some(request), Some(on)) if store.of_ticket(on) == Some(request) => Some((request, Some(on), Link::Made)),
+            (Some(request), Some(_)) => Some((request, None, Link::Linked)),
+            // Put on the board in answer to the person's words, named.
+            (Some(request), None) => Some((request, None, Link::Asked)),
+            (None, Some(on)) => store.of_ticket(on).map(|request| (request, Some(on), Link::Made)),
+            (None, None) => {
+                let now = now_secs();
+                let open = self.answerable(squad, id, now);
+                match open.as_slice() {
+                    [] => None,
+                    [(only, true)] => Some((only.id, None, Link::Asked)),
+                    _ => return Err(rules::which_request(&open.into_iter().map(|(r, _)| r).collect::<Vec<_>>(), now)),
+                }
+            }
+        })
+    }
+
+    /// The person's open requests a ticket put on the board from session
+    /// `id` could answer: asked in any conversation of its member, not all
+    /// done yet, and asked within [`rules::ASKED_WITHIN`] (`true`) or still
+    /// without a ticket covering it (`false`) — the oldest first.
+    fn answerable(&self, squad: &str, id: SessionId, now: u64) -> Vec<(Request, bool)> {
+        let Some(journal) = self.journals.get(squad) else { return Vec::new() };
+        let member = self.member_session(id);
+        let asking = self.asking(squad);
+        journal
+            .requests()
+            .open()
+            .into_iter()
+            .filter(|row| row.said && row.session.is_some_and(|s| self.member_session(s) == member))
+            .filter_map(|row| {
+                let tickets = self.row_tickets(squad, &row);
+                let status = rules::standing(&row, &tickets, &asking, now);
+                let recent = now.saturating_sub(row.asked_at) <= rules::ASKED_WITHIN;
+                let uncovered = rules::covering(&row.tickets, &tickets).is_empty();
+                (!status.done && (recent || uncovered)).then(|| (row.view(status), recent))
+            })
+            .collect()
+    }
+
+    /// Ticket `new`, just put on the board, joins the request [`Runtime::serving`]
+    /// found for it. A line for the tool's reply when it joined one, naming it
+    /// in the person's words.
+    pub(super) fn ticket_made(&mut self, squad: &str, new: TicketId, serving: Serving) -> Option<String> {
+        let (request, parent, link) = serving?;
         let journal = self.journal(squad)?;
-        if let Err(err) = journal.requests().link(request, new, parent, link, now) {
+        if let Err(err) = journal.requests().link(request, new, parent, link, now_secs()) {
             crate::daemon_log!("equipe: {squad}: T-{new} wasn't put with request R-{request}: {err}");
             return None;
         }
+        let title = journal.requests().get(request).map(|r| r.title).unwrap_or_default();
         self.request_moved(squad, request);
-        Some(format!(" It serves the person's request R-{request}: they hear where it stands without asking."))
-    }
-
-    /// The request for what the person last said to the member of `id`, in
-    /// its own conversation or a lane of it — the one whose turn answers
-    /// them now first, else the latest said within [`rules::ASKED_WITHIN`] —
-    /// made if it isn't yet.
-    fn asked_in(&mut self, squad: &str, id: SessionId, now: u64) -> Option<RequestId> {
-        let member = self.member_session(id);
-        let name = self.sessions.get(&member)?.name()?.to_owned();
-        let mut heard: Vec<(bool, u64, SessionId)> = self
-            .person_said
-            .iter()
-            .filter(|(at, said)| self.member_session(**at) == member && !said.text.is_empty() && now.saturating_sub(said.at) <= rules::ASKED_WITHIN)
-            .map(|(&at, said)| (self.sessions.get(&at).is_some_and(|s| s.is_working() && s.answers_person), said.at, at))
-            .collect();
-        heard.sort();
-        let (_, _, conversation) = heard.pop()?;
-        let said = self.person_said.get(&conversation)?.clone();
-        if let Some(request) = said.request.filter(|r| self.journals.get(squad).is_some_and(|j| j.requests().exists(*r))) {
-            return Some(request);
-        }
-        let title = rules::title_of(&said.text);
-        let request = self.journal(squad)?.requests().create(&title, &said.text, Some(conversation), Some(&name), said.at).ok()?;
-        if let Some(said) = self.person_said.get_mut(&conversation) {
-            said.request = Some(request);
-        }
-        Some(request)
+        Some(format!(" It serves the person's request R-{request} “{title}”: they hear where it stands without asking."))
     }
 
     /// The person put ticket `id` on the board themselves: a request of its
@@ -139,18 +191,26 @@ impl Runtime {
         let pm = self.pm_of(squad);
         let Some(journal) = self.journal(squad) else { return };
         let store = journal.requests();
-        let Ok(request) = store.create(&rules::title_of(title), title, pm, owner, now) else { return };
+        let Ok(request) = store.create(&rules::title_of(title), title, pm, owner, now, false) else { return };
         let _ = store.link(request, id, None, Link::Asked, now);
         self.request_moved(squad, request);
     }
 
-    /// The PM puts ticket `ticket` with request `request` (`update_ticket`'s `request`).
+    /// The PM puts ticket `ticket` with request `request` (`update_ticket`'s
+    /// `request`; [`NO_REQUEST`]: with none) — and what came of it, with it.
     pub(super) fn link_to_request(&mut self, squad: &str, ticket: TicketId, request: RequestId) -> Result<(), String> {
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
         if journal.ticket(ticket).ok().flatten().is_none() {
             return Err(format!("There is no T-{ticket}."));
         }
         let was = journal.requests().of_ticket(ticket);
+        if request == NO_REQUEST {
+            journal.requests().unlink(ticket).map_err(|e| e.to_string())?;
+            if let Some(was) = was {
+                self.request_moved(squad, was);
+            }
+            return Ok(());
+        }
         journal.requests().link(request, ticket, None, Link::Linked, now_secs()).map_err(|e| e.to_string())?;
         if let Some(was) = was.filter(|w| *w != request) {
             self.request_moved(squad, was);
@@ -204,42 +264,54 @@ impl Runtime {
     /// `row` as a screen gets it, with where it stands now.
     fn request_view(&self, squad: &str, row: &Row) -> Request {
         let tickets = self.row_tickets(squad, row);
-        row.view(rules::status(&row.tickets, &tickets, &self.asking(squad)))
+        row.view(rules::standing(row, &tickets, &self.asking(squad), now_secs()))
     }
 
-    /// Request `request` moved: the screens are told where it stands, and
-    /// news of it waits [`rules::SETTLE`] to be told, unless it waits already.
+    /// Request `request` moved: the screens are told where it stands, once
+    /// they list it, and news of it waits [`rules::SETTLE`] to be told,
+    /// unless it waits already.
     fn request_moved(&mut self, squad: &str, request: RequestId) {
         let Some(row) = self.journals.get(squad).and_then(|j| j.requests().get(request)) else { return };
         let tickets = self.row_tickets(squad, &row);
         let asking = self.asking(squad);
-        let status = rules::status(&row.tickets, &tickets, &asking);
+        let status = rules::standing(&row, &tickets, &asking, now_secs());
         if rules::news(&row.told, &row.tickets, &tickets, &asking, &status).is_some()
             && let Some(journal) = self.journals.get(squad)
         {
             let _ = journal.requests().set_due(request, now_secs() + rules::settle());
         }
-        self.publish(Event::RequestChanged { squad: squad.to_owned(), request: row.view(status) });
+        if row.shown() {
+            self.publish(Event::RequestChanged { squad: squad.to_owned(), request: row.view(status) });
+        }
     }
 
     /// The requests a screen lists: those under way, and those finished in
-    /// the last day, the latest first.
+    /// the last day, the latest first — once a ticket is with them, or they
+    /// were put to the PM as uncovered ([`Row::shown`]).
     pub(super) fn requests_listed(&self, squad: &str) -> Vec<Request> {
         let Some(journal) = self.journals.get(squad) else { return Vec::new() };
         let since = now_secs().saturating_sub(rules::LISTED_DONE);
-        journal.requests().listed(since).iter().map(|row| self.request_view(squad, row)).collect()
+        journal.requests().listed(since).iter().filter(|row| row.shown()).map(|row| self.request_view(squad, row)).collect()
     }
 
-    /// The person's open requests asked in conversation `id`.
+    /// The person's open requests asked in conversation `id`, listed or not yet.
     fn requests_in(&self, squad: &str, id: SessionId) -> Vec<Request> {
-        self.requests_listed(squad).into_iter().filter(|r| r.session == Some(id) && r.closed_at.is_none()).collect()
+        let Some(journal) = self.journals.get(squad) else { return Vec::new() };
+        journal.requests().open().iter().filter(|row| row.session == Some(id)).map(|row| self.request_view(squad, row)).collect()
     }
 
     /// What a member's turn in conversation `id` starts with: where each of
-    /// the person's open requests there stands.
+    /// the person's open requests there stands — and, for the PM, those asked
+    /// of other members that no ticket covers yet.
     pub(super) fn requests_context(&self, id: SessionId) -> Option<String> {
         let squad = self.sessions.get(&id)?.squad.clone()?;
-        rules::context(&self.requests_in(&squad, id), now_secs())
+        let elsewhere: Vec<Request> = if self.pm_of(&squad) == Some(self.member_session(id)) {
+            let journal = self.journals.get(&squad)?;
+            journal.requests().open().iter().filter(|row| row.session != Some(id)).map(|row| self.request_view(&squad, row)).filter(|r| r.status.uncovered).collect()
+        } else {
+            Vec::new()
+        };
+        rules::context(&self.requests_in(&squad, id), &elsewhere, now_secs())
     }
 
     /// The person wrote `text` to conversation `id` while its member works:
@@ -273,7 +345,7 @@ impl Runtime {
         for row in due {
             let tickets = self.row_tickets(squad, &row);
             let asking = self.asking(squad);
-            let status = rules::status(&row.tickets, &tickets, &asking);
+            let status = rules::standing(&row, &tickets, &asking, now);
             let Some((milestone, told)) = rules::news(&row.told, &row.tickets, &tickets, &asking, &status) else {
                 // What moved settled back: nothing to tell.
                 if let Some(journal) = self.journals.get(squad) {
@@ -313,31 +385,104 @@ impl Runtime {
 }
 
 impl Runtime {
-    /// Whether a ticket session `id` makes now serves one of the person's
-    /// requests: `Some(Some(r))` an existing one — named, or that of the
-    /// ticket `id` works — `Some(None)` the one about to be made for what
-    /// the person just said, `None` none.
-    fn would_serve(&self, squad: &str, id: SessionId, named: Option<RequestId>) -> Option<Option<RequestId>> {
-        if named.is_some() {
-            return Some(named);
-        }
-        let journal = self.journals.get(squad)?;
-        if let Some(on) = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket)) {
-            return journal.requests().of_ticket(on).map(Some);
-        }
-        let member = self.member_session(id);
+    /// Each minute: the person's open requests that no work ticket covers
+    /// [`rules::cover_wait`] after they were asked are put to the PM — once
+    /// each, all in one message — and listed for the person as such. Until
+    /// one covers them they stay open, and in the PM's turns.
+    pub(super) async fn surface_uncovered(&mut self, squad: &str) {
         let now = now_secs();
-        let said = self
-            .person_said
-            .iter()
-            .filter(|(at, s)| self.member_session(**at) == member && !s.text.is_empty() && now.saturating_sub(s.at) <= rules::ASKED_WITHIN)
-            .max_by_key(|(_, s)| s.at)
-            .map(|(_, s)| s.request)?;
-        Some(said.filter(|r| journal.requests().exists(*r)))
+        let Some(rows) = self.journals.get(squad).map(|j| j.requests().open()) else { return };
+        let asking = self.asking(squad);
+        let mut lines = Vec::new();
+        for row in rows.into_iter().filter(|r| r.surfaced_at.is_none()) {
+            let tickets = self.row_tickets(squad, &row);
+            let status = rules::standing(&row, &tickets, &asking, now);
+            if !status.uncovered {
+                continue;
+            }
+            if let Some(journal) = self.journals.get(squad)
+                && let Err(err) = journal.requests().surfaced(row.id, now)
+            {
+                crate::daemon_log!("equipe: {squad}: request R-{} is uncovered, but that wasn't kept: {err}", row.id);
+                continue;
+            }
+            lines.push(format!(
+                "- R-{} — asked of {} at {}: “{}”",
+                row.id,
+                row.member.as_deref().unwrap_or("the squad"),
+                rules::clock(row.asked_at, now),
+                rules::words_line(&row.words)
+            ));
+            let row = Row { surfaced_at: Some(now), ..row };
+            self.publish(Event::RequestChanged { squad: squad.to_owned(), request: row.view(status) });
+        }
+        if lines.is_empty() {
+            return;
+        }
+        crate::daemon_log!("equipe: {squad}: {} of the person's requests have no ticket serving them; the PM is told", lines.len());
+        let Some(pm) = self.pm_of(squad) else { return };
+        let minutes = rules::cover_wait() / 60;
+        let text = format!(
+            "[Uncovered requests] No ticket serves these requests of the person's, {minutes} minutes or more after they asked:\n{}\n\n\
+Settle each first: put its work on the board (`create_ticket` with its number as `request`, or `update_ticket` with `request` \
+on a ticket that already does it) — or, when it asks for no work, `close_request` with why, which the person sees. Until then \
+it stays open, shown to the person as not on the board.",
+            lines.join("\n")
+        );
+        self.hand_to_pm(squad, pm, text).await;
     }
 
-    /// `depends_on` checked for ticket `ticket` (`None`: being made from
-    /// session `id`, with words `text`): a ticket of the person's request
+    /// `close_request`: the PM — or the member it was asked of — closes one
+    /// of the person's requests with its work not done, saying why; the
+    /// person is told in its conversation.
+    pub(super) fn close_request_tool(&mut self, call: ToolCall, reply: oneshot::Sender<equipe_protocol::rpc::ToolResult>) {
+        let answer = self.close_request(&call);
+        let _ = reply.send(match answer {
+            Ok(text) => equipe_protocol::rpc::ToolResult::ok(text),
+            Err(text) => equipe_protocol::rpc::ToolResult::error(text),
+        });
+    }
+
+    fn close_request(&mut self, call: &ToolCall) -> Result<String, String> {
+        let squad = call.squad.clone();
+        let member = call.member.clone();
+        let id = self.caller_id(call).ok_or_else(|| format!("{member} isn't on the squad {squad}."))?;
+        let args = &call.arguments;
+        let request = self.request_arg(&squad, args)?.filter(|r| *r != NO_REQUEST).ok_or("Which request? Give its number as `request` (3 for R-3).")?;
+        let why = board::arg_str(args, "why").map(str::trim).filter(|w| !w.is_empty()).ok_or("Say `why` in a few words, in the person's language: they see it.")?.to_owned();
+        let is_pm = self.sessions.get(&self.member_session(id)).is_some_and(Session::is_pm);
+        let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
+        let row = journal.requests().get(request).ok_or_else(|| format!("There is no request R-{request}."))?;
+        if row.closed_at.is_some() {
+            return Err(format!("R-{request} is closed already."));
+        }
+        if !is_pm && row.member.as_deref() != Some(member.as_str()) {
+            return Err(format!("R-{request} was asked of {}: only they or the PM close it.", row.member.as_deref().unwrap_or("the squad")));
+        }
+        let now = now_secs();
+        journal.requests().close(request, &why, now).map_err(|e| e.to_string())?;
+        let row = journal.requests().get(request).ok_or("The request can't be read back.")?;
+        let tickets = self.row_tickets(&squad, &row);
+        let status = rules::standing(&row, &tickets, &self.asking(&squad), now);
+        let line = rules::line(&status, crate::i18n::core(self.config.lang), &|at| rules::clock(at, now));
+        crate::daemon_log!("equipe: {squad}: {member} closed request R-{request}: {why}");
+        let to = row.session.filter(|s| self.sessions.contains_key(s)).or_else(|| row.member.as_deref().and_then(|m| self.member_id(&squad, m)));
+        if let Some(session) = to {
+            let text = say!(self, "request.news", title = row.title, line = line);
+            self.publish(Event::Notice { session, text, undo: None });
+        }
+        if row.shown() {
+            self.publish(Event::RequestChanged { squad: squad.clone(), request: row.view(status) });
+        }
+        let open: Vec<String> = tickets.iter().filter(|t| !t.status.is_closed()).map(|t| format!("T-{}", t.id)).collect();
+        let left = if open.is_empty() { String::new() } else { format!(" Its open tickets ({}) stay on the board: cancel them if they go too.", open.join(", ")) };
+        Ok(format!("Closed R-{request}. The person is told: “{line}”.{left}"))
+    }
+}
+
+impl Runtime {
+    /// `depends_on` checked for ticket `ticket` (`None`: being made, to serve
+    /// what `serves` says — `Some(None)`: no request yet), with words `text`: a ticket of the person's request
     /// isn't chained behind open work outside it unless `depends_why` says
     /// why; a dependency whose places don't overlap is pointed out. The note
     /// for the reply.
@@ -345,9 +490,8 @@ impl Runtime {
     pub(super) fn check_depends(
         &mut self,
         squad: &str,
-        id: SessionId,
         ticket: Option<TicketId>,
-        named: Option<RequestId>,
+        serves: Option<Option<RequestId>>,
         title: &str,
         text: &str,
         deps: &[TicketId],
@@ -361,7 +505,7 @@ impl Runtime {
         let Some(journal) = self.journals.get(squad) else { return Ok(String::new()) };
         let serves = match ticket {
             Some(t) => journal.requests().of_ticket(t).map(Some),
-            None => self.would_serve(squad, id, named),
+            None => serves,
         };
         let mut note = String::new();
         for dep in deps {

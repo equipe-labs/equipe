@@ -855,6 +855,8 @@
   "request.waits.other": "{count} things wait for you ({list})",
   "request.all_done": "all done",
   "request.nothing_yet": "nothing on the board yet",
+  "request.uncovered": "no ticket serves it yet — the PM is told",
+  "request.closed": "closed: {why}",
   "request.news": "Your request “{title}”: {line}",
   "request.answer": "equipe answer, from the board while {name} works — “{title}”: {line}",
   "gate.why.outward": "acts in the world",

@@ -848,6 +848,8 @@
   "request.waits.other": "あなたの確認待ち {count} 件（{list}）",
   "request.all_done": "すべて完了",
   "request.nothing_yet": "まだボードにありません",
+  "request.uncovered": "まだこの依頼を担うチケットがありません — PMに伝えました",
+  "request.closed": "クローズ: {why}",
   "request.news": "ご依頼の「{title}」: {line}",
   "request.answer": "equipe の回答（{name} が作業中のためボードから）— 「{title}」: {line}",
   "gate.why.outward": "外部で実際に動きます",

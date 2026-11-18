@@ -8974,6 +8974,9 @@ It starts when {owner} is free."
         if call.name == board::UNBLOCK {
             return self.unblock_tool(call, reply).await;
         }
+        if call.name == board::CLOSE_REQUEST {
+            return self.close_request_tool(call, reply);
+        }
         if call.name == crate::signals::PROPOSE_SIGNAL {
             return self.propose_signal(call, reply);
         }
@@ -10512,8 +10515,11 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let proposal = args.get("proposal").and_then(Value::as_bool).unwrap_or(false);
                 let idea = args.get("idea").and_then(Value::as_bool).unwrap_or(false);
-                // The person's request it serves, when the member names one.
+                // The person's request it serves, when the member names one — and which it serves:
+                // whenever more than one of theirs could be it, the member is asked to name it.
                 let named_request = self.request_arg(&squad, &args)?;
+                let serving = if idea { None } else { self.serving(&squad, id, named_request)? };
+                let named_request = named_request.filter(|r| *r != crate::requests::NO_REQUEST);
                 // A kind of work the person stopped is turned away — unless they asked for it again since.
                 if !idea {
                     let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
@@ -10561,7 +10567,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     }
                 }
                 // A request's ticket isn't chained behind other work without a reason (`requests`).
-                let depends_note = if idea { String::new() } else { self.check_depends(&squad, id, None, named_request, title, body, &depends_on, &args)? };
+                let depends_note = if idea { String::new() } else { self.check_depends(&squad, None, serving.map(|(r, _, _)| Some(r)), title, body, &depends_on, &args)? };
                 // Where the PM runs the work, a member's proposal is simply done:
                 // on the board, its own unless it names someone else.
                 let just_do = !is_pm && self.journal(&squad).is_some_and(|j| j.pm_accepts());
@@ -10618,7 +10624,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 let made = Ticket { id: new_id, ..ticket };
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: made.clone() });
                 // The person's request it serves: theirs to follow without asking.
-                let serves = if idea { None } else { self.ticket_made(&squad, id, new_id, named_request) };
+                let serves = if idea { None } else { self.ticket_made(&squad, new_id, serving) };
                 // The ticket answering the person drives their request: its driver and checklist (`flow`).
                 let flowing = if idea { None } else { self.start_flow(&squad, id, &made, steps) };
                 let mut reply = format!("Created T-{new_id}.");
@@ -10731,7 +10737,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if let Some(ids) = board::arg_ids(&args, "depends_on") {
                     let added: Vec<TicketId> = ids.iter().copied().filter(|d| !ticket.depends_on.contains(d)).collect();
                     let text = format!("{} {}", ticket.title, ticket.body);
-                    depends_note = self.check_depends(&squad, id, Some(ticket_id), None, &ticket.title, &text, &added, &args)?;
+                    depends_note = self.check_depends(&squad, Some(ticket_id), None, &ticket.title, &text, &added, &args)?;
                     ticket.depends_on = ids;
                 }
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;

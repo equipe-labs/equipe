@@ -855,6 +855,8 @@
   "request.waits.other": "{count} Sachen warten auf dich ({list})",
   "request.all_done": "alles erledigt",
   "request.nothing_yet": "noch nichts auf dem Board",
+  "request.uncovered": "noch kein Ticket dafür — der PM weiß Bescheid",
+  "request.closed": "geschlossen: {why}",
   "request.news": "Deine Anfrage „{title}“: {line}",
   "request.answer": "equipe-Antwort vom Board, während {name} arbeitet — „{title}“: {line}",
   "gate.why.outward": "wirkt nach außen",
