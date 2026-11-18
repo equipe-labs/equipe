@@ -91,15 +91,19 @@ impl Runtime {
     /// Add `entry` to the squad's lessons, as equipe: what the person confirmed.
     fn learn_lessons(&mut self, squad: &str, entry: &str) {
         let folder = crate::squad_home::path(&self.config.home, squad);
-        let before = crate::squad_memory::facts(&folder).into_iter().find(|f| f.name == rules::LESSONS).map(|f| f.body);
-        let body = rules::with(before.as_deref(), entry);
-        let fact = crate::squad_memory::Remember { name: rules::LESSONS, description: rules::LESSONS_DESCRIPTION, kind: "decision", body: &body, confirmed: true };
         let language = self.journals.get(squad).and_then(Journal::language);
-        // Saved as equipe's, it isn't listed as a change: "nothing changed" is no failure.
-        match crate::squad_memory::remember(&folder, "equipe", &fact, &crate::squad_memory::date(now_secs()), language.as_deref()) {
-            Err(why) if !why.starts_with("Nothing changed") => crate::daemon_log!("equipe: {squad}'s lessons weren't kept: {why}"),
-            _ => {}
-        }
+        let (squad, entry) = (squad.to_owned(), entry.to_owned());
+        // Saved in the folder off the loop, in line with its other saves and landings.
+        crate::squad_home::in_order(&folder.clone(), move || {
+            let before = crate::squad_memory::facts(&folder).into_iter().find(|f| f.name == rules::LESSONS).map(|f| f.body);
+            let body = rules::with(before.as_deref(), &entry);
+            let fact = crate::squad_memory::Remember { name: rules::LESSONS, description: rules::LESSONS_DESCRIPTION, kind: "decision", body: &body, confirmed: true };
+            // Saved as equipe's, it isn't listed as a change: "nothing changed" is no failure.
+            match crate::squad_memory::remember(&folder, "equipe", &fact, &crate::squad_memory::date(now_secs()), language.as_deref()) {
+                Err(why) if !why.starts_with("Nothing changed") => crate::daemon_log!("equipe: {squad}'s lessons weren't kept: {why}"),
+                _ => {}
+            }
+        });
     }
 }
 

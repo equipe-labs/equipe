@@ -407,7 +407,10 @@ async fn a_pm_brings_a_weekly_retro_from_the_weeks_facts_and_only_confirmed_less
     let answers = vec![Answer::pick(0), Answer::pick(2)];
     handle.send(Command::AnswerQuestions { squad: "acme".into(), id: asked[0].id, answers, about: None });
     until(&mut events, |e| matches!(e, Event::QuestionsClosed { id, .. } if *id == asked[0].id)).await;
-    let facts = equipe_core::squad_memory::facts(&equipe_core::squad_home::path(&home, "acme"));
+    // Kept off the daemon's loop, in line with the folder's other saves.
+    let folder = equipe_core::squad_home::path(&home, "acme");
+    equipe_core::squad_home::saves_done(&folder);
+    let facts = equipe_core::squad_memory::facts(&folder);
     let lessons = facts.iter().find(|f| f.name == "lessons").expect("the lessons are kept");
     let today = equipe_core::squad_memory::date(now());
     assert!(lessons.body.starts_with(&format!("## {today}\n- 큰 티켓은 멈춘다")), "{lessons:?}");

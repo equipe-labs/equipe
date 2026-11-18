@@ -203,6 +203,12 @@ pub(crate) fn one_at_a_time<T>(dir: &Path, f: impl FnOnce() -> T) -> T {
     if HELD.with(|held| held.borrow().iter().any(|d| d == dir)) {
         return f();
     }
+    // A landing may hold the folder for minutes: the loop every screen waits
+    // on never waits for it. What git does here goes off the loop, in line.
+    if crate::runtime::on_core_loop() {
+        crate::daemon_log!("equipe: the daemon's loop waits on {}'s git — it belongs off the loop", dir.display());
+        debug_assert!(false, "the core loop took {}'s git lock", dir.display());
+    }
     {
         let mut in_use = IN_USE.lock().unwrap_or_else(|e| e.into_inner());
         while in_use.iter().any(|d| d == dir) {

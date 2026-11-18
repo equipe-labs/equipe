@@ -876,6 +876,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         merge_retries_seeded: false,
         accepting: std::collections::HashSet::new(),
         closing: HashMap::new(),
+        closing_git: HashSet::new(),
         gates: HashMap::new(),
         prechecks: HashMap::new(),
         disk: Default::default(),
@@ -1252,6 +1253,18 @@ enum Internal {
     /// A merge the person asked for, worked out off the loop: main's name and,
     /// when a push was asked for, how it went — or why nothing was merged.
     Merged { squad: String, ticket: TicketId, result: MergeResult, kept: Option<crate::design::captures::Report>, push: bool },
+    /// A ticket put down whose work went into the squad's folder off the loop.
+    HomePutDown(Box<HomePutDown>),
+    /// A change to a squad's folder taken back off the loop, or why not.
+    HomeUndone { squad: String, session: SessionId, result: Result<(squad_home::Change, squad_home::Change), String> },
+    /// A design decision kept in a squad's record off the loop.
+    DecisionKept(String),
+    /// A note of the person's taste saved off the loop, or why not.
+    TasteSaved { squad: String, project: Option<String>, result: Result<(), crate::taste::store::Refused> },
+    /// A fact remembered or forgotten off the loop: the notice its member's conversation shows.
+    Remembered { session: SessionId, undo: String, text: String },
+    /// A ticket closed by the person: its git work, done off the loop.
+    ClosedGit { squad: String, ticket: TicketId, status: TicketStatus, closed: Option<Closed> },
     /// A project's checks ran on accepted work merged with main, off the loop.
     Checked(Box<gate::Gate>, crate::checks::Outcome),
     /// The git side of the PM's `accept_work`, worked out off the loop.
@@ -1606,6 +1619,8 @@ struct Runtime {
     /// A ticket's closing git work, done off the loop already, by squad and
     /// ticket: [`Runtime::close_ticket`] takes it instead of doing it again.
     closing: HashMap<(String, TicketId), Closed>,
+    /// Tickets the person closed whose git work runs off the loop now ([`Runtime::close_ticket`]).
+    closing_git: HashSet<(String, TicketId)>,
     /// Accepted work whose project's checks run on its merge before it lands,
     /// by repository: the first of each runs off the loop, the rest wait
     /// their turn (`gate.rs`).
@@ -1811,6 +1826,12 @@ impl Wake {
             Wake::Internal(Internal::Frame(..)) => Borrowed("a browser picture"),
             Wake::Internal(Internal::Settled { .. }) => Borrowed("settling merged work"),
             Wake::Internal(Internal::Merged { .. }) => Borrowed("a merge's end"),
+            Wake::Internal(Internal::HomePutDown(..)) => Borrowed("work landed in the squad's folder"),
+            Wake::Internal(Internal::HomeUndone { .. }) => Borrowed("a change taken back"),
+            Wake::Internal(Internal::DecisionKept(..)) => Borrowed("a design decision kept"),
+            Wake::Internal(Internal::TasteSaved { .. }) => Borrowed("a taste note saved"),
+            Wake::Internal(Internal::Remembered { .. }) => Borrowed("a fact remembered"),
+            Wake::Internal(Internal::ClosedGit { .. }) => Borrowed("a closed ticket's git work"),
             Wake::Internal(Internal::Checked(..)) => Borrowed("a project's checks ending"),
             Wake::Internal(Internal::Accepting(..)) => Borrowed("the PM's acceptance, worked out"),
             Wake::Internal(Internal::Disk(..)) => Borrowed("the disk's free space"),
@@ -2103,6 +2124,26 @@ impl Runtime {
                 }
                 Internal::Settled { merged, cache } => self.on_settled(merged, cache),
                 Internal::Merged { squad, ticket, result, kept, push } => self.on_merged(&squad, ticket, result, kept, push),
+                Internal::HomePutDown(put) => {
+                    // Its work in the folder or back with its member: the next is handed out.
+                    let squad = put.squad.clone();
+                    self.home_put_down(*put);
+                    self.settle_all_merged();
+                    self.dispatch(&squad).await;
+                }
+                Internal::HomeUndone { squad, session, result } => self.home_undone(&squad, session, result),
+                Internal::DecisionKept(squad) => {
+                    if self.design_watch.contains_key(&squad) {
+                        self.look_at_design(&squad, true);
+                    }
+                }
+                Internal::TasteSaved { squad, project, result } => self.taste_saved(squad, project, result),
+                Internal::Remembered { session, undo, text } => self.publish(Event::Notice { undo: Some(undo), session, text }),
+                Internal::ClosedGit { squad, ticket, status, closed } => {
+                    self.closed_git(&squad, ticket, status, closed);
+                    self.settle_all_merged();
+                    self.dispatch(&squad).await;
+                }
                 Internal::Checked(gate, outcome) => Box::pin(self.on_checked(*gate, outcome)).await,
                 Internal::Accepting(worked) => Box::pin(self.accept_worked(*worked)).await,
                 Internal::Disk(status, asked) => self.on_disk(status, asked),
@@ -6382,8 +6423,17 @@ for one project goes to it as tickets for its owners, with that project — and 
         if self.sessions.get(&session).is_none_or(|s| s.squad.as_deref() != Some(squad)) {
             return;
         }
-        let dir = squad_home::path(&self.config.home, squad);
-        match squad_home::undo_change(&dir, change) {
+        let (dir, internal, squad, change) = (squad_home::path(&self.config.home, squad), self.internal.clone(), squad.to_owned(), change.to_owned());
+        // Taken back off the loop, in line with the folder's other saves and landings.
+        tokio::task::spawn_blocking(move || {
+            let result = squad_home::undo_change(&dir, &change);
+            let _ = internal.send(Internal::HomeUndone { squad, session, result });
+        });
+    }
+
+    /// A change to the squad's folder taken back off the loop ([`Runtime::undo_home_change`]), or why not.
+    fn home_undone(&mut self, squad: &str, session: SessionId, result: Result<(squad_home::Change, squad_home::Change), String>) {
+        match result {
             Ok((taken, undo)) => {
                 let text = say!(self, "notice.taken_back", what = taken.said(self.config.lang));
                 self.publish(Event::Notice { session, text, undo: Some(undo.id) });
@@ -7536,9 +7586,11 @@ todo); or drop it if it's no longer wanted.]"
     /// back, while it waits, and when its member left, for the next one; it
     /// goes otherwise — the branch stays to merge.
     fn end_work(&mut self, id: SessionId, how: WorkEnd) {
-        self.put_down(id, how);
-        // A run is its ticket's: put down, it closes.
-        self.close_run(id);
+        // A run is its ticket's: put down, it closes — once its work is in
+        // the squad's folder, when it goes there ([`Runtime::home_put_down`]).
+        if self.put_down(id, how) {
+            self.close_run(id);
+        }
     }
 
     /// A ticket's pictures saved in a worktree or a temp folder, copied where
@@ -7549,53 +7601,133 @@ todo); or drop it if it's no longer wanted.]"
         }
     }
 
-    fn put_down(&mut self, id: SessionId, how: WorkEnd) {
+    /// `remember` / `forget`: the squad's memory changed in its folder off the
+    /// loop, in line with the folder's other saves and landings — the loop
+    /// never waits on its git — and the member answered once it is in.
+    fn remember(&mut self, call: &ToolCall, reply: oneshot::Sender<ToolResult>) {
+        let fail = |reply: oneshot::Sender<ToolResult>, text: String| {
+            let _ = reply.send(ToolResult { text, is_error: true, image: None });
+        };
+        let Some(session) = self.caller_id(call) else {
+            return fail(reply, format!("{} isn't on the squad {}.", call.member, call.squad));
+        };
+        let (folder, member, args) = (squad_home::path(&self.config.home, &call.squad), call.member.clone(), call.arguments.clone());
+        let language = self.journals.get(&call.squad).and_then(Journal::language);
+        let forget = call.name == board::FORGET;
+        // What its conversation is shown, worded here, where the words are.
+        let text = if forget {
+            let Some(fact) = board::arg_str(&args, "name") else {
+                return fail(reply, "Which fact? Give its name.".into());
+            };
+            (say!(self, "notice.forgot", name = member, fact = fact), String::new())
+        } else {
+            let what = clip(board::arg_str(&args, "description").unwrap_or_default().trim(), 80);
+            (say!(self, "notice.remembered", name = member, what = what), say!(self, "notice.memory_updated", name = member, what = what))
+        };
+        let internal = self.internal.clone();
+        tokio::task::spawn_blocking(move || {
+            let saved = if forget {
+                squad_memory::forget(&folder, &member, board::arg_str(&args, "name").unwrap_or_default(), language.as_deref()).map(|change| (change, text.0))
+            } else {
+                let fact = squad_memory::Remember {
+                    name: board::arg_str(&args, "name").unwrap_or_default(),
+                    description: board::arg_str(&args, "description").unwrap_or_default(),
+                    kind: board::arg_str(&args, "kind").unwrap_or_default(),
+                    body: board::arg_str(&args, "body").unwrap_or_default(),
+                    confirmed: args.get("confirmed").and_then(Value::as_bool).unwrap_or(false),
+                };
+                squad_memory::remember(&folder, &member, &fact, &squad_memory::date(now_secs()), language.as_deref()).map(|(change, new)| (change, if new { text.0 } else { text.1 }))
+            };
+            let _ = reply.send(match saved {
+                Ok((change, text)) => {
+                    let what = change.what();
+                    let _ = internal.send(Internal::Remembered { session, undo: change.id, text });
+                    ToolResult { text: format!("Saved in the squad's memory ({what}). Every member has it from their next turn."), is_error: false, image: None }
+                }
+                Err(text) => ToolResult { text, is_error: true, image: None },
+            });
+        });
+    }
+
+    /// Put `id`'s ticket down as `how` says. `false` while its work goes into
+    /// the squad's folder off the loop: [`Runtime::home_put_down`] finishes it.
+    fn put_down(&mut self, id: SessionId, how: WorkEnd) -> bool {
         let Some(session) = self.sessions.get_mut(&id) else {
-            return;
+            return true;
         };
         let Some(work) = session.work.take() else {
-            return;
+            return true;
         };
         // A design QA handed in is finished by its verdict, not the person's review.
         let how = if how == WorkEnd::HandedIn && work.verdict.is_some() { WorkEnd::Checked } else { how };
         let (Some(squad), Some(name)) = (session.squad.clone(), session.name().map(str::to_owned)) else {
-            return;
+            return true;
         };
+        self.put_down_as(id, how, work, squad, name, None)
+    }
+
+    /// A task's or action's work, accepted, went into the squad's folder off
+    /// the loop ([`Runtime::land_put_down`]), or didn't: the rest of putting
+    /// it down, then its run closes.
+    fn home_put_down(&mut self, put: HomePutDown) {
+        let HomePutDown { id, how, work, squad, name, committed, landed } = put;
+        if let (Err(err), Some(sandbox)) = (committed, &work.sandbox) {
+            let message = say!(self, "error.ticket_not_committed", id = work.ticket, err = err, path = sandbox.path.display());
+            self.error(Some(id), message, None);
+        }
+        self.put_down_as(id, how, work, squad, name, Some(landed));
+        self.close_run(id);
+    }
+
+    /// [`Runtime::put_down`], with `home` its work's landing in the squad's
+    /// folder once made off the loop. Without it, a task or action accepted
+    /// goes there off the loop first, and `false` says so: the loop never
+    /// waits on the folder's git, nor on its other landings.
+    fn put_down_as(&mut self, id: SessionId, how: WorkEnd, work: Work, squad: String, name: String, home: Option<HomeLanded>) -> bool {
         let Some(mut ticket) = self.journal(&squad).and_then(|j| j.ticket(work.ticket).ok().flatten()) else {
-            return;
+            return true;
         };
         let summary = work.handed_in.clone().or_else(|| work.waiting.clone()).or_else(|| work.end.handed_back.as_ref().map(|h| h.note.clone()));
         let mut kept_worktree = None;
         // A task or action accepted goes into the squad's folder now; `Err` when the folder changed under it.
         let mut landed: Option<Result<(), String>> = None;
         // What it showed so far, kept before its worktree may go below.
-        self.keep_pictures(&squad, &ticket);
+        if home.is_none() {
+            self.keep_pictures(&squad, &ticket);
+        }
         if let Some(sandbox) = &work.sandbox {
             let body = summary.clone().unwrap_or_else(|| ticket.body.clone());
             let message =
                 format!("equipe: T-{} {}\n\n{body}\n\nRun by {name} on equipe through Claude Code.", ticket.id, ticket.title);
-            watchdog::mark("work's end: commit");
-            if let Err(err) = sandbox.commit_all(&message) {
-                let message = say!(self, "error.ticket_not_committed", id = ticket.id, err = err, path = sandbox.path.display());
-                self.error(Some(id), message, None);
-            }
-            // Work its member left stays checked out for whoever takes it
-            // next: removing gigabytes of worktree, and checking the branch
-            // out again for the next member, held the daemon's loop for
-            // seconds per ticket.
-            if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting | WorkEnd::Left | WorkEnd::HandedBack) {
-                kept_worktree = Some(sandbox.path.clone());
-            } else if matches!(how, WorkEnd::Accepted | WorkEnd::Checked) && ticket.kind.in_home() {
+            if matches!(how, WorkEnd::Accepted | WorkEnd::Checked) && ticket.kind.in_home() {
+                // Committed and landed off the loop, then back here.
+                let Some(home) = home else {
+                    self.land_put_down(id, how, work, squad, name, &ticket, message);
+                    return false;
+                };
                 if how == WorkEnd::Checked {
                     ticket.images = work.shown.clone();
                 }
-                let result = self.land_in_home(&squad, &mut ticket, sandbox);
+                let result = self.home_landed(&squad, &mut ticket, home);
                 if result.is_err() {
                     kept_worktree = Some(sandbox.path.clone());
                 }
                 landed = Some(result);
             } else {
-                ticket.branch = release(sandbox);
+                watchdog::mark("work's end: commit");
+                if let Err(err) = sandbox.commit_all(&message) {
+                    let message = say!(self, "error.ticket_not_committed", id = ticket.id, err = err, path = sandbox.path.display());
+                    self.error(Some(id), message, None);
+                }
+                // Work its member left stays checked out for whoever takes it
+                // next: removing gigabytes of worktree, and checking the branch
+                // out again for the next member, held the daemon's loop for
+                // seconds per ticket.
+                if matches!(how, WorkEnd::HandedIn | WorkEnd::Waiting | WorkEnd::Left | WorkEnd::HandedBack) {
+                    kept_worktree = Some(sandbox.path.clone());
+                } else {
+                    ticket.branch = release(sandbox);
+                }
             }
             ticket.worktree = kept_worktree.clone();
         }
@@ -7811,6 +7943,7 @@ with what else waits.]"
                 let _ = self.internal.send(Internal::Wake { session: pm, prompt });
             }
         }
+        true
     }
 
     /// An NVIDIA Nemotron model on Nebius Token Factory reads `ticket`'s
@@ -7898,13 +8031,24 @@ with what else waits.]"
             .map(|(&id, _)| id)
     }
 
-    /// A task's or action's work, accepted, into the squad home's main: the
-    /// person's own changes there are saved first, then the branch merges — no
-    /// question, no git words — and its worktree and branch go. A conflict merges
-    /// nothing and keeps both.
-    fn land_in_home(&mut self, squad: &str, ticket: &mut Ticket, sandbox: &Sandbox) -> Result<(), String> {
-        let landed = land_home(sandbox, &home_merge_message(ticket), !self.desk_busy(squad));
-        self.home_landed(squad, ticket, landed)
+    /// A task's or action's work, accepted, into the squad home's main, off
+    /// the loop: committed in its worktree, the person's own changes in the
+    /// folder saved, then the branch merges — no question, no git words — and
+    /// its worktree and branch go. A conflict merges nothing and keeps both.
+    /// [`Runtime::home_put_down`] takes it from there.
+    #[allow(clippy::too_many_arguments)]
+    fn land_put_down(&mut self, id: SessionId, how: WorkEnd, work: Work, squad: String, name: String, ticket: &Ticket, commit: String) {
+        let Some(sandbox) = work.sandbox.clone() else {
+            return;
+        };
+        let (merge, save_persons) = (home_merge_message(ticket), !self.desk_busy(&squad));
+        crate::daemon_log!("equipe: {squad}: T-{} goes into the squad's folder", ticket.id);
+        let internal = self.internal.clone();
+        tokio::task::spawn_blocking(move || {
+            let committed = sandbox.commit_all(&commit).map(drop).map_err(|err| err.to_string());
+            let landed = land_home(&sandbox, &merge, save_persons);
+            let _ = internal.send(Internal::HomePutDown(Box::new(HomePutDown { id, how, work, squad, name, committed, landed })));
+        });
     }
 
     /// Whether a member of `squad` writes at its desk (in the squad's folder,
@@ -7998,18 +8142,54 @@ with what else waits.]"
     }
 
     /// Close a ticket no member holds right now (in review, or not started).
-    fn close_ticket(&mut self, squad: &str, mut ticket: Ticket, status: TicketStatus) {
+    fn close_ticket(&mut self, squad: &str, ticket: Ticket, status: TicketStatus) {
         let saved = self.journal(squad).and_then(|j| j.ticket_work(ticket.id).ok()).unwrap_or_default();
-        // Its git work, done off the loop already (the PM's `accept_work`), or now.
+        // Its git work, done off the loop already (the PM's `accept_work`), or
+        // now: a task's work lands in the squad's folder off the loop, in line
+        // with its other landings — the loop never waits on them — and
+        // [`Runtime::closed_git`] closes the ticket once it is through.
         let closed = match self.closing.remove(&(squad.to_owned(), ticket.id)) {
             Some(closed) => Some(closed),
-            None => {
-                watchdog::mark("closing a ticket: its worktree");
-                let closed = self.close_git(squad, &ticket, &saved, status).and_then(CloseGit::run);
-                watchdog::mark("closing a ticket: saved");
-                closed
-            }
+            None => match self.close_git(squad, &ticket, &saved, status) {
+                // A worktree only released: no landing to wait on, done here as before.
+                Some(git) if !git.lands() => {
+                    watchdog::mark("closing a ticket: its worktree");
+                    git.run()
+                }
+                Some(git) => {
+                    let key = (squad.to_owned(), ticket.id);
+                    // Asked twice: the git work under way closes it once.
+                    if self.closing_git.insert(key.clone()) {
+                        let internal = self.internal.clone();
+                        tokio::task::spawn_blocking(move || {
+                            let closed = git.run();
+                            let _ = internal.send(Internal::ClosedGit { squad: key.0, ticket: key.1, status, closed });
+                        });
+                    }
+                    return;
+                }
+                None => None,
+            },
         };
+        self.close_ticket_with(squad, ticket, status, saved, closed);
+    }
+
+    /// A ticket's git work as it closed is through, off the loop
+    /// ([`Runtime::close_ticket`]): it closes now, as it stands now.
+    fn closed_git(&mut self, squad: &str, ticket: TicketId, status: TicketStatus, closed: Option<Closed>) {
+        self.closing_git.remove(&(squad.to_owned(), ticket));
+        let Some(found) = self.find_ticket(squad, ticket) else {
+            return;
+        };
+        // Closed meanwhile some other way: nothing more to do.
+        if found.status.is_closed() {
+            return;
+        }
+        let saved = self.journal(squad).and_then(|j| j.ticket_work(ticket).ok()).unwrap_or_default();
+        self.close_ticket_with(squad, found, status, saved, closed);
+    }
+
+    fn close_ticket_with(&mut self, squad: &str, mut ticket: Ticket, status: TicketStatus, saved: TicketWork, closed: Option<Closed>) {
         match closed {
             Some(Closed::Home(landed)) => {
                 if self.home_landed(squad, &mut ticket, landed).is_err() {
@@ -8755,6 +8935,10 @@ there, end your turn, and carry on when they say they're done."
                 image: None,
             });
             return;
+        }
+        // A fact remembered or forgotten, committed off the loop: answered once it is in.
+        if call.name == board::REMEMBER || call.name == board::FORGET {
+            return self.remember(&call, reply);
         }
         // A brief, committed off the loop: answered once it is in.
         if call.name == crate::briefs::WRITE_BRIEF {
@@ -10565,35 +10749,6 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                 self.publish(Event::Estimated { session: id, estimate });
                 Ok(reply)
             }
-            board::REMEMBER | board::FORGET => {
-                let folder = squad_home::path(&self.config.home, &squad);
-                let language = self.journals.get(&squad).and_then(Journal::language);
-                let (change, text) = if name == board::REMEMBER {
-                    let fact = squad_memory::Remember {
-                        name: board::arg_str(&args, "name").unwrap_or_default(),
-                        description: board::arg_str(&args, "description").unwrap_or_default(),
-                        kind: board::arg_str(&args, "kind").unwrap_or_default(),
-                        body: board::arg_str(&args, "body").unwrap_or_default(),
-                        confirmed: args.get("confirmed").and_then(Value::as_bool).unwrap_or(false),
-                    };
-                    let today = squad_memory::date(now_secs());
-                    watchdog::mark("remember: saved in the squad's folder");
-                    let (change, new) = squad_memory::remember(&folder, &member, &fact, &today, language.as_deref())?;
-                    let what = clip(fact.description.trim(), 80);
-                    let text = if new {
-                        say!(self, "notice.remembered", name = member, what = what)
-                    } else {
-                        say!(self, "notice.memory_updated", name = member, what = what)
-                    };
-                    (change, text)
-                } else {
-                    let fact = board::arg_str(&args, "name").ok_or("Which fact? Give its name.")?;
-                    let change = squad_memory::forget(&folder, &member, fact, language.as_deref())?;
-                    (change, say!(self, "notice.forgot", name = member, fact = fact))
-                };
-                self.publish(Event::Notice { undo: Some(change.id.clone()), session: id, text });
-                Ok(format!("Saved in the squad's memory ({}). Every member has it from their next turn.", change.what()))
-            }
             other => Err(format!("equipe has no tool called {other}.")),
         }
     }
@@ -12018,23 +12173,36 @@ pub(super) struct HomeLanded {
 
 /// The git side of landing a task's work in the squad home's main: the
 /// person's own changes there saved first (`save_persons`), then the branch
-/// merges and its worktree and branch go. A conflict merges nothing and keeps
-/// both. Blocking: it runs wherever its caller does.
+/// merges and its worktree and branch go — all in line with the folder's
+/// other landings and saves. A conflict merges nothing and keeps both.
+/// Blocking, and waiting its turn: never on the loop.
 fn land_home(sandbox: &Sandbox, message: &str, save_persons: bool) -> HomeLanded {
-    watchdog::mark("landing in the squad's folder: the person's changes saved");
-    if save_persons {
-        let _ = squad_home::save_persons(&sandbox.repo);
-    }
-    watchdog::mark("landing in the squad's folder: merge");
     // The worktree goes once merged: read where it is first.
     let from = sandbox.path.canonicalize().unwrap_or_else(|_| sandbox.path.clone());
-    if let Err(err) = worktree::merge_into_main(&sandbox.repo, &sandbox.branch, message) {
-        return HomeLanded { from, result: Err(err) };
+    let result = worktree::one_landing_at_a_time(&sandbox.repo, || {
+        if save_persons {
+            let _ = squad_home::save_persons(&sandbox.repo);
+        }
+        worktree::merge_into_main(&sandbox.repo, &sandbox.branch, message)?;
+        Ok(crate::design::captures::take_report(&sandbox.repo, &sandbox.branch))
+    });
+    if result.is_ok() {
+        let _ = sandbox.discard();
     }
-    let kept = crate::design::captures::take_report(&sandbox.repo, &sandbox.branch);
-    watchdog::mark("landing in the squad's folder: worktree removed");
-    let _ = sandbox.discard();
-    HomeLanded { from, result: Ok(kept) }
+    HomeLanded { from, result }
+}
+
+/// A ticket put down whose work went into the squad's folder off the loop
+/// ([`Runtime::land_put_down`]): what putting it down goes on with.
+pub(super) struct HomePutDown {
+    id: SessionId,
+    how: WorkEnd,
+    work: Work,
+    squad: String,
+    name: String,
+    /// Its worktree's commit, or why it wasn't made.
+    committed: Result<(), String>,
+    landed: HomeLanded,
 }
 
 /// A ticket's closing git work ([`Runtime::close_git`]).
@@ -12062,6 +12230,12 @@ pub(super) enum Closed {
 }
 
 impl CloseGit {
+    /// Whether it lands a task's work in the squad's folder — in line with
+    /// the folder's other landings, so never on the loop.
+    pub(super) fn lands(&self) -> bool {
+        self.home.is_some()
+    }
+
     /// Do it: blocking, and fine off the loop. `None` when its workplace is
     /// no git repository any more.
     pub(super) fn run(self) -> Option<Closed> {
