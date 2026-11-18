@@ -4863,5 +4863,12 @@
   "autonomy.allowances_foot": "Each use is logged and told in one line. Revoke one and its kind asks again.",
   "autonomy.picks": "Choices members took on their own",
   "autonomy.dock_line": "{name} picked «{picked}»{why}",
-  "autonomy.dock_title": "No answer in time, so members took their recommendation ({n}). Change any you'd pick differently."
+  "autonomy.dock_title": "No answer in time, so members took their recommendation ({n}). Change any you'd pick differently.",
+  "keys.group_members": "Kept by members",
+  "keys.group_connections": "Connections",
+  "keys.metrics_connection": "Metrics connection",
+  "keys.use_daily_fetch": "Daily metrics fetch",
+  "keys.last_fetched": "Last fetched {when}",
+  "keys.never_fetched": "Not fetched yet",
+  "keys.manage_connection": "Replace or delete"
 }

@@ -4863,5 +4863,12 @@
   "autonomy.allowances_foot": "Jede Nutzung wird protokolliert und in einer Zeile gemeldet. Widerrufst du eine, fragt diese Art wieder.",
   "autonomy.picks": "Entscheidungen, die Mitglieder selbst trafen",
   "autonomy.dock_line": "{name} hat «{picked}» gewählt{why}",
-  "autonomy.dock_title": "Keine Antwort rechtzeitig, also haben Mitglieder ihre Empfehlung genommen ({n}). Ändere, was du anders wählen würdest."
+  "autonomy.dock_title": "Keine Antwort rechtzeitig, also haben Mitglieder ihre Empfehlung genommen ({n}). Ändere, was du anders wählen würdest.",
+  "keys.group_members": "Von Mitgliedern verwahrt",
+  "keys.group_connections": "Verbindungen",
+  "keys.metrics_connection": "Kennzahlen-Verbindung",
+  "keys.use_daily_fetch": "Tägliches Abrufen der Kennzahlen",
+  "keys.last_fetched": "Zuletzt abgerufen {when}",
+  "keys.never_fetched": "Noch nicht abgerufen",
+  "keys.manage_connection": "Ersetzen oder löschen"
 }

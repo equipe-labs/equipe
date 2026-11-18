@@ -4863,5 +4863,12 @@
   "autonomy.allowances_foot": "Cada uso queda registrado y se avisa en una línea. Si revocas uno, ese tipo vuelve a preguntar.",
   "autonomy.picks": "Decisiones que tomaron los miembros",
   "autonomy.dock_line": "{name} eligió «{picked}»{why}",
-  "autonomy.dock_title": "No hubo respuesta a tiempo, así que los miembros tomaron su recomendación ({n}). Cambia lo que elegirías distinto."
+  "autonomy.dock_title": "No hubo respuesta a tiempo, así que los miembros tomaron su recomendación ({n}). Cambia lo que elegirías distinto.",
+  "keys.group_members": "Guardadas por los miembros",
+  "keys.group_connections": "Conexiones",
+  "keys.metrics_connection": "Conexión de métricas",
+  "keys.use_daily_fetch": "Consulta diaria de métricas",
+  "keys.last_fetched": "Última consulta {when}",
+  "keys.never_fetched": "Aún sin consultar",
+  "keys.manage_connection": "Reemplazar o eliminar"
 }

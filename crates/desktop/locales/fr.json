@@ -4863,5 +4863,12 @@
   "autonomy.allowances_foot": "Chaque utilisation est consignée et signalée en une ligne. Révoquez-en une et ce type est de nouveau demandé.",
   "autonomy.picks": "Choix faits par les membres",
   "autonomy.dock_line": "{name} a choisi « {picked} »{why}",
-  "autonomy.dock_title": "Pas de réponse à temps : les membres ont pris leur recommandation ({n}). Changez ce que vous choisiriez autrement."
+  "autonomy.dock_title": "Pas de réponse à temps : les membres ont pris leur recommandation ({n}). Changez ce que vous choisiriez autrement.",
+  "keys.group_members": "Gardées par les membres",
+  "keys.group_connections": "Connexions",
+  "keys.metrics_connection": "Connexion de métriques",
+  "keys.use_daily_fetch": "Relevé quotidien des métriques",
+  "keys.last_fetched": "Dernier relevé {when}",
+  "keys.never_fetched": "Pas encore relevée",
+  "keys.manage_connection": "Remplacer ou supprimer"
 }
