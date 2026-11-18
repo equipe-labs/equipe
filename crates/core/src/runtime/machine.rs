@@ -12,11 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use super::*;
 use crate::machine_load::{self, Change, Reading, Why};
 
-/// How long work started off the loop waits for the machine to calm down
-/// before going ahead anyway: held work shouldn't wait forever on a Mac that
-/// is always busy.
-const WAIT_FOR_CALM_AT_MOST: Duration = Duration::from_secs(2 * 60 * 60);
-/// How often such work looks again.
+/// How often work started off the loop looks again whether the machine calmed down.
 const WAIT_FOR_CALM_EVERY: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
@@ -150,10 +146,11 @@ pub(super) fn never_index(home: &Path) {
 }
 
 /// Until the machine calms down ([`MachineWatch::busy`]), or at most
-/// [`WAIT_FOR_CALM_AT_MOST`]: for heavy work started off the loop (a design
-/// precheck's browsers) that shouldn't add to an overloaded Mac.
-pub(super) async fn wait_for_calm(busy: &AtomicBool) {
-    wait_for_calm_within(busy, WAIT_FOR_CALM_EVERY, WAIT_FOR_CALM_AT_MOST).await;
+/// `at_most` — held work shouldn't wait forever on a Mac that is always busy:
+/// for heavy work started off the loop (a design precheck's browsers) that
+/// shouldn't add to an overloaded Mac.
+pub(super) async fn wait_for_calm(busy: &AtomicBool, at_most: Duration) {
+    wait_for_calm_within(busy, WAIT_FOR_CALM_EVERY, at_most).await;
 }
 
 async fn wait_for_calm_within(busy: &AtomicBool, every: Duration, at_most: Duration) {

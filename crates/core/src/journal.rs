@@ -392,6 +392,9 @@ pub struct ModelChoiceKept {
     pub classified: Option<String>,
 }
 
+/// The ticket event that counts a design QA round held on the change itself.
+pub const DESIGN_QA_ROUND: &str = "design QA round";
+
 /// A design QA ticket's way through the precheck, its gate and the
 /// designer ([`Journal::design_qa_run`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -834,7 +837,8 @@ impl Journal {
              );",
         )?;
         // Risk-based design QA (`crate::design_qa::route`): how each was routed, and the reviews and audits.
-        for column in ["mode TEXT", "route TEXT", "risk TEXT", "lite INTEGER NOT NULL DEFAULT 0", "waived TEXT", "batch INTEGER", "audit INTEGER", "audit_verdict TEXT"] {
+        // `tries`: how many times its precheck couldn't render on a loaded machine (`runtime::design_qa`).
+        for column in ["mode TEXT", "route TEXT", "risk TEXT", "lite INTEGER NOT NULL DEFAULT 0", "waived TEXT", "batch INTEGER", "audit INTEGER", "audit_verdict TEXT", "tries INTEGER NOT NULL DEFAULT 0"] {
             let _ = conn.execute(&format!("ALTER TABLE design_qa_runs ADD COLUMN {column}"), []);
         }
         conn.execute_batch(
@@ -2494,11 +2498,65 @@ impl Journal {
     /// How many design QA tickets `checked` has had, the ones from before
     /// this table included.
     pub fn design_qa_rounds(&self, checked: TicketId) -> Result<u32> {
+        // A design QA ticket made at once, or a round held on the change itself for its precheck.
         self.conn.query_row(
-            "SELECT COUNT(*) FROM ticket_events WHERE kind = 'created' AND by = 'equipe' AND text = ?1",
-            [format!("design QA of T-{checked}")],
+            "SELECT (SELECT COUNT(*) FROM ticket_events WHERE kind = 'created' AND by = 'equipe' AND text = ?1)
+                  + (SELECT COUNT(*) FROM ticket_events WHERE ticket = ?2 AND kind = ?3 AND by = 'equipe')",
+            params![format!("design QA of T-{checked}"), checked, DESIGN_QA_ROUND],
             |r| r.get(0),
         )
+    }
+
+    /// Keep that `checked`'s screens are prechecked before any design QA
+    /// ticket is made (`risk_batch`): its run is keyed by the change itself
+    /// until a designer is needed ([`Journal::rekey_design_qa_run`]). A run
+    /// kept for it before is started over, but stays in the review or audit
+    /// that already covers it.
+    pub fn start_held_design_qa_run(&self, checked: TicketId, round: u32, gate: &str, precheck: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO design_qa_runs (qa, checked, round, gate, precheck, created_at) VALUES (?1, ?1, ?2, ?3, ?5, ?4)
+             ON CONFLICT(qa) DO UPDATE SET round = ?2, gate = ?3, precheck = ?5, created_at = ?4, decision = NULL, judgment = NULL,
+               acted = 0, report = NULL, head = NULL, base = NULL, precheck_secs = NULL, verdict = NULL, verdict_by = NULL, finished_at = NULL,
+               route = NULL, risk = NULL, lite = 0, waived = NULL, tries = 0",
+            params![checked, round, gate, now(), precheck],
+        )?;
+        let _ = self.ticket_event(checked, "equipe", DESIGN_QA_ROUND, &format!("design QA round {round}, held on the change itself"));
+        Ok(())
+    }
+
+    /// A run held on its change moves to the design QA ticket `to` made for it.
+    pub fn rekey_design_qa_run(&self, from: TicketId, to: TicketId) -> Result<()> {
+        self.conn.execute("UPDATE design_qa_runs SET qa = ?2 WHERE qa = ?1", params![from, to])?;
+        Ok(())
+    }
+
+    /// One more precheck of `qa` that couldn't render on a loaded machine: how many now.
+    pub fn add_design_qa_precheck_try(&self, qa: TicketId) -> Result<u32> {
+        self.conn.execute("UPDATE design_qa_runs SET tries = tries + 1 WHERE qa = ?1", [qa])?;
+        self.conn.query_row("SELECT tries FROM design_qa_runs WHERE qa = ?1", [qa], |r| r.get(0))
+    }
+
+    /// How many prechecks of `qa` couldn't render on a loaded machine.
+    pub fn design_qa_precheck_tries(&self, qa: TicketId) -> u32 {
+        self.conn.query_row("SELECT tries FROM design_qa_runs WHERE qa = ?1", [qa], |r| r.get(0)).optional().ok().flatten().unwrap_or(0)
+    }
+
+    /// The design QA runs whose precheck is under way, by their record: held
+    /// off the board whatever the daemon remembers, and started again when
+    /// no precheck runs for them (a restart ended it).
+    pub fn design_qa_prechecks_running(&self) -> Vec<DesignQaRun> {
+        let ids: Vec<TicketId> = self
+            .conn
+            .prepare("SELECT qa FROM design_qa_runs WHERE precheck = 'running' AND verdict IS NULL ORDER BY qa")
+            .and_then(|mut s| s.query_map([], |r| r.get(0))?.collect())
+            .unwrap_or_default();
+        ids.into_iter().filter_map(|qa| self.design_qa_run(qa)).collect()
+    }
+
+    /// How many changes since `since` (unix seconds) went on without a design
+    /// QA of their own: low risk by the precheck, into the daily review.
+    pub fn design_qa_skipped_since(&self, since: i64) -> u32 {
+        self.conn.query_row("SELECT COUNT(*) FROM design_qa_runs WHERE route = 'batch' AND created_at >= ?1", [since], |r| r.get(0)).unwrap_or(0)
     }
 
     /// Keep that design QA ticket `qa` of `checked` was made, in its `round`,
@@ -3426,6 +3484,32 @@ mod tests {
         j.set_conversation_pinned(2, true).unwrap();
         j.close_conversation(2).unwrap();
         assert!(j.conversation_pins().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_change_held_for_its_precheck_keeps_its_run_on_itself_until_a_designer_is_needed() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        assert_eq!(j.design_qa_rounds(5).unwrap(), 0);
+        j.start_held_design_qa_run(5, 1, "on", "running").unwrap();
+        assert_eq!(j.design_qa_rounds(5).unwrap(), 1, "a held round counts");
+        let run = j.design_qa_run(5).unwrap();
+        assert_eq!((run.qa, run.checked, run.round, run.precheck.as_str()), (5, 5, 1, "running"));
+        assert_eq!(j.design_qa_prechecks_running().iter().map(|r| r.qa).collect::<Vec<_>>(), [5], "held off the board by the record");
+        assert_eq!((j.add_design_qa_precheck_try(5).unwrap(), j.add_design_qa_precheck_try(5).unwrap(), j.design_qa_precheck_tries(5)), (1, 2, 2));
+        // Low risk: into the daily review, counted as skipping its own design QA.
+        j.set_design_qa_route(5, "batch", "broad", false).unwrap();
+        j.set_design_qa_verdict(5, "batched", "equipe").unwrap();
+        assert!(j.design_qa_prechecks_running().is_empty(), "ended");
+        assert_eq!(j.design_qa_skipped_since(0), 1);
+        j.start_design_qa_batch(&DesignQaBatch { ticket: 20, kind: "review".into(), ..DesignQaBatch::default() }, &[5]).unwrap();
+        // Handed in again while that review is open: started over, still in the review.
+        j.start_held_design_qa_run(5, 2, "on", "running").unwrap();
+        let again = j.design_qa_run(5).unwrap();
+        assert_eq!((again.round, again.verdict, again.batch, j.design_qa_precheck_tries(5)), (2, None, Some(20), 0));
+        // A designer is needed now: the run moves to its design QA ticket.
+        j.rekey_design_qa_run(5, 9).unwrap();
+        assert!(j.design_qa_run(5).is_none());
+        assert_eq!(j.design_qa_run(9).map(|r| (r.checked, r.round, r.batch)), Some((5, 2, Some(20))));
     }
 
     #[test]

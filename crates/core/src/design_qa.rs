@@ -344,7 +344,7 @@ pub fn gate_prototype(report: Option<&Report>) -> GateCall {
 // ── the designer's tier ──
 
 /// Which model tier design QA runs on: `cheap` for the usual check, `top`
-/// for a redesign, a second round or more, or a report that needs judgment.
+/// for a redesign, a third round or more, or a report that needs judgment.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TierPolicy {
     pub cheap: ModelTier,
@@ -400,8 +400,8 @@ pub struct TierAsk {
 pub fn tier_for(policy: TierPolicy, ask: TierAsk) -> (ModelTier, Option<&'static str>) {
     let why = if ask.redesign {
         Some("redesign")
-    } else if ask.round >= 2 {
-        Some("round_2_plus")
+    } else if ask.round >= 3 {
+        Some("round_3_plus")
     } else if ask.judgment {
         Some("needs_judgment")
     } else {
@@ -574,7 +574,8 @@ mod tests {
     fn design_qa_runs_cheap_unless_it_takes_judgment() {
         let first = TierAsk { round: 1, ..TierAsk::default() };
         assert_eq!(tier_for(TierPolicy::ECONOMY, first), (ModelTier::Standard, None));
-        assert_eq!(tier_for(TierPolicy::ECONOMY, TierAsk { round: 2, ..first }), (ModelTier::Deep, Some("round_2_plus")));
+        assert_eq!(tier_for(TierPolicy::ECONOMY, TierAsk { round: 2, ..first }), (ModelTier::Standard, None), "a re-check of a fix stays routine");
+        assert_eq!(tier_for(TierPolicy::ECONOMY, TierAsk { round: 3, ..first }), (ModelTier::Deep, Some("round_3_plus")));
         assert_eq!(tier_for(TierPolicy::ECONOMY, TierAsk { redesign: true, ..first }), (ModelTier::Deep, Some("redesign")));
         assert_eq!(tier_for(TierPolicy::ECONOMY, TierAsk { judgment: true, ..first }), (ModelTier::Deep, Some("needs_judgment")));
         assert_eq!(tier_for(TierPolicy::QUALITY, first), (ModelTier::Deep, None), "quality: the top tier always");

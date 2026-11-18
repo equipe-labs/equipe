@@ -7,11 +7,16 @@
 //!
 //! - a new S1/S2 finding the engineer didn't waive: the hand-in is
 //!   **refused** back to the engineer at once (no designer turn);
-//! - a high-risk change — new screens or states on the UI map, many screens
-//!   at once, a designer's spec across more than one screen (a spec'd tweak
-//!   of one screen is a small change), findings the engineer waived, a
-//!   re-check after a designer's send-back, or what the precheck couldn't
-//!   see: a designer looks at it now (**per ticket**), in a light session;
+//! - a change that really needs a designer before it lands — new screens or
+//!   states on the UI map, findings the engineer waived, a design look the
+//!   person asked for: a designer looks at it now (**per ticket**), in a light
+//!   session when the report shows enough;
+//! - the other risks — many screens at once, a designer's spec across more
+//!   than one screen, a re-check after a designer's send-back, many UI files
+//!   off the map, what the precheck couldn't see — are recorded and go into
+//!   the daily review, after the change lands; they send the
+//!   change to a designer of its own only while audits keep the routing
+//!   tightened ([`Settings::tight`]);
 //! - everything else goes on without a designer turn and is collected into
 //!   the **daily design review**, one ticket for all of them, with a random
 //!   sample audited on the top tier ([`sample`]); misses tighten the routing
@@ -159,6 +164,8 @@ pub enum Risk {
     Unverified,
     /// Many changed UI files no screen of the map lists.
     UnmappedLarge,
+    /// The person asked for a design look at this change.
+    Asked,
 }
 
 impl Risk {
@@ -172,10 +179,28 @@ impl Risk {
             Risk::Tight => "tight",
             Risk::Unverified => "unverified",
             Risk::UnmappedLarge => "unmapped_large",
+            Risk::Asked => "asked",
         }
     }
 
     /// In a few English words, for the designer's brief and the record.
+    /// Whether this risk alone gets the change a designer turn of its own
+    /// while the routing is relaxed: the rest wait for the daily review.
+    pub fn needs_designer_now(self) -> bool {
+        matches!(self, Risk::Waived | Risk::NewScreens | Risk::Asked)
+    }
+
+    pub const ALL: [Risk; 9] = [Risk::Waived, Risk::NewScreens, Risk::Broad, Risk::Spec, Risk::Recheck, Risk::Tight, Risk::Unverified, Risk::UnmappedLarge, Risk::Asked];
+
+    pub fn parse(code: &str) -> Option<Risk> {
+        Risk::ALL.into_iter().find(|r| r.code() == code.trim())
+    }
+
+    /// Whether a run's recorded risks (comma-separated codes) hold its change for a designer now.
+    pub fn codes_need_designer_now(codes: &str) -> bool {
+        codes.split(',').filter_map(Risk::parse).any(Risk::needs_designer_now)
+    }
+
     pub fn said(self) -> &'static str {
         match self {
             Risk::Waived => "the engineer waived new S1/S2 findings",
@@ -186,6 +211,7 @@ impl Risk {
             Risk::Tight => "routing is tightened after audit misses and it has new findings",
             Risk::Unverified => "the precheck couldn't see it",
             Risk::UnmappedLarge => "many changed UI files no screen of the map lists",
+            Risk::Asked => "the person asked for a design look",
         }
     }
 }
@@ -208,6 +234,8 @@ pub struct RouteAsk<'a> {
     /// self-check still refuses a new S1/S2 and a designer judges a waiver;
     /// the rest goes into the daily review.
     pub follow_up: bool,
+    /// The person asked for a design look at it ([`person_asked`]).
+    pub asked: bool,
 }
 
 /// Where a hand-in goes, why, and whether a designer can judge it from the
@@ -230,8 +258,10 @@ impl RouteCall {
 /// Where a hand-in with changed screens goes in `risk_batch`.
 pub fn route(ask: &RouteAsk<'_>) -> RouteCall {
     let call = |route, risks: Vec<Risk>, lite| RouteCall { route, risks, lite };
+    // What the precheck couldn't see lands and is looked at in the daily review — a designer now only while tightened.
+    let unseen = if ask.tight { Route::PerTicket } else { Route::Batch };
     let Some(r) = ask.report else {
-        return if ask.follow_up { call(Route::Batch, Vec::new(), false) } else { call(Route::PerTicket, vec![Risk::Unverified], false) };
+        return if ask.follow_up { call(Route::Batch, Vec::new(), false) } else { call(unseen, vec![Risk::Unverified], false) };
     };
     let blockers = r.new_blockers();
     if !blockers.is_empty() && !ask.waived {
@@ -247,11 +277,11 @@ pub fn route(ask: &RouteAsk<'_>) -> RouteCall {
         if r.touched.is_empty() && r.unmapped.is_empty() && r.errors.is_empty() {
             return call(if ask.spec || ask.recheck { Route::PerTicket } else { Route::Batch }, [ask.spec.then_some(Risk::Spec), ask.recheck.then_some(Risk::Recheck)].into_iter().flatten().collect(), false);
         }
-        return call(Route::PerTicket, vec![Risk::Unverified], false);
+        return call(unseen, vec![Risk::Unverified], false);
     }
     // Half or more of the pictures failed: too little seen to let it through.
     if r.failed() * 2 >= r.shots.len() {
-        return call(Route::PerTicket, vec![Risk::Unverified], false);
+        return call(unseen, vec![Risk::Unverified], false);
     }
     let mut risks = Vec::new();
     if !blockers.is_empty() {
@@ -280,8 +310,21 @@ pub fn route(ask: &RouteAsk<'_>) -> RouteCall {
     if large {
         risks.push(Risk::UnmappedLarge);
     }
-    let route = if risks.is_empty() { Route::Batch } else { Route::PerTicket };
+    if ask.asked {
+        risks.push(Risk::Asked);
+    }
+    // Relaxed, only what really needs a designer now gets one; the rest are kept for the daily review.
+    let now = if ask.tight { !risks.is_empty() } else { risks.iter().any(|k| k.needs_designer_now()) };
+    let route = if now { Route::PerTicket } else { Route::Batch };
     call(route, risks, !large)
+}
+
+/// Whether the person asked for a design look at a ticket: they filed it
+/// themselves as design or check work (`created_by` is the person, its
+/// label `design` or `check`). Read from its structure, never its words.
+pub fn person_asked(created_by: &str, label: Option<equipe_protocol::title::TicketLabel>) -> bool {
+    use equipe_protocol::title::TicketLabel;
+    created_by == crate::lead_time::PERSON && matches!(label, Some(TicketLabel::Design | TicketLabel::Check))
 }
 
 /// What counts as a mockup a designer attached: a picture or document of
@@ -552,16 +595,26 @@ mod tests {
         let new = report(vec![shot("settings/main/default", true, true), shot("billing/plans/default", true, false)], vec![]);
         assert_eq!(new.new_states(), ["billing/plans/default"]);
         assert_eq!(routed(&new, |_| {}).risks, [Risk::NewScreens]);
+        assert_eq!(routed(&new, |_| {}).route, Route::PerTicket, "a new screen gets a designer now");
+        // Relaxed, the other risks are kept on the record and go into the daily review.
         let broad = report((0..BROAD_SCREENS).map(|n| shot(&format!("app/s{n}/default"), true, true)).collect(), vec![]);
-        assert_eq!(routed(&broad, |_| {}).risks, [Risk::Broad]);
+        assert_eq!((routed(&broad, |_| {}).risks.as_slice(), routed(&broad, |_| {}).route), (&[Risk::Broad][..], Route::Batch));
+        assert_eq!(routed(&broad, |a| a.tight = true).route, Route::PerTicket, "tightened, a designer looks now");
         let small = report(vec![shot("settings/main/default", true, true)], vec![]);
         assert_eq!(routed(&small, |a| a.spec = true).route, Route::Batch, "a spec'd tweak of one screen is a small change");
         let two = report(vec![shot("settings/main/default", true, true), shot("settings/profile/default", true, true)], vec![]);
-        assert_eq!(routed(&two, |a| a.spec = true).risks, [Risk::Spec]);
-        assert_eq!(routed(&small, |a| a.recheck = true).risks, [Risk::Recheck]);
+        assert_eq!((routed(&two, |a| a.spec = true).risks.as_slice(), routed(&two, |a| a.spec = true).route), (&[Risk::Spec][..], Route::Batch));
+        assert_eq!((routed(&small, |a| a.recheck = true).risks.as_slice(), routed(&small, |a| a.recheck = true).route), (&[Risk::Recheck][..], Route::Batch));
         let large = Report { unmapped: (0..12).map(|i| format!("src/components/C{i}.tsx")).collect(), ..small.clone() };
-        let call = routed(&large, |_| {});
-        assert_eq!((call.risks.as_slice(), call.lite), (&[Risk::UnmappedLarge][..], false), "too much outside the map for a light look");
+        let call = routed(&large, |a| a.tight = true);
+        assert_eq!((call.route, call.risks.as_slice(), call.lite), (Route::PerTicket, &[Risk::UnmappedLarge][..], false), "too much outside the map for a light look");
+        assert_eq!(routed(&large, |_| {}).route, Route::Batch);
+        // The person asked for a design look: a designer now, whatever else.
+        let asked = routed(&small, |a| a.asked = true);
+        assert_eq!((asked.route, asked.risks.as_slice()), (Route::PerTicket, &[Risk::Asked][..]));
+        use equipe_protocol::title::TicketLabel;
+        assert!(person_asked("you", Some(TicketLabel::Design)) && person_asked("you", Some(TicketLabel::Check)));
+        assert!(!person_asked("pm", Some(TicketLabel::Design)) && !person_asked("you", Some(TicketLabel::Feature)) && !person_asked("you", None));
         assert!(spec_attached("Build it per `design/specs/billing.md`.", None));
         assert!(spec_attached("-", Some("design/plans/billing.md")));
         assert!(!spec_attached("Fix the redesign/ folder and design/flows/flows.json", None), "the map isn't a spec");
@@ -570,8 +623,10 @@ mod tests {
     }
 
     #[test]
-    fn what_the_precheck_could_not_see_goes_to_a_designer_with_the_worktree() {
-        assert_eq!(route(&RouteAsk::default()), RouteCall { route: Route::PerTicket, risks: vec![Risk::Unverified], lite: false });
+    fn what_the_precheck_could_not_see_lands_and_waits_for_the_daily_review_unless_tightened() {
+        assert_eq!(route(&RouteAsk::default()), RouteCall { route: Route::Batch, risks: vec![Risk::Unverified], lite: false }, "never a hold before landing");
+        assert_eq!(route(&RouteAsk { tight: true, ..RouteAsk::default() }), RouteCall { route: Route::PerTicket, risks: vec![Risk::Unverified], lite: false });
+        assert!(Risk::codes_need_designer_now("broad,new_screens") && !Risk::codes_need_designer_now("unverified,broad") && !Risk::codes_need_designer_now(""));
         let failed = Shot { error: Some("timed out".into()), ..shot("settings/main/error", false, true) };
         let half = report(vec![shot("settings/main/default", false, true), failed], vec![]);
         assert_eq!(routed(&half, |_| {}).risks, [Risk::Unverified]);
@@ -586,6 +641,7 @@ mod tests {
         let two = report(vec![shot("a/one/default", true, true), shot("a/two/default", true, true)], vec![]);
         assert_eq!(routed(&two, |_| {}).route, Route::Batch);
         assert_eq!(routed(&two, |a| a.tight = true).risks, [Risk::Broad]);
+        assert_eq!(routed(&two, |a| a.tight = true).route, Route::PerTicket);
         let polish = Finding::bare("overlap", Severity::Polish, "a/one/default", "390.light.normal", true);
         let one = report(vec![shot("a/one/default", true, true)], vec![polish]);
         assert_eq!(routed(&one, |_| {}).route, Route::Batch);
