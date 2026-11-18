@@ -40,7 +40,7 @@ lands, recorded as pre-existing on main. Leave T-{red} out — hand the work in,
     /// the front of `owner`'s queue. Its id.
     pub(super) fn ensure_main_red(&mut self, squad: &str, project: Option<&Path>, command: &str, tail: &str, seen_on: TicketId, owner: Option<&str>) -> Option<TicketId> {
         let command = command.trim();
-        if command.is_empty() {
+        if command.is_empty() || !fixable_on_main(command) {
             return None;
         }
         let key = key(project, command);
@@ -144,5 +144,28 @@ it. Work that fails only this keeps landing — don't make anything depend on T-
             failing.iter().map(|f| format!("`{f}`")).collect::<Vec<_>>().join(", "),
             fixed_by.join(", ")
         )
+    }
+}
+
+/// Whether a check failing on main is the project's to fix with an urgent
+/// ticket. equipe's own advisory checks (`equipe design flows check`, …) are
+/// not: a stale design map is refreshed by the daily design review, and in
+/// production an urgent ticket for one looped between roles for hours.
+fn fixable_on_main(command: &str) -> bool {
+    let first = command.split_whitespace().next().unwrap_or_default();
+    let program = first.rsplit('/').next().unwrap_or(first);
+    program != "equipe"
+}
+
+#[cfg(test)]
+mod fixable_tests {
+    use super::fixable_on_main;
+
+    #[test]
+    fn equipes_own_checks_never_open_a_main_red_ticket() {
+        assert!(!fixable_on_main("equipe design flows check --json"));
+        assert!(!fixable_on_main("/Users/x/.local/bin/equipe design critique"));
+        assert!(fixable_on_main("npm test"));
+        assert!(fixable_on_main("cargo test --workspace"));
     }
 }
