@@ -234,9 +234,21 @@ pub fn shipped_status(links: &[RequestTicket], tickets: &[Ticket], asking: &[Tic
         let (phase, who, since, not_live) = phase(&mine, asking, shipped);
         parts.push(Part { ticket: head.id, title: head.title.clone(), phase, who, since, not_live });
     }
-    let covered = !covering(links, tickets).is_empty();
-    let done = covered && !parts.is_empty() && waits.is_empty() && parts.iter().all(|p| p.phase.is_finished());
-    Status { parts, waits, steps, done, ..Status::default() }
+    let cover = covering(links, tickets);
+    let done = !cover.is_empty() && !parts.is_empty() && waits.is_empty() && parts.iter().all(|p| p.phase.is_finished());
+    let decided = done && decided_only(&cover, tickets);
+    Status { parts, waits, steps, done, decided, ..Status::default() }
+}
+
+/// Whether the covering tickets `cover`, all finished, put nothing live: no
+/// code of them merged or waits to merge, and none is a deploy — the request
+/// was a decision or an instruction answered, whose production lead time
+/// doesn't apply (`crate::lead_time` reads it the same way).
+fn decided_only(cover: &[TicketId], tickets: &[Ticket]) -> bool {
+    cover.iter().filter_map(|id| tickets.iter().find(|t| t.id == *id)).all(|t| {
+        let shipped = t.kind == TicketKind::Code && t.status == TicketStatus::Done && t.merged.is_some();
+        !shipped && t.label != Some(TicketLabel::Deploy)
+    })
 }
 
 /// Where the request kept as `row` stands at `now`: [`status`], and — still
@@ -354,7 +366,9 @@ pub fn line(status: &Status, words: &Catalog, clock: &dyn Fn(u64) -> String) -> 
         }
         out.push(words.fill("request.waits", &[("count", status.waits.len().to_string()), ("list", list.join(", "))]));
     }
-    if status.done {
+    if status.decided {
+        out.push(words.get("request.decided").to_owned());
+    } else if status.done {
         out.push(words.get("request.all_done").to_owned());
     }
     if out.is_empty() {
@@ -1107,6 +1121,34 @@ mod tests {
             line,
             "Spec the Tinumi composer — live since @1100 · Left menu, three options — frontend is on it · 2 things wait for you (Check the new composer on r…, Decide if the layout needs…)"
         );
+    }
+
+    /// "Go with B": its ticket done and nothing of it merged or deployed —
+    /// answered, with nothing to ship; never "not live yet".
+    #[test]
+    fn a_request_whose_work_merged_nothing_reads_as_answered_not_waiting_to_go_live() {
+        let words = core(Lang::En);
+        let clock = |at: u64| format!("@{at}");
+        let links = vec![link(7, None, Link::Asked)];
+        let mut decision = ticket(7, "Go with option B", TicketStatus::Done);
+        decision.kind = TicketKind::Task;
+        let s = status(&links, &[decision.clone()], &[]);
+        assert!(s.done && s.decided, "{s:?}");
+        assert_eq!(line(&s, words, &clock), "Go with option B — done · answered — nothing to ship");
+        // Its code merged: shipped, all done as before.
+        let shipped = merged(ticket(7, "Go with option B", TicketStatus::Done), 1_200);
+        let s = status(&links, &[shipped], &[]);
+        assert!(s.done && !s.decided);
+        assert!(line(&s, words, &clock).ends_with("all done"));
+        // Accepted and waiting to merge, or a deploy: not a decision.
+        let mut accepted = ticket(7, "Go with option B", TicketStatus::Done);
+        accepted.merged = Some(false);
+        assert!(!status(&links, &[accepted], &[]).decided);
+        let mut deploy = decision;
+        deploy.label = Some(TicketLabel::Deploy);
+        assert!(!status(&links, &[deploy], &[]).decided);
+        // Still open: neither.
+        assert!(!status(&links, &[ticket(7, "Go with option B", TicketStatus::InProgress)], &[]).decided);
     }
 
     #[test]

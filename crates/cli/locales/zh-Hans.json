@@ -1539,6 +1539,7 @@
   "flow.slowest": "最慢的请求：",
   "flow.slow_row": "  {title}：{live} · {tickets} 个工单 · {handoffs} 次交接",
   "flow.not_live": "尚未上线",
+  "flow.decided": "仅答复或决定、无需上线：{count} 个（不计入上线时间）",
   "usage.bad_compare": "无法识别 --compare {compare}:请使用 7d、24h、2w 这样的时长。",
   "usage.change.tokens": "token",
   "usage.change.turns": "轮次",

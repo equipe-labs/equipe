@@ -82,6 +82,9 @@ pub(crate) fn text(squad: &str, r: &Report) -> String {
     out.push(t!("flow.to_start", value = times(&r.to_start)));
     out.push(t!("flow.to_first_merge", value = times(&r.to_first_merge)));
     out.push(t!("flow.to_production", value = times(&r.to_production), deploys = r.production_by_deploy));
+    if r.decided > 0 {
+        out.push(format!("  {}", t!("flow.decided", count = r.decided)));
+    }
     out.push(t!("flow.tickets_per_request", value = counts(&r.tickets_per_request)));
     out.push(t!("flow.handoffs_per_request", value = counts(&r.handoffs_per_request)));
     out.push(t!("flow.queue_wait", value = times(&r.queue_wait)));

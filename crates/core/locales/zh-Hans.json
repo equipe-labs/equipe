@@ -872,6 +872,7 @@
   "request.more.other": "另有 {count} 项",
   "request.waits.other": "{count} 项等你处理（{list}）",
   "request.all_done": "全部完成",
+  "request.decided": "已答复 — 无需上线",
   "request.nothing_yet": "看板上还没有",
   "request.uncovered": "还没有工单负责这个请求 — 已告知 PM",
   "request.closed": "已关闭：{why}",

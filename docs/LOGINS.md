@@ -287,6 +287,14 @@ the person turns it on, and taken back with one click.
 - `show_my_browser` to sign in where another member's browser is already in
   the person's hands for the same site: not handed over again; the member
   waits and is told when that sign-in is done.
+- The same member asking again for a sign-in to the same site while its first
+  ask is still open with the person (up to three minutes, until the person
+  hands the browser back or the sign-in finishes): no second window, panel or
+  notice, and no second hand-off on the record — the member is told to wait.
+  Asking right after the person handed the browser back, while equipe still
+  checks that the sign-in went through, it is told once to reload its page
+  and look first. Before, a session that expired mid-step asked the person
+  three times in ninety seconds.
 - A page pausing on a sign-in the person is already doing for another member
   waits on it; the screens show one row for the site ("n members waiting")
   and announce it once. When the person finishes, the other waiting pages

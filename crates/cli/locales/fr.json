@@ -1562,6 +1562,7 @@
   "flow.slowest": "Demandes les plus lentes :",
   "flow.slow_row": "  {title} : {live} · {tickets} tickets · {handoffs} passages",
   "flow.not_live": "pas encore en production",
+  "flow.decided": "Répondu ou décidé, rien à livrer : {count} (hors délai de mise en production)",
   "usage.bad_compare": "Impossible de lire --compare {compare} : donnez une durée comme 7d, 24h ou 2w.",
   "usage.change.tokens": "tokens",
   "usage.change.turns": "tours",

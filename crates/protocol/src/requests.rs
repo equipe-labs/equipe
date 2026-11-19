@@ -159,6 +159,11 @@ pub struct Status {
     /// serves it — equipe's own checks never cover a request.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub done: bool,
+    /// Done, and none of its work merged or deployed anything: a decision or
+    /// an instruction answered ("go with B"), with nothing to put live —
+    /// never counted as waiting for production.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub decided: bool,
     /// No work ticket serves it a few minutes after it was asked: it is put
     /// to the PM, and stays open, until one does.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

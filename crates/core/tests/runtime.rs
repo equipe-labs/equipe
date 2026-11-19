@@ -4651,6 +4651,53 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     assert!(Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
 }
 
+/// A member whose session expired asks the person to sign in again and
+/// again within a minute: the person gets one ask — one panel, one notice,
+/// one hand-off on the record — and the member is told to wait on it. Once
+/// the person hands the browser back, the member looks before asking anew.
+#[tokio::test]
+async fn asking_again_for_a_sign_in_still_open_makes_no_second_ask() {
+    let repo = repo();
+    let (claude, _recorded) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let (npx, _ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.browser_hub().await.unwrap().screen(true);
+
+    let url = "https://app.example.com/login";
+    let why = "Sign in to the app: the session expired";
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": why })).await;
+    assert!(!said.is_error && said.text.contains("browser panel"), "{said:?}");
+    until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+
+    // Asked again at once, and again: the same ask, still open with the person.
+    for _ in 0..2 {
+        let again = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": why })).await;
+        assert!(!again.is_error && again.text.contains("still open") && again.text.contains("don't ask again"), "{again:?}");
+    }
+    let handoffs = || {
+        Journal::for_squad(&home, "acme").unwrap().logins_since(0).unwrap().into_iter().filter(|e| e.kind == equipe_core::logins::Kind::Handoff && e.site == "app.example.com").count()
+    };
+    assert_eq!(handoffs(), 1, "one hand-off on the record");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut extra = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        extra.push(event);
+    }
+    assert!(!extra.iter().any(|e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains(why))), "no second notice: {extra:?}");
+    assert!(!extra.iter().any(|e| matches!(e, Event::BrowserControl { by: Some(_), .. })), "no second hand-off: {extra:?}");
+
+    // Handed back: it looks at its page first, once, then may ask anew.
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    until(&mut events, |e| matches!(e, Event::BrowserControl { lane, by: None, .. } if lane == "acme/pm")).await;
+    let after = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": why })).await;
+    assert!(after.text.contains("just handed your browser back") && after.text.contains("reload your page"), "{after:?}");
+    let anew = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": why })).await;
+    assert!(anew.text.contains("browser panel"), "a new ask once it was looked at: {anew:?}");
+    assert_eq!(handoffs(), 2);
+}
+
 /// A stand-in for Google Chrome as the person's own window: each launch's
 /// arguments written down, then it stays up until it is closed.
 fn fake_plain_chrome(home: &std::path::Path) -> PathBuf {

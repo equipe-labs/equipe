@@ -1539,6 +1539,7 @@
   "flow.slowest": "가장 오래 걸린 요청:",
   "flow.slow_row": "  {title}: {live} · 티켓 {tickets}건 · 넘겨주기 {handoffs}번",
   "flow.not_live": "아직 프로덕션 전",
+  "flow.decided": "답변·결정만 한 요청(배포할 작업 없음): {count}건 (프로덕션 집계 제외)",
   "usage.bad_compare": "--compare {compare}를 읽을 수 없어요. 7d, 24h, 2w 같은 기간을 쓰세요.",
   "usage.change.tokens": "토큰",
   "usage.change.turns": "턴",

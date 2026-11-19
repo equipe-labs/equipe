@@ -1562,6 +1562,7 @@
   "flow.slowest": "Langsamste Anfragen:",
   "flow.slow_row": "  {title}: {live} · {tickets} Tickets · {handoffs} Übergaben",
   "flow.not_live": "noch nicht in Produktion",
+  "flow.decided": "Beantwortet oder entschieden, nichts auszuliefern: {count} (nicht in der Produktionszeit gezählt)",
   "usage.bad_compare": "--compare {compare} ist nicht lesbar: gib eine Länge wie 7d, 24h oder 2w an.",
   "usage.change.tokens": "Tokens",
   "usage.change.turns": "Turns",

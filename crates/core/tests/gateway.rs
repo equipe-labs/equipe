@@ -296,6 +296,74 @@ async fn a_members_board_server_acts_only_as_its_own_member() {
     gateway::shutdown(&socket).await.unwrap();
 }
 
+/// A ticket's run — a lane of its member, beside its conversation — starts
+/// its own engine, and the servers that engine starts call the daemon as the
+/// member: its board and desktop calls are its member's own, never refused as
+/// "not from a turn equipe runs", and never another member's.
+#[tokio::test]
+async fn a_ticket_runs_servers_act_as_its_member() {
+    let home = scratch("home");
+    let repo = scratch("repo");
+    for args in [&["init", "-q", "-b", "main"][..], &["config", "user.name", "Test"], &["config", "user.email", "test@example.com"]] {
+        assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+    }
+    std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+    for args in [&["add", "-A"][..], &["commit", "-q", "-m", "init"]] {
+        assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+    }
+    squads::create(&home, "acme", &repo.canonicalize().unwrap()).unwrap();
+    let bin = scratch("bin");
+    let out = bin.join("calls");
+    std::fs::create_dir_all(&out).unwrap();
+    let exe = std::env::current_exe().unwrap();
+    let claude = bin.join("claude");
+    let script = [
+        "#!/bin/sh",
+        r#"if [ "$1" = "auth" ]; then echo '{"loggedIn":true,"authMethod":"claude.ai"}'; exit 0; fi"#,
+        r#"prev=""; for a in "$@"; do if [ "$prev" = "--mcp-config" ]; then cfg="$a"; fi; prev="$a"; done"#,
+        &format!(r#"[ -n "$cfg" ] && EQ_STAND_IN=engine EQ_MCP_CONFIG="$cfg" '{}' --exact member_stand_in --nocapture >/dev/null 2>&1"#, exe.display()),
+        "cat <<'EOF'",
+        r#"{"type":"system","subtype":"init","model":"m","session_id":"sess-1"}"#,
+        r#"{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":1,"output_tokens":1}}"#,
+        "EOF",
+    ]
+    .join("\n");
+    write_script(&claude, &script);
+    let equipe = bin.join("equipe");
+    write_script(&equipe, &format!("#!/bin/sh\nEQ_STAND_IN=run EQ_BOARD_ARGS=\"$*\" EQ_OUT='{}' exec '{}' --exact member_stand_in --nocapture\n", out.display(), exe.display()));
+    let (socket, _daemon) = daemon_with(Config { equipe_binary: Some(equipe.clone()), ..config(&home, &claude) }).await;
+    let (mut screen, _) = Client::connect(&socket, "test", "acme").await.unwrap();
+    for (session, role) in [(71, "pm"), (72, "frontend")] {
+        screen.send(Command::Start { session, spec: SessionSpec { access: Access::EditFiles, role: Some(role.into()), ..spec(&repo) } });
+        until(&mut screen, |e| matches!(e, Event::SessionStarted { session: s, .. } if *s == session)).await;
+    }
+    let made = gateway::call_tool(
+        &socket,
+        &ToolCall { run: None, squad: "acme".into(), member: "pm".into(), name: "create_ticket".into(), arguments: serde_json::json!({ "title": "A footer", "body": "-", "owner": "frontend", "kind": "code" }) },
+    )
+    .await
+    .unwrap();
+    assert!(!made.is_error, "{made:?}");
+    // The run's engine starts its servers; they write down what the daemon said.
+    let file = out.join("frontend.json");
+    for _ in 0..600 {
+        if file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let calls: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).expect("the run's servers ran")).unwrap();
+    assert!(calls["run"].is_string(), "started for the ticket's run: {calls}");
+    for own in [&calls["board"], &calls["desktop"]] {
+        let text = own["text"].as_str().unwrap_or_default();
+        assert!(!text.contains("doesn't come from a turn") && !text.contains("can't act as"), "its own call is its member's: {own}");
+    }
+    assert!(calls["board"]["is_error"] == false, "{calls}");
+    let as_pm = &calls["desktop_as_pm"];
+    assert!(as_pm["is_error"] == true && as_pm["text"].as_str().unwrap().contains("can't act as acme/pm"), "{as_pm}");
+    gateway::shutdown(&socket).await.unwrap();
+}
+
 /// The engine and the board server of the test above, when this test binary
 /// is run as one of them (`EQ_STAND_IN`); nothing otherwise.
 #[test]
@@ -326,6 +394,27 @@ fn member_stand_in() {
             });
             // The first turn's only: a later one doesn't write over it.
             if let Ok(mut file) = std::fs::OpenOptions::new().write(true).create_new(true).open(std::env::var("EQ_OUT").unwrap()) {
+                use std::io::Write as _;
+                file.write_all(calls.to_string().as_bytes()).unwrap();
+            }
+        }
+        // A ticket run's server: its own board and desktop, then a desktop as someone else.
+        Ok("run") => {
+            let args: Vec<String> = std::env::var("EQ_BOARD_ARGS").unwrap().split(' ').map(str::to_owned).collect();
+            let arg = |flag: &str| args.iter().position(|a| a == flag).map(|i| args[i + 1].clone());
+            let (squad, member, home) = (arg("--squad").unwrap(), arg("--member").unwrap(), PathBuf::from(arg("--home").unwrap()));
+            let Some(run_arg) = arg("--run") else { return };
+            let run = equipe_core::protocol::rpc::RunKey::parse(&run_arg);
+            let socket = gateway::socket_path(&home);
+            let call = |member: &str, name: &str| ToolCall { run, squad: squad.clone(), member: member.to_owned(), name: name.into(), arguments: serde_json::json!({}) };
+            let calls = tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let board = gateway::call_tool(&socket, &call(&member, "board")).await.unwrap();
+                let desktop = gateway::call_desktop(&socket, &call(&member, "apps")).await.unwrap();
+                let desktop_as_pm = gateway::call_desktop(&socket, &call("pm", "apps")).await.unwrap();
+                serde_json::json!({ "member": member, "run": run_arg, "board": board, "desktop": desktop, "desktop_as_pm": desktop_as_pm })
+            });
+            let file = PathBuf::from(std::env::var("EQ_OUT").unwrap()).join(format!("{member}.json"));
+            if let Ok(mut file) = std::fs::OpenOptions::new().write(true).create_new(true).open(file) {
                 use std::io::Write as _;
                 file.write_all(calls.to_string().as_bytes()).unwrap();
             }

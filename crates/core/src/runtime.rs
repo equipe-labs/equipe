@@ -387,6 +387,15 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// A handle whose loop never answers — as a loop busy with a long step
+    /// (a merge, a worktree) doesn't — kept so while the second half lives:
+    /// for tests of what must not wait on the loop.
+    #[cfg(test)]
+    pub(crate) fn unanswered() -> (Handle, impl Sized) {
+        let (requests, held) = mpsc::unbounded_channel::<Request>();
+        (Handle { requests, pulse: watchdog::Pulse::new(), screens: std::sync::Arc::new(crate::screens::Screens::default()) }, held)
+    }
+
     /// The screens following each squad: a screen takes a seat as it says
     /// hello, and leaves with its connection.
     pub fn screens(&self) -> &std::sync::Arc<crate::screens::Screens> {
@@ -804,6 +813,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         finished_in_hands: HashSet::new(),
         host_pages: HashMap::new(),
         looked_first: HashMap::new(),
+        recent_asks: crate::logins::RecentAsks::default(),
         asking_cause: None,
         fill_waits: Default::default(),
         next_fill: 0,
@@ -1791,6 +1801,9 @@ struct Runtime {
     /// `(lane, site)` a member was told to look at its own page before handing
     /// it over for a sign-in it may already have: when.
     looked_first: HashMap<(String, String), u64>,
+    /// The sign-ins the person was asked for and hasn't answered, so a
+    /// member asking again for the same site waits on that one ask.
+    recent_asks: crate::logins::RecentAsks,
     /// The cause of the hand-off being asked for now, for what the person is told.
     asking_cause: Option<crate::logins::Cause>,
     /// equipe's fills of a kept login waiting for the browser host's answer, by token.
@@ -9229,6 +9242,11 @@ It starts when {owner} is free."
                 let _ = reply.send(ToolResult { text, is_error: false, image: None });
                 return;
             }
+            // The person was just asked for this sign-in and hasn't answered: one ask, not another.
+            if let Some(text) = self.ask_still_open(&call, url.as_deref(), &why) {
+                let _ = reply.send(ToolResult { text, is_error: false, image: None });
+                return;
+            }
             // First what equipe can do by itself: the login autopilot, or the
             // sign-in the person made before put back. Only then the person.
             if let Some(text) = self.try_kept_sign_in(&call, url.as_deref(), &why) {
@@ -10339,6 +10357,12 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 // whose browser shares the member's sign-ins — not the member's own
                 // conversation, whose browser it was and which knows nothing of it.
                 let asker = if by.is_none() { self.asked_by.remove(&lane).filter(|id| self.sessions.contains_key(id)) } else { None };
+                // Handed back: its member's next ask for a sign-in is a new one.
+                if by.is_none()
+                    && let Some((squad, key)) = lane.split_once('/')
+                {
+                    self.recent_asks.answered(squad, browser::member_of(key));
+                }
                 let session = if asked.is_some() { asker.or(session) } else { session };
                 // Handed back from a page that waited for them: passed — or, still
                 // waiting, left to the member, and not taken from it again.

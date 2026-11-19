@@ -147,6 +147,10 @@ pub struct RequestLine {
     pub to_first_merge: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to_production: Option<u64>,
+    /// A decision or an instruction answered: all its work finished and
+    /// none of it merged or deployed anything — production doesn't apply.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub decided: bool,
 }
 
 /// The flow of a window.
@@ -163,8 +167,11 @@ pub struct Report {
     pub to_start: Stat,
     /// Request → its first merge into main.
     pub to_first_merge: Stat,
-    /// Request → production (see the module's words).
+    /// Request → production (see the module's words); decided requests left out.
     pub to_production: Stat,
+    /// Requests answered with nothing to ship — a decision, an instruction —
+    /// apart from production ([`RequestLine::decided`]).
+    pub decided: usize,
     /// How many of `to_production` were a deploy — signal or ticket (the rest: last merge).
     pub production_by_deploy: usize,
     /// Every ticket of a request, its checks too.
@@ -347,7 +354,16 @@ pub fn summarize(input: &Input, since: u64, until: u64) -> Report {
         let deploy = signalled.or(deploy_ticket);
         let finished = work.iter().all(|id| tickets.get(id).is_none_or(|t| closed(&t.status) && (t.kind != "code" || t.status == "cancelled" || t.merged == Some(true))))
             && work.iter().any(|id| tickets.get(id).is_some_and(|t| t.status == "done"));
-        let live = if deploy.is_some() {
+        // Finished, and nothing of it merged, waits to merge or deployed: a
+        // decision or an instruction answered — its production is not pending.
+        let merged_any = ids.iter().any(|id| merged_at(events_of(*id)).is_some() || tickets.get(id).is_some_and(|t| t.merged == Some(true)));
+        let awaiting_merge = work.iter().any(|id| tickets.get(id).is_some_and(|t| t.kind == "code" && t.status == "done" && t.merged == Some(false)));
+        let all_closed = work.iter().all(|id| tickets.get(id).is_none_or(|t| closed(&t.status)));
+        let decided = deploy.is_none() && !merged_any && !awaiting_merge && all_closed;
+        let live = if decided {
+            report.decided += 1;
+            None
+        } else if deploy.is_some() {
             report.production_by_deploy += 1;
             deploy
         } else if finished {
@@ -381,6 +397,7 @@ pub fn summarize(input: &Input, since: u64, until: u64) -> Report {
             to_start: since_asked(start),
             to_first_merge: since_asked(first_merge),
             to_production: since_asked(live),
+            decided,
         };
         to_start.extend(line.to_start);
         to_merge.extend(line.to_first_merge);
@@ -395,6 +412,8 @@ pub fn summarize(input: &Input, since: u64, until: u64) -> Report {
     report.tickets_per_request = Stat::of(sizes);
     report.handoffs_per_request = Stat::of(handoffs);
     // The slowest: still open ones (measured to `until`) and the longest to production.
+    // A decided one never waited for production.
+    lines.retain(|l| !l.decided);
     lines.sort_by_key(|l| std::cmp::Reverse(l.to_production.unwrap_or(until.saturating_sub(l.asked_at).saturating_add(1))));
     report.slowest = lines.into_iter().take(5).collect();
 
@@ -686,6 +705,49 @@ mod tests {
         // One piece not seen live: as before, its last merge.
         input.live.remove(&3);
         assert_eq!(summarize(&input, 0, 24 * H).to_production.median, Some(185 * M));
+    }
+
+    /// "Go with B", "skip the test and ship it": words that decide rather
+    /// than ask for work. Its ticket finished with nothing merged: answered,
+    /// apart from production — never "not in production yet", never in the
+    /// production lead time.
+    #[test]
+    fn a_request_answered_with_nothing_merged_is_decided_not_waiting_for_production() {
+        let t0 = 10 * H;
+        let mut shipped = ticket(1, "frontend", t0 + M, "done", Some("feature"));
+        shipped.merged = Some(true);
+        let mut decision = ticket(2, "pm", t0 + 3 * H + M, "done", None);
+        decision.kind = "task".into();
+        decision.updated_at = t0 + 3 * H + 5 * M;
+        let open = ticket(3, "pm", t0 + 5 * H + M, "in_progress", None);
+        let mut waits_to_merge = ticket(4, "backend", t0 + 6 * H + M, "done", None);
+        waits_to_merge.merged = Some(false);
+        let input = Input {
+            tickets: vec![shipped, decision, open, waits_to_merge],
+            events: vec![event(1, t0 + 2 * M, "assigned", "frontend"), event(1, t0 + 50 * M, "merged", "main"), event(2, t0 + 3 * H + 2 * M, "assigned", "pm")],
+            requests: Some(vec![
+                RequestRow { id: 1, title: "New input box".into(), asked_at: t0, tickets: vec![(1, "asked".into())] },
+                RequestRow { id: 2, title: "Go with B".into(), asked_at: t0 + 3 * H, tickets: vec![(2, "made".into())] },
+                RequestRow { id: 3, title: "Still being worked".into(), asked_at: t0 + 5 * H, tickets: vec![(3, "made".into())] },
+                RequestRow { id: 4, title: "Accepted, not merged yet".into(), asked_at: t0 + 6 * H, tickets: vec![(4, "made".into())] },
+            ]),
+            ..Default::default()
+        };
+        let r = summarize(&input, 0, 24 * H);
+        assert_eq!(r.requests, 4);
+        assert_eq!(r.decided, 1, "only the decision: open work and code waiting to merge may still ship");
+        assert_eq!((r.to_production.count, r.to_production.median), (1, Some(50 * M)), "the decision's 5 minutes aren't a production time");
+        assert!(!r.slowest.iter().any(|l| l.title == "Go with B"), "never listed as waiting for production: {:?}", r.slowest);
+        assert!(r.slowest.iter().any(|l| l.title == "Still being worked" && l.to_production.is_none() && !l.decided));
+        // A deploy ticket done is production, not a decision ("ship it now").
+        let mut deploy = ticket(5, "pm", t0 + 8 * H + M, "done", Some("deploy"));
+        deploy.kind = "action".into();
+        deploy.updated_at = t0 + 8 * H + 30 * M;
+        let mut with_deploy = input.clone();
+        with_deploy.tickets.push(deploy);
+        with_deploy.requests.as_mut().unwrap().push(RequestRow { id: 5, title: "Ship it now".into(), asked_at: t0 + 8 * H, tickets: vec![(5, "made".into())] });
+        let r = summarize(&with_deploy, 0, 24 * H);
+        assert_eq!((r.decided, r.production_by_deploy, r.to_production.count), (1, 1, 2));
     }
 
     #[test]

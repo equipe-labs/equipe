@@ -123,10 +123,48 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
             ));
         }
         self.login_record(&squad, Entry::new(now_secs(), &site, &call.member, Kind::Handoff, Some(cause), None));
+        // Its sign-in is one ask until the person answers it.
+        if cause.is_shared_step() {
+            self.recent_asks.asked(&squad, &call.member, &site, now_secs());
+        }
         // Whoever asked carries on when the person is done: a run, though the lane is its member's.
         self.asked_by.insert(lane.clone(), id);
         if cause.is_shared_step() && !site.is_empty() {
             self.asked_site.insert(lane, site);
+        }
+        None
+    }
+
+    /// A member asking for a sign-in the person was just asked for by it, to
+    /// the same site: the person isn't asked again ([`logins::RecentAsks`]).
+    /// `Some(text)`: still open with them — wait on it; or just handed back
+    /// and not yet seen through — look at the page first, once.
+    pub(super) fn ask_still_open(&mut self, call: &ToolCall, url: Option<&str>, why: &str) -> Option<String> {
+        let id = self.caller_id(call)?;
+        let (squad, key) = self.browser_key(id)?;
+        let page = self.lane_page(&format!("{squad}/{key}"));
+        let lane = self.member_id(&squad, &call.member).and_then(|m| self.browser_key(m)).map_or_else(|| format!("{squad}/{key}"), |(s, k)| format!("{s}/{k}"));
+        let at = url.map(str::to_owned).or_else(|| page.as_ref().map(|p| p.url.clone())).unwrap_or_default();
+        let site = vault::site_of(&at);
+        if site.is_empty() {
+            return None;
+        }
+        // A CAPTCHA or a consent screen can come back on its own: only a sign-in, or the step after it, is one ask.
+        let check = page.as_ref().filter(|p| vault::serves(&site, &p.url)).and_then(|p| p.check);
+        if !logins::cause_of_handoff(why, Some(&at), check, true).is_shared_step() {
+            return None;
+        }
+        if let Some(ago) = self.recent_asks.open(&squad, &call.member, &site, now_secs()) {
+            crate::daemon_log!("equipe: {squad}: {} asked again for a sign-in to {site} {ago}s after the person was asked; it waits on that ask", call.member);
+            return Some(logins::still_asked(&site, ago));
+        }
+        let back = self.verify_back.get(&lane).is_some_and(|(asked, _)| vault::serves(asked, &site));
+        let told = (lane.clone(), format!("{site}#back"));
+        let now = now_secs();
+        self.looked_first.retain(|_, at| now.saturating_sub(*at) < LOOK_FIRST_AGAIN);
+        if back && !self.looked_first.contains_key(&told) {
+            self.looked_first.insert(told, now);
+            return Some(logins::just_handed_back(&site));
         }
         None
     }
@@ -179,6 +217,7 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
             logins::Back::SignedIn { on } => on,
         };
         self.verify_back.remove(lane);
+        self.recent_asks.signed_in(&site);
         let Some((squad, key)) = lane.split_once('/') else { return };
         let (squad, member, profile) = (squad.to_owned(), browser::member_of(key).to_owned(), browser::split_profile(key).1.unwrap_or_default().to_owned());
         crate::daemon_log!("equipe: {member}'s browser is signed in to {site} after the person's hand-off");
@@ -281,6 +320,7 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
     /// record, members' pages waiting on the site reloaded, and keeping the
     /// login offered. Whether a card now asks.
     fn person_sign_in_finished(&mut self, was: &logins::SigningIn) -> bool {
+        self.recent_asks.signed_in(&was.site);
         // The record is a squad's journal; the person's own tab belongs to none, so the first squad keeps it.
         if let Some(squad) = self.journals.keys().min().cloned() {
             self.login_record(&squad, Entry::new(now_secs(), &was.site, "", Kind::SignedIn, None, Some(BY_PERSON)));
@@ -311,6 +351,7 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         // Seen through in their hands: nothing to look at again once it is handed back.
         self.finished_in_hands.insert(lane.to_owned());
         self.verify_back.remove(lane);
+        self.recent_asks.signed_in(&was.site);
         self.login_record(&squad, Entry::new(now_secs(), &was.site, &member, Kind::SignedIn, None, Some(BY_PERSON)));
         // Kept for the squad, in the profile it was made in.
         self.collect_sign_in(vec![squad.clone()], browser::split_profile(key).1.unwrap_or_default(), &was.site);

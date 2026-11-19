@@ -1539,6 +1539,7 @@
   "flow.slowest": "最も時間のかかった依頼:",
   "flow.slow_row": "  {title}: {live} · チケット {tickets} · 引き継ぎ {handoffs}",
   "flow.not_live": "まだ本番前",
+  "flow.decided": "回答・決定のみ（出荷する作業なし）: {count} 件（本番の集計外）",
   "usage.bad_compare": "--compare {compare} を読み取れません。7d、24h、2w のような長さを指定してください。",
   "usage.change.tokens": "トークン",
   "usage.change.turns": "ターン",

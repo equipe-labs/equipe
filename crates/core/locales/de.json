@@ -879,6 +879,7 @@
   "request.waits.one": "{count} Sache wartet auf dich ({list})",
   "request.waits.other": "{count} Sachen warten auf dich ({list})",
   "request.all_done": "alles erledigt",
+  "request.decided": "beantwortet — nichts auszuliefern",
   "request.nothing_yet": "noch nichts auf dem Board",
   "request.uncovered": "noch kein Ticket dafür — der PM weiß Bescheid",
   "request.closed": "geschlossen: {why}",

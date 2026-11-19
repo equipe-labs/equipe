@@ -872,6 +872,7 @@
   "request.more.other": "외 {count}개",
   "request.waits.other": "확인이 필요한 것 {count}개 ({list})",
   "request.all_done": "모두 완료",
+  "request.decided": "답변 완료 — 배포할 작업 없음",
   "request.nothing_yet": "아직 보드에 없어요",
   "request.uncovered": "아직 이 요청을 맡은 티켓이 없어요 — PM에게 알렸어요",
   "request.closed": "닫힘: {why}",

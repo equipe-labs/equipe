@@ -872,6 +872,7 @@
   "request.more.other": "ほか {count} 件",
   "request.waits.other": "あなたの確認待ち {count} 件（{list}）",
   "request.all_done": "すべて完了",
+  "request.decided": "回答済み — 出荷する作業なし",
   "request.nothing_yet": "まだボードにありません",
   "request.uncovered": "まだこの依頼を担うチケットがありません — PMに伝えました",
   "request.closed": "クローズ: {why}",

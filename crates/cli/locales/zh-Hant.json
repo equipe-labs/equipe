@@ -1539,6 +1539,7 @@
   "flow.slowest": "最慢的請求：",
   "flow.slow_row": "  {title}：{live} · {tickets} 個工單 · {handoffs} 次交接",
   "flow.not_live": "尚未上線",
+  "flow.decided": "僅答覆或決定、無需上線：{count} 個（不計入上線時間）",
   "usage.bad_compare": "無法識別 --compare {compare}:請使用 7d、24h、2w 這樣的時長。",
   "usage.change.tokens": "token",
   "usage.change.turns": "輪次",

@@ -675,6 +675,84 @@ pub fn retro_line(stats: &Stats) -> Option<String> {
     Some(line)
 }
 
+// ── one ask, not several ──
+
+/// How long a sign-in the person was asked for stays the one ask for that
+/// member and site: asked again meanwhile, the member waits on it rather
+/// than the person getting another window, panel or notice.
+pub const ASK_COALESCE: u64 = 3 * 60;
+
+/// The sign-ins the person was asked for and hasn't answered yet, by squad,
+/// member and site, with when. A session that expired mid-step made a member
+/// ask for the same site three times in ninety seconds; the person now gets
+/// one ask, and the member is told it is still open ([`RecentAsks::open`]).
+#[derive(Debug, Default)]
+pub struct RecentAsks {
+    asks: std::collections::HashMap<(String, String, String), u64>,
+}
+
+impl RecentAsks {
+    /// The person was just asked to sign `member` of `squad` in to `site`.
+    pub fn asked(&mut self, squad: &str, member: &str, site: &str, now: u64) {
+        if site.is_empty() {
+            return;
+        }
+        self.asks.retain(|_, at| now.saturating_sub(*at) < ASK_COALESCE);
+        self.asks.insert((squad.to_owned(), member.to_owned(), site.to_owned()), now);
+    }
+
+    /// How long ago the person was asked to sign `member` in to `site` — a
+    /// site that one serves, or one that serves it — when that ask is still
+    /// open and recent: `None` once it was answered or is older than
+    /// [`ASK_COALESCE`].
+    pub fn open(&self, squad: &str, member: &str, site: &str, now: u64) -> Option<u64> {
+        if site.is_empty() {
+            return None;
+        }
+        self.asks
+            .iter()
+            .filter(|((s, m, asked), _)| s == squad && m == member && crate::vault::serves(asked, site))
+            .map(|(_, at)| now.saturating_sub(*at))
+            .filter(|ago| *ago < ASK_COALESCE)
+            .min()
+    }
+
+    /// The person answered `member`'s asks — handed its browser back, or the
+    /// sign-in finished: the next ask is a new one.
+    pub fn answered(&mut self, squad: &str, member: &str) {
+        self.asks.retain(|(s, m, _), _| !(s == squad && m == member));
+    }
+
+    /// A sign-in to `site` finished in the browser every member shares: no
+    /// ask for it is open any more, whoever asked.
+    pub fn signed_in(&mut self, site: &str) {
+        if site.is_empty() {
+            return;
+        }
+        self.asks.retain(|(_, _, asked), _| !crate::vault::serves(asked, site));
+    }
+}
+
+/// What a member asking again for a sign-in still open is told, `ago`
+/// seconds after the person was asked.
+pub fn still_asked(site: &str, ago: u64) -> String {
+    format!(
+        "The person was asked to sign in to {site} for you {ago}s ago, and that ask is still open with them: don't ask again. \
+End your turn saying you wait for that sign-in — you get a message when they hand your browser back, and carry on then."
+    )
+}
+
+/// What a member asking again right after the person handed its browser
+/// back from a sign-in to `site` is told: equipe is still seeing whether
+/// it went through.
+pub fn just_handed_back(site: &str) -> String {
+    format!(
+        "The person just handed your browser back from signing in to {site}, and equipe is still checking that it went through: \
+reload your page there and take a snapshot before asking again. Every member shares the browser's sign-ins, so you are most \
+likely signed in. Only if the page still asks you to sign in, call `show_my_browser` again."
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -989,5 +1067,34 @@ mod tests {
         for site in ["github.com", "accounts.google.com", "localhost.example.com", "128.0.0.1"] {
             assert!(!is_local_page(site), "{site}");
         }
+    }
+
+    #[test]
+    fn a_member_asking_again_for_the_same_sign_in_waits_on_the_one_ask() {
+        let mut asks = RecentAsks::default();
+        let t = 1_000_000;
+        assert_eq!(asks.open("acme", "qa", "app.example.com", t), None, "nothing asked yet");
+        asks.asked("acme", "qa", "app.example.com", t);
+        // The session expired mid-step: asked again 40s and 85s later, the same ask.
+        assert_eq!(asks.open("acme", "qa", "app.example.com", t + 40), Some(40));
+        assert_eq!(asks.open("acme", "qa", "login.app.example.com", t + 85), Some(85), "its sign-in page's host is the same site");
+        // Another member, another site, another squad: their own asks.
+        assert_eq!(asks.open("acme", "frontend", "app.example.com", t + 40), None);
+        assert_eq!(asks.open("acme", "qa", "github.com", t + 40), None);
+        assert_eq!(asks.open("other", "qa", "app.example.com", t + 40), None);
+        // Past the window, a new ask.
+        assert_eq!(asks.open("acme", "qa", "app.example.com", t + ASK_COALESCE), None);
+        // Handed back, or signed in: the next ask is a new one.
+        asks.asked("acme", "qa", "app.example.com", t + 200);
+        asks.answered("acme", "qa");
+        assert_eq!(asks.open("acme", "qa", "app.example.com", t + 210), None);
+        asks.asked("acme", "qa", "app.example.com", t + 300);
+        asks.asked("acme", "frontend", "app.example.com", t + 300);
+        asks.signed_in("app.example.com");
+        assert_eq!((asks.open("acme", "qa", "app.example.com", t + 310), asks.open("acme", "frontend", "app.example.com", t + 310)), (None, None));
+        // An address without a site is never coalesced.
+        asks.asked("acme", "qa", "", t);
+        assert_eq!(asks.open("acme", "qa", "", t + 1), None);
+        assert!(still_asked("app.example.com", 40).contains("don't ask again") && just_handed_back("app.example.com").contains("reload your page"));
     }
 }

@@ -1562,6 +1562,7 @@
   "flow.slowest": "Peticiones más lentas:",
   "flow.slow_row": "  {title}: {live} · {tickets} tickets · {handoffs} traspasos",
   "flow.not_live": "aún no en producción",
+  "flow.decided": "Respondidas o decididas, nada que publicar: {count} (fuera del tiempo hasta producción)",
   "usage.bad_compare": "No se puede leer --compare {compare}: indica una duración como 7d, 24h o 2w.",
   "usage.change.tokens": "tokens",
   "usage.change.turns": "turnos",
