@@ -4669,7 +4669,11 @@ async fn asking_again_for_a_sign_in_still_open_makes_no_second_ask() {
     let why = "Sign in to the app: the session expired";
     let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": why })).await;
     assert!(!said.is_error && said.text.contains("browser panel"), "{said:?}");
-    until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    // The notice, and the host's word that the browser is in the person's hands, in either order.
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
+    if !seen.iter().any(|e| matches!(e, Event::BrowserControl { by: Some(_), .. })) {
+        until(&mut events, |e| matches!(e, Event::BrowserControl { by: Some(_), .. })).await;
+    }
 
     // Asked again at once, and again: the same ask, still open with the person.
     for _ in 0..2 {
