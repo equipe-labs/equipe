@@ -1615,6 +1615,36 @@ mod binding_tests {
         assert_eq!(may_act_as(Origin::Person, None, "acme", "lee"), Ok(()));
         assert_eq!(may_act_as(Origin::Daemon, None, "acme", "lee"), Ok(()));
     }
+
+    /// A burst of "doesn't come from a turn equipe runs" refusals — board,
+    /// desktop and outside servers at once, for several members and a
+    /// ticket run — came while the loop spent 19s on a worktree: the binding
+    /// went through the loop then. A run's engine, bound as its member as its
+    /// turn starts, is known at once with the loop busy, and its desktop and
+    /// board calls act as that member; once its turn ends, nothing is bound.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_runs_engine_is_bound_to_its_member_while_the_loop_is_busy() {
+        let (core, _busy) = crate::runtime::test_support::unanswered();
+        // The run's engine: a child of this process, as every engine is the daemon's.
+        let mut engine = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let pid = engine.id();
+        // A run of qa binds as qa — a run's member is its member's (`runtime::session_member`).
+        let qa = MemberRef { squad: "acme".into(), member: "qa".into() };
+        let bound = crate::engine_bind::bind(pid, qa.clone());
+        let waited = std::time::Instant::now();
+        let who = bound_member(&core, Origin::Member, Some(pid)).await;
+        assert_eq!(who.as_ref(), Some(&qa));
+        assert!(waited.elapsed() < Duration::from_secs(2), "never waits on the busy loop: {:?}", waited.elapsed());
+        assert_eq!(may_act_as(Origin::Member, who.as_ref(), "acme", "qa"), Ok(()), "its desktop and board calls go through");
+        assert!(may_act_as(Origin::Member, who.as_ref(), "acme", "pm").is_err(), "never another member's");
+        // Its turn over: nothing is bound to its engine any more.
+        drop(bound);
+        assert_eq!(crate::engine_bind::member_of(pid), None);
+        assert!(may_act_as(Origin::Member, None, "acme", "qa").unwrap_err().contains("doesn't come from a turn"));
+        let _ = engine.kill();
+        let _ = engine.wait();
+    }
 }
 
 #[cfg(test)]

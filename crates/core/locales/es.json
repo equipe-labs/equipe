@@ -879,6 +879,7 @@
   "request.waits.one": "{count} cosa te espera ({list})",
   "request.waits.other": "{count} cosas te esperan ({list})",
   "request.all_done": "todo listo",
+  "request.decided": "respondido — nada que publicar",
   "request.nothing_yet": "aún nada en el tablero",
   "request.uncovered": "aún no hay ningún ticket para ella — el PM está avisado",
   "request.closed": "cerrada: {why}",

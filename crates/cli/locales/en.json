@@ -1562,6 +1562,7 @@
   "flow.slowest": "Slowest requests:",
   "flow.slow_row": "  {title}: {live} · {tickets} tickets · {handoffs} hand-offs",
   "flow.not_live": "not in production yet",
+  "flow.decided": "Answered or decided, nothing to ship: {count} (not counted in production)",
   "usage.bad_compare": "Couldn't read --compare {compare}: give a length like 7d, 24h or 2w.",
   "usage.change.tokens": "tokens",
   "usage.change.turns": "turns",

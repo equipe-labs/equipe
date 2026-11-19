@@ -117,6 +117,13 @@ made the tickets; baton passes and self-landed work; the slowest requests.
 A journal from before requests were kept has them worked out from the
 person's words and when tickets were made, and the report says which.
 
+A request answered with nothing to ship — a decision or an instruction
+("go with B", "skip that test and ship it") whose tickets all finished with
+nothing merged, waiting to merge or deployed — is *decided*: counted apart
+("Answered or decided, nothing to ship"), left out of request → production
+and of the slowest list, and its status line says "answered — nothing to
+ship" rather than suggesting it waits for production.
+
 ### Before
 
 A read-only copy of a production squad's journal, 48 hours to 2026-11-18
