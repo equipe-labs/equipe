@@ -15,6 +15,7 @@ pub mod autonomy;
 pub mod autopilot;
 pub mod awake;
 pub mod bless;
+pub mod blocked_on;
 pub mod board;
 pub mod briefs;
 pub mod by_words;

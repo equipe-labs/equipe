@@ -55,7 +55,7 @@ impl Runtime {
         crate::daemon_log!("equipe: {squad}: T-{ticket} stopped before another turn: {}", card.why());
         self.guards.turns.remove(&key);
         if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) {
-            work.end.handed_back = Some(turn_end::HandBack { reason: turn_end::Reason::Budget, tickets: Vec::new(), suggest: None, note: card.record_line() });
+            work.end.handed_back = Some(turn_end::HandBack { reason: turn_end::Reason::Budget, tickets: Vec::new(), suggest: None, note: card.record_line(), blocked_on: None });
         }
         self.guards.cards.insert(key, card);
         self.end_work(id, WorkEnd::HandedBack);

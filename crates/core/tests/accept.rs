@@ -923,3 +923,89 @@ async fn a_go_live_command_that_fails_reaches_the_pm_with_why() {
     );
     handle.shutdown().await;
 }
+
+// ── blocked on work that doesn't exist yet ──
+
+/// The ticket `id` as the board has it.
+async fn ticket_of(handle: &Handle, id: u32) -> equipe_core::protocol::Ticket {
+    handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == id).expect("on the board")
+}
+
+/// Wait until ticket `id` is `status`.
+async fn until_status(handle: &Handle, id: u32, want: TicketStatus) -> equipe_core::protocol::Ticket {
+    for _ in 0..600 {
+        let t = ticket_of(handle, id).await;
+        if t.status == want {
+            return t;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("T-{id} never became {want:?}: {:?}", ticket_of(handle, id).await);
+}
+
+/// A frontend ticket needs a server endpoint nobody made: its member names
+/// the missing piece, and equipe puts it on the board for the backend — the
+/// frontend ticket waits on it, back to its member once it lands, passed to
+/// nobody meanwhile.
+#[tokio::test]
+async fn a_hand_back_naming_the_missing_piece_makes_its_ticket_and_parks_the_blocked_one() {
+    let (handle, mut events, _repo) = landing_squad_with(None).await;
+    let made = tool(&handle, "pm", "create_ticket", json!({ "title": "Admin-only MCP delete", "body": "-", "owner": "frontend", "kind": "code" })).await;
+    assert!(!made.is_error, "{made:?}");
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    // A role the squad doesn't have is refused, with what to do instead.
+    let nobody = tool_on(&handle, "frontend", 1, "hand_back", json!({ "reason": "cannot", "note": "-", "blocked_on": { "role": "data", "what": "Usage table" } })).await;
+    assert!(nobody.is_error && nobody.text.contains("Nobody on the squad is data"), "{nobody:?}");
+    let back = tool_on(
+        &handle,
+        "frontend",
+        1,
+        "hand_back",
+        json!({ "reason": "cannot", "note": "The server contract has no such endpoint.", "blocked_on": { "role": "backend", "what": "Read-only admin status endpoint after a lost response" } }),
+    )
+    .await;
+    assert!(!back.is_error && back.text.contains("waits on what is missing"), "{back:?}");
+    let blocked = until_status(&handle, 1, TicketStatus::Todo).await;
+    let board = handle.snapshot("acme").await.tickets;
+    let prerequisite = board.iter().find(|t| t.title == "Read-only admin status endpoint after a lost response").expect("the missing piece is on the board");
+    assert_eq!(prerequisite.owner.as_deref(), Some("backend"));
+    assert!(prerequisite.body.contains("Unblocks T-1") && prerequisite.body.contains("no such endpoint"), "{}", prerequisite.body);
+    assert_eq!(blocked.depends_on, vec![prerequisite.id], "the blocked ticket waits on it");
+    assert_eq!((blocked.owner.as_deref(), blocked.assignee.as_deref()), (Some("frontend"), None), "and goes back to frontend once it lands");
+    // The backend takes the missing piece; the blocked ticket stays parked.
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket, .. } if *ticket == prerequisite.id)).await;
+    assert_eq!(ticket_of(&handle, 1).await.status, TicketStatus::Todo);
+    assert_eq!(board.len(), 2, "one ticket made, nothing else");
+    handle.shutdown().await;
+}
+
+/// The relay seen in production, caught by its notes: passed on, then
+/// passed on again with a note that the endpoint doesn't exist — the second
+/// isn't passed. The PM gets one card; its yes makes the missing ticket and
+/// parks the blocked one on it.
+#[tokio::test]
+async fn a_second_pass_saying_something_is_missing_goes_to_the_pm_not_to_another_member() {
+    let (handle, mut events, _repo) = landing_squad_with(None).await;
+    let made = tool(&handle, "pm", "create_ticket", json!({ "title": "Admin-only MCP delete", "body": "-", "owner": "frontend", "kind": "code" })).await;
+    assert!(!made.is_error, "{made:?}");
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let first = tool_on(&handle, "frontend", 1, "pass_baton", json!({ "to": "backend", "note": "The server contract has no such endpoint; can you check?" })).await;
+    assert!(!first.is_error && first.text.contains("goes to backend"), "the first pass is a pass: {first:?}");
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, of: Some(3), .. })).await;
+    let second = tool_on(&handle, "backend", 1, "pass_baton", json!({ "to": "frontend", "note": "That endpoint doesn't exist in the API contract either." })).await;
+    assert!(!second.is_error && second.text.contains("isn't passed on") && second.text.contains("blocked_on"), "{second:?}");
+    let parked = until_status(&handle, 1, TicketStatus::Proposed).await;
+    assert!(parked.note.as_deref().is_some_and(|n| n.contains("same missing piece")), "{parked:?}");
+    assert_eq!(parked.owner.as_deref(), Some("backend"), "not passed back to frontend");
+    // The PM's yes: the missing ticket made, the blocked one waiting on it.
+    let yes = tool(&handle, "pm", "update_ticket", json!({ "id": 1, "blocked_on": { "role": "backend", "what": "Admin status endpoint, read-only" } })).await;
+    assert!(!yes.is_error && yes.text.contains("Made T-2") && yes.text.contains("T-1 waits on it"), "{yes:?}");
+    let blocked = ticket_of(&handle, 1).await;
+    assert_eq!((blocked.status, blocked.depends_on.clone()), (TicketStatus::Todo, vec![2]));
+    assert_eq!(ticket_of(&handle, 2).await.owner.as_deref(), Some("backend"));
+    // Asked again, the one on the board is found, not another made.
+    let again = tool(&handle, "pm", "update_ticket", json!({ "id": 1, "blocked_on": { "role": "backend", "what": "Admin status endpoint, read-only" } })).await;
+    assert!(again.text.contains("Found T-2"), "{again:?}");
+    assert_eq!(handle.snapshot("acme").await.tickets.len(), 2);
+    handle.shutdown().await;
+}
