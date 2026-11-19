@@ -177,7 +177,7 @@ fn contains_term(text: &str, term: &str) -> bool {
         let end = start + term.len();
         let before = text[..start].chars().next_back();
         let after = text[end..].chars().next();
-        // Next to a letter of another script ("API가") it is a word all the same.
+        // Next to a letter of a script without spaces (a particle right after "API") it is a word all the same.
         let edge = |c: Option<char>| c.is_none_or(|c| !(c.is_ascii_digit() || is_latin(c)));
         if edge(before) && edge(after) {
             return true;
