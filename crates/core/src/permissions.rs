@@ -175,6 +175,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::SignInCancel { .. }
         | C::SignInCode { .. }
         | C::SignOut { .. }
+        | C::SignOutAfterTurns { .. }
+        | C::SignOutCancel { .. }
         | C::InstallEngine { .. }
         | C::MoveIntoLogin => true,
         // Pairing a phone: a member must not pair its own device in, nor unpair

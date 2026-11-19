@@ -5,7 +5,7 @@
 
 use std::time::Instant;
 
-use equipe_core::protocol::{Command, Engine, EngineState, ProviderKey, ProviderProblem, ProviderStatus, ProviderTest};
+use equipe_core::protocol::{Command, Engine, EngineState, EngineStatus, ProviderKey, ProviderProblem, ProviderStatus, ProviderTest};
 use equipe_core::t;
 use gpui_kit::component::input::Input;
 use gpui_kit::component::{h_flex, v_flex};
@@ -22,7 +22,7 @@ use crate::ui::{self, Kind};
 use crate::{Screen, Shell};
 
 /// Focus slots per card: its buttons, in the order Tab reaches them.
-pub const KEYS: usize = 5;
+pub const KEYS: usize = 8;
 
 /// Where the daemon is, as a card says it: "this Mac", or the host.
 fn host(shell: &Shell) -> String {
@@ -104,6 +104,8 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
         None if shell.engines.no_answer(now) || !connected => (Some(Tone::Unknown), t!("engines.unknown").to_owned()),
         None => (None, t!("engines.checking").to_owned()),
     };
+    // "Check again" pressed: the pill says it is looking until the daemon answers.
+    let (tone, said) = if shell.engines.checking_again(engine, now) { (None, t!("engines.checking").to_owned()) } else { (tone, said) };
     let signed_in = status.is_some_and(|s| s.state == EngineState::SignedIn);
     let installed = status.is_some_and(|s| s.state != EngineState::NotInstalled);
 
@@ -159,7 +161,10 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
         let switch = button(shell, at, 1, "engine-switch-account", Kind::Ghost, t!("engines.switch_account"))
             .tip(tip, None)
             .disabled(!offers.switch)
-            .on_click(cx.listener(move |this, _, window, cx| this.engine_sign_in_any(engine, window, cx)));
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.engines.ask_switch(engine);
+                cx.notify();
+            }));
         lines.push(
             Line::new(t!("engines.row_account"), "")
                 .words(format!("{words} account plan email switch"))
@@ -212,8 +217,8 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
     }
 
     if let Some(status) = status {
-        if let Some(detail) = status.detail.as_ref().filter(|_| status.state == EngineState::Unknown) {
-            lines.push(Line::new(t!("engines.unknown"), detail.clone()).warn(true).words(words.clone()));
+        if status.state == EngineState::Unknown {
+            lines.push(unreadable(shell, at, platform, Some(status), &card, now, cx).words(words.clone()));
         }
         let members = engines::members_line(status, &shell.model.squad).unwrap_or_else(|| t!("engines.members_none").to_owned());
         lines.push(Line::new(t!("engines.row_members"), "").words(format!("{words} member")).control(value(p, members)));
@@ -231,10 +236,48 @@ fn card(shell: &Shell, at: usize, platform: &'static Platform, now: Instant, cx:
         if status.legacy {
             lines.push(Line::new(t!("engines.legacy"), t!("engines.legacy_desc")).words(format!("{words} legacy equipe login")).control(command_chip(p, SharedString::from(format!("engine-legacy-{at}")), "equipe logout")));
         }
-    } else if shell.engines.no_answer(now) {
-        lines.push(Line::new(t!("engines.no_answer"), t!("engines.no_answer_desc")).warn(true).words(words).control(command_chip(p, SharedString::from(format!("engine-restart-{at}")), "equipe daemon restart --when-idle")));
+    } else if shell.engines.no_answer(now) && connected {
+        let again = button(shell, at, 5, "engine-check-again", Kind::Secondary, t!("engines.check_again")).icon(Icon::Retry).disabled(shell.engines.checking_again(engine, now)).on_click(cx.listener(move |this, _, _, cx| this.engine_check_again(engine, cx)));
+        let restart = command_chip(p, SharedString::from(format!("engine-restart-{at}")), "equipe daemon restart --when-idle");
+        lines.push(Line::new(t!("engines.no_answer"), t!("engines.no_answer_desc")).warn(true).words(words).control(h_flex().gap_3().items_center().child(again).child(restart)));
+    } else if !connected {
+        // The window can't ask: said, with the way to look again once it can.
+        lines.push(unreadable(shell, at, platform, None, &card, now, cx).words(words));
     }
     Section::new("", lines)
+}
+
+/// "Couldn't check", with why and what can be done: look again, and — when
+/// the tool answered but not usefully — sign out or use another account.
+fn unreadable(shell: &Shell, at: usize, platform: &'static Platform, status: Option<&EngineStatus>, card: &Card, now: Instant, cx: &mut Context<Shell>) -> Line {
+    let p = shell.palette;
+    let engine = platform.engine;
+    let connected = matches!(shell.model.conn, Conn::Connected { .. });
+    let checking = shell.engines.checking_again(engine, now);
+    let rec = engines::recover(card, connected, checking);
+    let again = button(shell, at, 5, "engine-check-again", Kind::Secondary, if checking { t!("engines.checking") } else { t!("engines.check_again") })
+        .icon(Icon::Retry)
+        .disabled(!rec.recheck)
+        .on_click(cx.listener(move |this, _, _, cx| this.engine_check_again(engine, cx)));
+    let mut controls = h_flex().gap_2().items_center().child(again);
+    // Without a status (the window can't reach the daemon) there is no login to manage.
+    if status.is_some() {
+        controls = controls
+            .child(button(shell, at, 6, "engine-unknown-sign-out", Kind::Ghost, t!("engines.sign_out")).disabled(!rec.manage).on_click(cx.listener(move |this, _, _, cx| {
+                this.engines.ask_sign_out(engine);
+                cx.notify();
+            })))
+            .child(button(shell, at, 7, "engine-unknown-switch", Kind::Ghost, t!("engines.switch_account")).disabled(!rec.manage).on_click(cx.listener(move |this, _, _, cx| {
+                this.engines.ask_switch(engine);
+                cx.notify();
+            })));
+    }
+    let line = Line::new(t!("engines.unknown"), engines::unreadable_words(status, platform, &host(shell))).label_el(h_flex().gap_2().items_center().child(icon(Icon::Warning, ICON_SM, p.amber)).child(t!("engines.unknown"))).warn(true).control(controls);
+    // The tool's own words, quieter, under the advice.
+    match status.and_then(|s| s.detail.as_ref()).filter(|d| !d.is_empty()) {
+        Some(detail) => line.below(div().font_family(MONO).text_size(px(11.5)).line_height(px(17.)).text_color(p.muted).child(detail.clone())),
+        None => line,
+    }
 }
 
 /// NVIDIA's green, for Nebius Token Factory's tile.
@@ -525,28 +568,68 @@ fn progress(shell: &Shell, at: usize, platform: &'static Platform, card: &Card, 
                 this.engines.keep(engine);
                 cx.notify();
             }));
-            let retry = button(shell, at, 2, "engine-retry", Kind::Secondary, t!("engines.retry")).icon(Icon::Retry).on_click(cx.listener(move |this, _, window, cx| this.engine_sign_in_any(engine, window, cx)));
-            let label = h_flex().gap_2().items_center().child(icon(Icon::Warning, ICON_SM, p.danger())).child(t!("engines.failed_title"));
-            let line = Line::new(t!("engines.failed_title"), desc).label_el(label).warn(true).control(controls.child(dismiss).child(retry));
+            // A sign-out that failed is tried again as a sign-out, asked once more.
+            let signing_out = matches!(problem, engines::Problem::SignOutFailed);
+            let retry = button(shell, at, 2, "engine-retry", Kind::Secondary, t!("engines.retry")).icon(Icon::Retry).on_click(cx.listener(move |this, _, window, cx| {
+                if signing_out {
+                    this.engines.keep(engine);
+                    this.engines.ask_sign_out(engine);
+                    cx.notify();
+                } else {
+                    this.engine_sign_in_any(engine, window, cx)
+                }
+            }));
+            let title = if signing_out { t!("engines.sign_out_failed_title") } else { t!("engines.failed_title") };
+            let label = h_flex().gap_2().items_center().child(icon(Icon::Warning, ICON_SM, p.danger())).child(title.clone());
+            let line = Line::new(title, desc).label_el(label).warn(true).control(controls.child(dismiss).child(retry));
             match said {
                 Some(said) => line.below(said),
                 None => line,
             }
         }
         Card::ConfirmSignOut => {
+            let switching = shell.engines.switching(engine);
+            let status = shell.engines.status(engine);
             let keep = button(shell, at, 2, "engine-keep", Kind::Ghost, t!("engines.keep")).on_click(cx.listener(move |this, _, _, cx| {
                 this.engines.keep(engine);
                 cx.notify();
             }));
-            let out = button(shell, at, 3, "engine-sign-out-sure", Kind::Danger, t!("engines.sign_out")).on_click(cx.listener(move |this, _, _, cx| this.engine_sign_out(engine, cx)));
-            let mut desc = t!("engines.confirm_sign_out_desc", host = host(shell), tool = platform.tool, name = platform.name);
-            // Who is working on it now, so the person knows whose work this stops.
-            if let Some(members) = shell.engines.status(engine).and_then(|s| engines::members_line(s, &shell.model.squad)) {
-                desc = format!("{desc} {}", t!("engines.confirm_sign_out_members", members = members));
+            let now_label = if switching { t!("engines.switch_now") } else { t!("engines.sign_out_now") };
+            let mut desc = if switching {
+                t!("engines.confirm_switch_desc", host = host(shell), tool = platform.tool, name = platform.name)
+            } else {
+                t!("engines.confirm_sign_out_desc", host = host(shell), tool = platform.tool, name = platform.name)
+            };
+            // Who is mid-turn on it, so the person knows whose turn this ends, and chooses when.
+            let working = status.map(|s| (s.working.len(), engines::working_line(s, &shell.model.squad))).and_then(|(n, names)| names.map(|names| (n, names)));
+            let mut buttons = h_flex().gap_2().items_center().child(keep);
+            if let Some((count, members)) = working {
+                let said = if count == 1 { t!("engines.confirm_working_one", name = platform.name, members = members) } else { t!("engines.confirm_working_many", count = count, name = platform.name, members = members) };
+                desc = format!("{desc} {said}");
+                buttons = buttons
+                    .child(button(shell, at, 3, "engine-sign-out-after-turns", Kind::Secondary, t!("engines.after_turns")).on_click(cx.listener(move |this, _, _, cx| this.engine_sign_out_after_turns(engine, cx))))
+                    .child(button(shell, at, 4, "engine-sign-out-sure", Kind::Danger, now_label).on_click(cx.listener(move |this, _, _, cx| this.engine_sign_out(engine, cx))));
+            } else {
+                buttons = buttons.child(button(shell, at, 3, "engine-sign-out-sure", Kind::Danger, if switching { t!("engines.switch_now") } else { t!("engines.sign_out") }).on_click(cx.listener(move |this, _, _, cx| this.engine_sign_out(engine, cx))));
             }
-            Line::new(t!("engines.confirm_sign_out", name = platform.name), desc).warn(true).control(h_flex().gap_2().items_center().child(keep).child(out))
+            let title = if switching { t!("engines.confirm_switch", name = platform.name) } else { t!("engines.confirm_sign_out", name = platform.name) };
+            Line::new(title, desc).warn(true).control(buttons)
         }
-        Card::SigningOut => Line::new(t!("engines.signing_out"), "").label_el(waiting(t!("engines.signing_out").to_owned())),
+        Card::SigningOut => {
+            let status = shell.engines.status(engine);
+            match status.filter(|s| s.sign_out_after_turns) {
+                // Waiting for the members' turns: who, and the way to stop waiting or not wait.
+                Some(status) => {
+                    let members = engines::working_line(status, &shell.model.squad).unwrap_or_default();
+                    let now = button(shell, at, 3, "engine-sign-out-now", Kind::Secondary, t!("engines.sign_out_now")).on_click(cx.listener(move |this, _, _, cx| this.engine_sign_out_now(engine, cx)));
+                    let stop = button(shell, at, 2, "engine-cancel-sign-out", Kind::Ghost, t!("engines.cancel")).on_click(cx.listener(move |this, _, _, cx| this.engine_cancel_sign_out(engine, cx)));
+                    Line::new(t!("engines.waiting_turns"), t!("engines.waiting_turns_desc", name = platform.name, members = members))
+                        .label_el(waiting(t!("engines.waiting_turns").to_owned()))
+                        .control(h_flex().gap_2().items_center().child(stop).child(now))
+                }
+                None => Line::new(t!("engines.signing_out"), "").label_el(waiting(t!("engines.signing_out").to_owned())),
+            }
+        }
     };
     Some(line)
 }
@@ -748,6 +831,38 @@ impl Shell {
         for command in self.engines.sign_out(engine) {
             self.send_command(command);
         }
+        self.engines_later(engines::SIGN_OUT_WAIT, cx);
+        cx.notify();
+    }
+
+    /// "Sign out now" over a sign-out that is waiting for turns.
+    pub fn engine_sign_out_now(&mut self, engine: Engine, cx: &mut Context<Self>) {
+        self.engine_sign_out(engine, cx);
+    }
+
+    /// "After current turns": the daemon waits for the members mid-turn.
+    pub fn engine_sign_out_after_turns(&mut self, engine: Engine, cx: &mut Context<Self>) {
+        for command in self.engines.sign_out_after_turns(engine) {
+            self.send_command(command);
+        }
+        self.engines_later(engines::SIGN_OUT_WAIT, cx);
+        cx.notify();
+    }
+
+    /// "Cancel" while a sign-out waits for turns.
+    pub fn engine_cancel_sign_out(&mut self, engine: Engine, cx: &mut Context<Self>) {
+        for command in self.engines.cancel_sign_out(engine) {
+            self.send_command(command);
+        }
+        cx.notify();
+    }
+
+    /// "Check again": where the engines stand, asked once more; the card says so until it answers.
+    pub fn engine_check_again(&mut self, engine: Engine, cx: &mut Context<Self>) {
+        for command in self.engines.check_again(engine, Instant::now()) {
+            self.send_command(command);
+        }
+        self.engines_later(engines::NO_ANSWER, cx);
         cx.notify();
     }
 

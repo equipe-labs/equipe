@@ -177,7 +177,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
                 let _ = events.send(Event::Engines { engines: statuses() });
             });
         }
-        Command::SignOut { engine: Engine::Claude } => {
+        Command::SignOut { engine: Engine::Claude } | Command::SignOutAfterTurns { engine: Engine::Claude } => {
             let events = events.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(600)).await;
@@ -280,7 +280,7 @@ pub fn on_command(command: &Command, events: &broadcast::Sender<Event>) -> bool 
             providers().lock().unwrap().retain(|p| p.id != *id);
             tell_providers(events);
         }
-        Command::SignOut { .. } => {
+        Command::SignOut { .. } | Command::SignOutAfterTurns { .. } => {
             let events = events.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(600)).await;
