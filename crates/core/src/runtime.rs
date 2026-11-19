@@ -70,6 +70,7 @@ macro_rules! say {
     };
 }
 
+mod blocked_on;
 mod decide;
 mod glance;
 mod room;
@@ -8211,8 +8212,12 @@ todo); or drop it if it's no longer wanted.]"
                 ("equipe", "released", format!("{name} left T-{}; it is back on the board", ticket.id), "news.left")
             }
             WorkEnd::HandedBack => {
-                let hand = work.end.handed_back.clone().unwrap_or(turn_end::HandBack { reason: turn_end::Reason::Cannot, tickets: Vec::new(), suggest: None, note: String::new() });
+                let hand = work.end.handed_back.clone().unwrap_or(turn_end::HandBack { reason: turn_end::Reason::Cannot, tickets: Vec::new(), suggest: None, note: String::new(), blocked_on: None });
                 let (event, line, news) = self.handed_back(&squad, &mut ticket, &name, &hand);
+                // Waiting on missing work: whose, for the person's line.
+                if event == crate::blocked_on::BLOCKED_ON {
+                    to = hand.blocked_on.as_ref().map(|m| m.role.clone());
+                }
                 handed_back = Some((hand.reason, line.clone()));
                 (name.as_str(), event, line, news)
             }
@@ -10914,6 +10919,12 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     return Err("Only the PM changes tickets; propose a new one, or comment.".into());
                 }
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
+                // Yes to a relay's card: the missing piece made or found, and the ticket waits on it.
+                if let Some(missing) = crate::blocked_on::parse(&args)? {
+                    let said = self.pm_blocked_on(&squad, &member, ticket_id, &missing)?;
+                    let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "blocked_on"));
+                    return Ok(if other { format!("{said} Only `blocked_on` was applied: change the rest in another call.") } else { said });
+                }
                 // Its checklist grows at any status still open (`flow`).
                 let steps = crate::flow::steps_arg(&args, "steps")?;
                 if !steps.is_empty() {

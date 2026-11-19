@@ -604,7 +604,10 @@ const FLOW: &str = "When the person asks for something, the ticket that answers 
 whoever puts it on the board for them drives it there. Its spec, its build and its checks are items of its checklist, done on that \
 one ticket and branch — never tickets of their own: `check_steps` adds and ticks them. When your items are done and another \
 role's are next (designer to frontend), pass the baton with `pass_baton`: they carry on in the same worktree, with your note, \
-with no new ticket and no wait for the PM; pass it with `back` to pull a teammate in for one step. A check, a verification or \
+with no new ticket and no wait for the PM; pass it with `back` to pull a teammate in for one step. When it needs work another \
+role or project must do first and that doesn't exist yet — an API or endpoint, a contract, a permission, data — don't pass it \
+around or say so in a note: name the missing piece with `blocked_on` ({ role, what }) on `hand_back` or `pass_baton`, and equipe \
+makes that ticket and parks this one until it lands. A check, a verification or \
 polish of work under way goes into that work's checklist; what you find outside its scope goes into a `comment` or the design \
 backlog — only an S1/S2 finding is a ticket of its own.";
 

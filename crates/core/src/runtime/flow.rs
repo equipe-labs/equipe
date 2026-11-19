@@ -77,11 +77,34 @@ impl Runtime {
         let (on, holder) = {
             let s = self.sessions.get(&id).ok_or("You're not on the squad.")?;
             let work = s.work.as_ref().ok_or("You're not on a ticket — there is no baton to pass.")?;
-            if work.handed_in.is_some() || work.waiting.is_some() || work.end.handed_back.is_some() {
+            // Not passed for a relay on missing work, it may still name the missing piece.
+            if work.handed_in.is_some() || work.waiting.is_some() || work.end.handed_back.as_ref().is_some_and(|h| h.reason != Reason::Relay) {
                 return Err(format!("T-{} is already handed in, waiting or handed back.", work.ticket));
             }
             (work.ticket, s.name().unwrap_or_default().to_owned())
         };
+        // The next part needs work that doesn't exist yet: not a baton — that ticket made, and this one waits on it.
+        if let Some(missing) = crate::blocked_on::parse(args)? {
+            self.check_blocked_on(squad, &missing)?;
+            let line = format!("{} ({})", missing.what, missing.role);
+            let work = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()).ok_or("You're not on a ticket.")?;
+            work.end.handed_back = Some(HandBack { reason: Reason::BlockedOn, tickets: Vec::new(), suggest: None, note, blocked_on: Some(missing) });
+            return Ok(format!(
+                "T-{on} isn't passed on: it waits on what is missing when this turn ends — {line}. equipe makes that ticket for its role, or \
+finds the one on the board, under the same request; T-{on} comes back to you, in the same worktree, once it lands. End your turn now with a short line."
+            ));
+        }
+        // Passed on before on the same missing piece: not again — the PM decides.
+        if self.relay_caught(squad, on, &note).is_some() {
+            let work = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()).ok_or("You're not on a ticket.")?;
+            work.end.handed_back = Some(HandBack { reason: Reason::Relay, tickets: Vec::new(), suggest: board::arg_str(args, "to").map(str::to_owned), note, blocked_on: None });
+            return Ok(format!(
+                "T-{on} isn't passed on: it changed hands before with a note that something it needs doesn't exist yet. It goes to the PM \
+when this turn ends, with one card asking whether to make the missing ticket. If you know what is missing and whose work it is, \
+call `pass_baton` again with `blocked_on` {{ role, what }} instead — equipe then makes that ticket and T-{on} waits on it. Otherwise \
+end your turn now with a short line."
+            ));
+        }
         let ticket = self.find_ticket(squad, on).ok_or_else(|| format!("There is no T-{on}."))?;
         let mut flow = ticket.flow.as_deref().cloned().unwrap_or_default();
         // A helper gives it back where it came from, when it names nobody.
@@ -111,7 +134,7 @@ impl Runtime {
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
         journal.set_ticket_flow(on, Some(&flow)).map_err(|e| e.to_string())?;
         let work = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()).ok_or("You're not on a ticket.")?;
-        work.end.handed_back = Some(HandBack { reason: Reason::Baton, tickets: Vec::new(), suggest: Some(to.clone()), note });
+        work.end.handed_back = Some(HandBack { reason: Reason::Baton, tickets: Vec::new(), suggest: Some(to.clone()), note, blocked_on: None });
         let back_line = if back { " It comes back to you when they are done with their part." } else { "" };
         Ok(format!(
             "T-{on} goes to {to} when this turn ends: your changes are committed on its branch and they carry on in the same worktree, \

@@ -816,7 +816,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
         }),
         json!({
             "name": crate::flow::PASS_BATON,
-            "description": "Pass the ticket you hold to another member — designer to frontend when the prototype is done, or to a helper for one step — on the same ticket, branch and worktree: no new ticket, no wait for the PM. Your changes are committed and they carry on from them with your note. Tick off what you finished in `done`. With `back`, the baton comes back to you when they are done with their part. Then end your turn.",
+            "description": "Pass the ticket you hold to another member — designer to frontend when the prototype is done, or to a helper for one step — on the same ticket, branch and worktree: no new ticket, no wait for the PM. Your changes are committed and they carry on from them with your note. Tick off what you finished in `done`. With `back`, the baton comes back to you when they are done with their part. Never pass it because something it needs doesn't exist yet (an API, endpoint, contract, permission): name that in `blocked_on` instead — equipe makes that ticket and this one waits on it. Then end your turn.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -824,6 +824,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "note": { "type": "string", "description": "What they need to know to carry on: what is done, where (the prototype's path), what is next — in the person's language." },
                     "done": { "type": "array", "items": { "type": "integer" }, "description": "The checklist items you finished, by number." },
                     "back": { "type": "boolean", "description": "They do one step and give it back to you (a helper)." },
+                    "blocked_on": crate::blocked_on::schema(),
                 },
                 "required": ["to", "note"],
             },
@@ -988,11 +989,15 @@ a label (`[AWS sign-in](https://…)`), which the card draws as a button. In the
 only a comment saying so. `waiting_on`: it can't start until other tickets are done (name them in `tickets`): it waits on \
 the board and comes back to you, in the same worktree, once they are. `duplicate`: another ticket does or did the same \
 (name it). `not_my_role`: it is another role's work (`suggest` who). `cannot`: it can't be done as asked. Those three go \
-to the PM with your note, to cancel, reassign or reshape. Your changes so far stay on its branch. Then end your turn.",
+to the PM with your note, to cancel, reassign or reshape. `blocked_on`: work another role or project must do first doesn't \
+exist yet — an API or endpoint, a contract, a permission, data: name it in `blocked_on` ({ role, what }) rather than passing the \
+ticket around or saying it in a note — equipe makes that ticket for the role (or finds the one on the board) under the same \
+request, and this one waits on it and comes back to you once it lands. Your changes so far stay on its branch. Then end your turn.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "reason": { "type": "string", "enum": ["waiting_on", "duplicate", "not_my_role", "cannot"] },
+                    "reason": { "type": "string", "enum": ["waiting_on", "duplicate", "not_my_role", "cannot", "blocked_on"] },
+                    "blocked_on": crate::blocked_on::schema(),
                     "tickets": { "type": "array", "items": { "type": "integer" }, "description": "The tickets it waits on (waiting_on), or duplicates (duplicate)." },
                     "suggest": { "type": "string", "description": "not_my_role: the role or member that should take it." },
                     "note": { "type": "string", "description": "Why, in a line or two — what you found, what it needs. The PM reads it." },
@@ -1340,6 +1345,7 @@ they say it isn't for now.",
                     "request": { "type": "integer", "description": "Put it with the person's request R-n (give n), at any status: its progress is then told with that request's, and what came of it moves with it. 0: with none." },
                     "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` adds, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
                     "steps": STEPS_SCHEMA.clone(),
+                    "blocked_on": crate::blocked_on::schema(),
                 },
                 "required": ["id"],
             },

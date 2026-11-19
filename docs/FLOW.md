@@ -41,6 +41,26 @@ one step and the baton returns to whoever lent it.
 The board shows who holds it now, from whom, who drives it, and the checklist
 ticked so far. Each pass is a `baton` event on the ticket's record.
 
+## Blocked on work that doesn't exist yet
+
+A baton is for work that exists. When the next part needs another role's or
+project's work that nobody made — an API or endpoint, a contract, a
+permission, data — the holder names it: `blocked_on: { role, what, project? }`
+on `hand_back` or `pass_baton` (`crate::blocked_on`). equipe finds that ticket
+on the board (one the blocked ticket waits on already, one made for it
+before, or one of its request of that role that says the same) or makes it
+for the role, under the same request, at least high priority; the blocked
+ticket waits on it (`depends_on`, a `blocked on` event) and goes back to its
+member, in the same worktree, once it lands. Nobody passes it meanwhile.
+
+Members who say it only in prose are caught by their notes: the second
+hand-back or baton on one ticket whose note says something it needs is
+missing (`blocked.missing_terms` and `blocked.dependency_terms`, every
+language's) isn't passed on. The ticket goes to the PM with one card, once:
+make the missing ticket — `update_ticket` with `blocked_on` — or reshape or
+cancel it. Before, a frontend ticket that needed a missing server endpoint
+went around frontend, QA and the PM thirteen times in 1h41m.
+
 ## A UI change is one slice
 
 A code ticket that answers the person, made by or for the designer, is one

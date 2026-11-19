@@ -245,6 +245,8 @@ pub(super) struct HandBack {
     /// Who should take it instead, as the member suggests.
     pub(super) suggest: Option<String>,
     pub(super) note: String,
+    /// What it waits on that doesn't exist yet (`crate::blocked_on`).
+    pub(super) blocked_on: Option<crate::blocked_on::BlockedOn>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -265,6 +267,13 @@ pub(super) enum Reason {
     /// `pass_baton`: another member (`suggest`) carries it on, on the same
     /// ticket, branch and worktree (`runtime::flow`).
     Baton,
+    /// Work another role or project must do first doesn't exist yet
+    /// (`blocked_on`): equipe makes or finds that ticket, and this one waits
+    /// on it (`runtime::blocked_on`).
+    BlockedOn,
+    /// equipe's: passed on again with notes saying something it needs is
+    /// missing — not passed on; the PM gets one card (`crate::blocked_on`).
+    Relay,
 }
 
 impl Reason {
@@ -275,6 +284,7 @@ impl Reason {
             "duplicate" => Some(Reason::Duplicate),
             "not_my_role" => Some(Reason::NotMyRole),
             "cannot" => Some(Reason::Cannot),
+            "blocked_on" => Some(Reason::BlockedOn),
             _ => None,
         }
     }
@@ -289,6 +299,8 @@ impl Reason {
             Reason::NoEnd => "its turns kept ending without a hand-in",
             Reason::Budget => "stopped by equipe: it cost too much for what moved",
             Reason::Baton => "passed on",
+            Reason::BlockedOn => "blocked on work that doesn't exist yet",
+            Reason::Relay => "passed on again on the same missing piece",
         }
     }
 }
@@ -528,7 +540,7 @@ impl Runtime {
             return true;
         }
         if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) {
-            work.end.handed_back = Some(HandBack { reason: Reason::NoEnd, tickets: Vec::new(), suggest: None, note: last });
+            work.end.handed_back = Some(HandBack { reason: Reason::NoEnd, tickets: Vec::new(), suggest: None, note: last, blocked_on: None });
         }
         self.end_work(id, WorkEnd::HandedBack);
         true
@@ -1247,7 +1259,15 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
     /// it — it waits on other tickets, duplicates one, is another role's, or
     /// can't be done. The ticket goes back when the turn ends.
     pub(super) fn hand_back_tool(&mut self, squad: &str, id: SessionId, args: &Value) -> Result<String, String> {
-        let reason = board::arg_str(args, "reason").and_then(Reason::parse).ok_or("Say `reason`: waiting_on, duplicate, not_my_role or cannot.")?;
+        let blocked_on = crate::blocked_on::parse(args)?;
+        // Naming the missing piece is the reason, whatever else it says.
+        let reason = match &blocked_on {
+            Some(_) => Reason::BlockedOn,
+            None => board::arg_str(args, "reason").and_then(Reason::parse).ok_or("Say `reason`: waiting_on, duplicate, not_my_role, cannot or blocked_on.")?,
+        };
+        if reason == Reason::BlockedOn && blocked_on.is_none() {
+            return Err("Name the missing piece in `blocked_on`: { role, what }.".into());
+        }
         let note = board::arg_str(args, "note").map(str::trim).filter(|n| !n.is_empty()).ok_or("Say why in `note`, in a line or two — the PM reads it.")?.to_owned();
         let tickets = board::arg_ids(args, "tickets").unwrap_or_default();
         let suggest = board::arg_str(args, "suggest").map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned);
@@ -1280,12 +1300,21 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
                 return Err(format!("That would wait in a loop: {}. Hand it back as `cannot` and say why instead.", path.join(" → ")));
             }
         }
-        let hand = HandBack { reason, tickets: tickets.clone(), suggest, note };
+        if let Some(missing) = &blocked_on {
+            self.check_blocked_on(squad, missing)?;
+        }
+        let missing_line = blocked_on.as_ref().map(|m| format!("{} ({})", m.what, m.role)).unwrap_or_default();
+        let hand = HandBack { reason, tickets: tickets.clone(), suggest, note, blocked_on };
         if let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) {
             work.end.handed_back = Some(hand);
         }
         let named = tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
         Ok(match reason {
+            Reason::BlockedOn => format!(
+                "T-{on} waits on what is missing when this turn ends — {missing_line}: equipe makes that ticket for its role, or finds the \
+one on the board, under the same request. Your changes are kept on its branch, and it comes back to you, in the same worktree, \
+once that lands. Nobody passes it meanwhile. End your turn now with a short line."
+            ),
             Reason::WaitingOn => format!(
                 "T-{on} goes back on the board when this turn ends, waiting on {named}; your changes are kept on its branch, and it comes \
 back to you, in the same worktree, once those are done. End your turn now with a short line."
@@ -1304,6 +1333,37 @@ on its branch. End your turn now with a short line."
     pub(super) fn handed_back(&mut self, squad: &str, ticket: &mut Ticket, name: &str, hand: &HandBack) -> (&'static str, String, &'static str) {
         let named = hand.tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
         let id = ticket.id;
+        // What it waits on doesn't exist yet: that ticket made or found, and this one waits on it.
+        if let (Reason::BlockedOn, Some(missing)) = (hand.reason, &hand.blocked_on) {
+            match self.prerequisite_for(squad, ticket, missing, name, &hand.note) {
+                Ok((prerequisite, made)) => {
+                    self.count_ending(squad, turn_ending::HANDED_BACK, Some(id), name);
+                    let what = Self::wait_on_prerequisite(ticket, prerequisite, name, missing, &hand.note);
+                    let how = if made { "equipe made" } else { "it is on the board as" };
+                    let line = format!("{name} put T-{id} down: it is blocked on work that didn't exist — {what}; {how} T-{prerequisite}, under the same request, and T-{id} goes back to {name} once it lands: {}", hand.note);
+                    return (crate::blocked_on::BLOCKED_ON, line, "news.handed_back_blocked");
+                }
+                Err(why) => {
+                    crate::daemon_log!("equipe: {squad}: T-{id}'s missing piece wasn't put on the board: {why}");
+                }
+            }
+        }
+        // Passed on again on the same missing piece: not passed — the PM gets one card.
+        let relay = match hand.reason {
+            Reason::Relay => self.relay_caught(squad, id, &hand.note).or(Some(crate::blocked_on::RELAY_AT)),
+            Reason::Baton | Reason::NotMyRole | Reason::Cannot => self.relay_caught(squad, id, &hand.note),
+            _ => None,
+        };
+        if let Some(passes) = relay {
+            self.count_ending(squad, turn_ending::TO_PM, Some(id), name);
+            let roles: Vec<String> = self.team(squad).into_iter().map(|(_, _, role)| role).collect();
+            let role = crate::blocked_on::likely_role(&roles);
+            ticket.status = TicketStatus::Proposed;
+            ticket.assignee = None;
+            ticket.note = Some(format!("{}{} — {}", crate::protocol::HANDED_BACK, Reason::Relay.said(), hand.note));
+            crate::daemon_log!("equipe: {squad}: T-{id} passed on again on missing work ({passes} passes): to the PM, not passed");
+            return (crate::blocked_on::SUSPECTED, crate::blocked_on::pm_card(ticket, passes, &hand.note, role.as_deref()), "news.blocked_suspected");
+        }
         // The baton: the next member carries it on where it is, with the note — no PM step.
         if hand.reason == Reason::Baton {
             let to = hand.suggest.clone().unwrap_or_default();
@@ -1356,7 +1416,9 @@ one with `propose_team_change` if nobody on the team fits.",
 only they can unblock it.",
             Reason::NoEnd => "Look at its record and branch: put it back (`update_ticket`, status todo — the same owner or another) \
 with what to do next in `body`, cancel it, or ask the person.",
-            Reason::WaitingOn | Reason::Baton | Reason::Budget => "",
+            Reason::WaitingOn | Reason::Baton | Reason::Budget | Reason::Relay => "",
+            Reason::BlockedOn => "Its missing piece couldn't be put on the board: make that ticket for its role and put this one to wait on it \
+(`update_ticket` with `blocked_on`), or reshape it.",
         };
         let line = format!("{name} handed T-{id} back — {why}. It is a proposal again, its branch kept. {next}");
         let news = match hand.reason {
@@ -1407,12 +1469,14 @@ mod tests {
     }
 
     #[test]
-    fn hand_back_takes_four_reasons_and_nothing_else() {
+    fn hand_back_takes_its_five_reasons_and_nothing_else() {
         assert_eq!(Reason::parse("waiting_on"), Some(Reason::WaitingOn));
         assert_eq!(Reason::parse(" duplicate "), Some(Reason::Duplicate));
         assert_eq!(Reason::parse("not_my_role"), Some(Reason::NotMyRole));
         assert_eq!(Reason::parse("cannot"), Some(Reason::Cannot));
+        assert_eq!(Reason::parse("blocked_on"), Some(Reason::BlockedOn));
         assert_eq!(Reason::parse("no_end"), None, "equipe's own, not a member's");
+        assert_eq!(Reason::parse("relay"), None, "equipe's own, not a member's");
     }
 
     #[test]
