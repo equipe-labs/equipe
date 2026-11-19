@@ -1595,5 +1595,10 @@
   "autonomy.no_answer": "デーモンが応答しませんでした。最新ですか? equipe update を実行してください。",
   "metrics_query.no_daemon": "このマシンで応答するデーモンがありません。`equipe daemon start` で起動してから、もう一度聞いてください。",
   "metrics_query.rows": "{connection} から {ms} ms で {rows} 行",
-  "metrics_query.truncated": "行はもっとありました。最初の {limit} 行だけを表示しています。--limit（最大 {most}）で増やすか、クエリで集計してください。"
+  "metrics_query.truncated": "行はもっとありました。最初の {limit} 行だけを表示しています。--limit（最大 {most}）で増やすか、クエリで集計してください。",
+  "growth.started": "{squad} のグロース点検を始めました。equipe が数字を読み、PM がカードを提案します。",
+  "growth.not_started": "グロース点検は始まりませんでした: {why}",
+  "growth.none": "{squad} にはまだグロースカードがありません。",
+  "growth.summary": "{squad} · 前回の点検 {when} · 直近 7 日のトークン {cap} 中 {spent}",
+  "growth.never": "なし"
 }

@@ -865,6 +865,21 @@ async fn serve_client(
                 crate::daemon_log!("equipe: refused metrics.hogql from a member's process");
                 let _ = out_tx.send(Message::failure(id, -32000, "ad-hoc metrics queries are the person's; a member uses its metrics_query tool"));
             }
+            // The growth loop (docs/GROWTH.md): a run is the person's own clients' to start.
+            (Some(method), Some(id)) if method.starts_with("growth.") => {
+                if method == equipe_protocol::growth::RUN && !origin.person_may() {
+                    let _ = out_tx.send(Message::failure(id, -32000, "a growth run is the person's to start"));
+                    continue;
+                }
+                let (core, out, method) = (core.clone(), out_tx.clone(), method.to_owned());
+                let params = message.params.clone().unwrap_or(serde_json::Value::Null);
+                tokio::spawn(async move {
+                    let _ = out.send(match core.growth(&method, params).await {
+                        Ok(result) => Message::response(id, result),
+                        Err((code, why)) => Message::failure(id, code, why),
+                    });
+                });
+            }
             (Some(method), Some(id)) if method.starts_with("metrics.") => {
                 let (metrics, out, method) = (metrics.clone(), out_tx.clone(), method.to_owned());
                 let params = message.params.clone().unwrap_or(serde_json::Value::Null);
@@ -1414,6 +1429,12 @@ pub async fn disk_clean(socket: &Path, ids: Vec<String>) -> io::Result<Option<cr
 /// daemon at `socket` (`metrics.hogql`); `None` when none answers.
 pub async fn metrics_hogql(socket: &Path, p: &equipe_protocol::metrics::HogqlParams) -> io::Result<Option<equipe_protocol::metrics::HogqlResult>> {
     ask_once(socket, equipe_protocol::metrics::HOGQL, p).await
+}
+
+/// A `growth.*` request of the daemon at `socket` (docs/GROWTH.md); `None`
+/// when none answers.
+pub async fn growth(socket: &Path, method: &str, p: &equipe_protocol::growth::GrowthParams) -> io::Result<Option<serde_json::Value>> {
+    ask_once(socket, method, p).await
 }
 
 /// One request to the daemon at `socket`, and its answer.

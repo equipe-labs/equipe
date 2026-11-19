@@ -4872,5 +4872,15 @@
   "keys.use_daily_fetch": "Daily metrics fetch",
   "keys.last_fetched": "Last fetched {when}",
   "keys.never_fetched": "Not fetched yet",
-  "keys.manage_connection": "Replace or delete"
+  "keys.manage_connection": "Replace or delete",
+  "progress.growth": "Growth",
+  "growth.status_open": "waiting on you",
+  "growth.status_later": "later",
+  "growth.status_declined": "declined",
+  "growth.status_accepted": "accepted · T-{ticket}",
+  "growth.status_measuring": "live · measuring",
+  "growth.status_worked": "worked {pct}",
+  "growth.status_no_change": "no change {pct}",
+  "growth.status_worse": "worse {pct}",
+  "growth.status_dropped": "dropped"
 }

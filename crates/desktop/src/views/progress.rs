@@ -133,6 +133,13 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         column = column.child(v_flex().w_full().gap_1().child(heading(shell, None, t!("progress.retros").into(), retros.len())).children(rows));
     }
 
+    // The growth loop's latest cards: where each stands, what a live one did.
+    let growth = shell.growth.as_ref().map(crate::growth::rows).unwrap_or_default();
+    if !growth.is_empty() {
+        let rows = growth.iter().enumerate().map(|(i, r)| growth_row(shell, i, r));
+        column = column.child(v_flex().w_full().gap_1().child(heading(shell, None, t!("progress.growth").into(), growth.len())).children(rows));
+    }
+
     // What runs on its own, on a schedule: the routines, below the work.
     column = column.child(super::routines::section(shell, cx));
     v_flex()
@@ -233,6 +240,26 @@ fn retro_row(shell: &Shell, i: usize, past: &crate::retro::Past, cx: &mut Contex
         .into_any_element()
 }
 
+/// A growth card: its number, title, and where it stands — red when it made things worse.
+fn growth_row(shell: &Shell, i: usize, row: &crate::growth::Row) -> AnyElement {
+    let p = shell.palette;
+    h_flex()
+        .id(("progress-growth", i))
+        .w_full()
+        .min_h(px(36.))
+        .px_2()
+        .py_1()
+        .gap_3()
+        .items_center()
+        .rounded(px(R_MD))
+        .text_size(px(SMALL))
+        .aria_label(format!("{} · {} · {}", row.id, row.title, row.state))
+        .child(div().w(px(52.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(row.id.clone()))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).text_color(p.text2).child(row.title.clone()))
+        .child(div().flex_none().max_w(px(220.)).truncate().text_size(px(12.)).text_color(if row.worse { p.danger() } else { p.text2 }).child(row.state.clone()))
+        .into_any_element()
+}
+
 fn base(shell: &Shell, id: TicketId, cx: &mut Context<Shell>) -> Stateful<Div> {
     let p = shell.palette;
     h_flex()
@@ -275,6 +302,27 @@ impl Shell {
             self.remembered.save(&equipe_providers::credentials::equipe_home());
         }
         self.show(Screen::Progress, cx);
+        self.growth_load(cx);
         cx.notify();
+    }
+
+    /// The growth loop's cards, asked of the daemon off the UI thread.
+    pub fn growth_load(&mut self, cx: &mut Context<Self>) {
+        let Some(door) = self.link.as_ref().map(|l| l.uploader()) else { return };
+        let params = equipe_core::protocol::growth::GrowthParams { squad: self.model.squad.clone() };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let answer = door.call(equipe_core::protocol::growth::LIST, params, std::time::Duration::from_secs(20));
+            let _ = tx.send(answer.ok().and_then(|v| serde_json::from_value::<equipe_core::protocol::growth::Growth>(v).ok()));
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(growth) = rx.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.growth = growth;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
     }
 }

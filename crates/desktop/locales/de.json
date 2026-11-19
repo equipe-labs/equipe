@@ -4872,5 +4872,15 @@
   "keys.use_daily_fetch": "Tägliches Abrufen der Kennzahlen",
   "keys.last_fetched": "Zuletzt abgerufen {when}",
   "keys.never_fetched": "Noch nicht abgerufen",
-  "keys.manage_connection": "Ersetzen oder löschen"
+  "keys.manage_connection": "Ersetzen oder löschen",
+  "progress.growth": "Wachstum",
+  "growth.status_open": "wartet auf dich",
+  "growth.status_later": "später",
+  "growth.status_declined": "abgelehnt",
+  "growth.status_accepted": "angenommen · T-{ticket}",
+  "growth.status_measuring": "live · wird gemessen",
+  "growth.status_worked": "hat gewirkt {pct}",
+  "growth.status_no_change": "keine Veränderung {pct}",
+  "growth.status_worse": "schlechter {pct}",
+  "growth.status_dropped": "verworfen"
 }

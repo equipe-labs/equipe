@@ -353,6 +353,9 @@ equipe metrics query --squad acme --connection m2 --limit 1000 --json --hogql "S
 The table goes to standard output, the row count and any cut to standard
 error; `--json` prints the whole `HogqlResult`.
 
+The growth loop ([GROWTH.md](GROWTH.md)) reads a squad's product data
+through these queries.
+
 ## Errors
 
 A request that can't be answered is a JSON-RPC error:

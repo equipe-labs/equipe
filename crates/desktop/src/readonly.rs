@@ -300,6 +300,7 @@ pub const READ_METHODS: &[&str] = &[
     metrics::SOURCES,
     metrics::QUERY,
     metrics::SUMMARY,
+    equipe_core::protocol::growth::LIST,
 ];
 
 pub fn reads_method(method: &str) -> bool {

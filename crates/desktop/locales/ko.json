@@ -4746,5 +4746,15 @@
   "keys.use_daily_fetch": "매일 지표 가져오기",
   "keys.last_fetched": "마지막으로 가져온 때: {when}",
   "keys.never_fetched": "아직 가져오지 않음",
-  "keys.manage_connection": "교체 또는 삭제"
+  "keys.manage_connection": "교체 또는 삭제",
+  "progress.growth": "성장",
+  "growth.status_open": "답변 대기",
+  "growth.status_later": "나중에",
+  "growth.status_declined": "거절함",
+  "growth.status_accepted": "수락 · T-{ticket}",
+  "growth.status_measuring": "반영됨 · 측정 중",
+  "growth.status_worked": "효과 있음 {pct}",
+  "growth.status_no_change": "변화 없음 {pct}",
+  "growth.status_worse": "나빠짐 {pct}",
+  "growth.status_dropped": "중단됨"
 }

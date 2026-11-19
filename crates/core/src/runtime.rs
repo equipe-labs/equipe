@@ -117,6 +117,7 @@ mod controls;
 mod autonomy;
 mod review;
 mod retro;
+mod growth;
 mod watch;
 mod words;
 mod put_away;
@@ -338,6 +339,8 @@ enum Request {
     /// messaging apps if so.
     DesktopTool(ToolCall, oneshot::Sender<Result<(PathBuf, Vec<String>), ToolResult>>),
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
+    /// A screen's `growth.*` request: its method and params → its answer.
+    Growth(String, Value, oneshot::Sender<Result<Value, (i64, String)>>),
     /// What uses the disk (`equipe disk`).
     Disk(oneshot::Sender<crate::disk::DiskReport>),
     /// A squad's status at a glance (`squad_status`).
@@ -436,6 +439,14 @@ impl Handle {
         let (tx, rx) = oneshot::channel();
         self.requests.send(Request::Subscribe(squad.to_owned(), tx)).ok()?;
         rx.await.ok()
+    }
+
+    /// A screen's `growth.*` request (docs/GROWTH.md): its answer, or a
+    /// JSON-RPC error's code and message.
+    pub async fn growth(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::Growth(method.to_owned(), params, tx));
+        rx.await.unwrap_or_else(|_| Err((-32000, "equipe is shutting down".into())))
     }
 
     /// A member's board tool call.
@@ -875,6 +886,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         tmp_budget_told: HashSet::new(),
         tidied_at: None,
         signals_running: std::collections::HashSet::new(),
+        growth_running: HashSet::new(),
+        growth_tried: HashMap::new(),
+        growth_measuring: HashSet::new(),
         deploys_looking: HashSet::new(),
         go_live: HashMap::new(),
         accepts: HashMap::new(),
@@ -1347,6 +1361,10 @@ enum Internal {
     AuthRecheck(Engine),
     /// A signal's command ran off the loop: its reading.
     SignalRead { squad: String, key: String, reading: crate::signals::Reading },
+    /// A growth run's numbers, gathered off the loop (`growth`).
+    GrowthGathered { squad: String, gathered: Box<growth::Gathered> },
+    /// A growth card's follow-up, measured off the loop.
+    GrowthMeasured { squad: String, card: u32, after_days: u32, outcome: Box<equipe_protocol::growth::Outcome> },
     /// A squad's projects were looked at off the loop for what went live:
     /// each project's watch now, and what the look found.
     DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)>, declared: Vec<(String, bool)> },
@@ -1628,6 +1646,11 @@ struct Runtime {
     tidied_at: Option<std::time::Instant>,
     /// Signals whose command runs now, by squad and key (`signals`).
     signals_running: std::collections::HashSet<(String, String)>,
+    /// Squads whose growth run gathers now, when each weekly run was last
+    /// tried, and the follow-ups being measured (`growth`).
+    growth_running: HashSet<String>,
+    growth_tried: HashMap<String, u64>,
+    growth_measuring: HashSet<(String, u32, u32)>,
     /// Squads whose projects are being looked at for what went live (`deploys`).
     deploys_looking: HashSet<String>,
     /// How each squad's projects go live after their landings, by project
@@ -1846,6 +1869,7 @@ impl Wake {
             Wake::Request(Some(Request::DesktopGate(..))) => Borrowed("desktop gate"),
             Wake::Request(Some(Request::DesktopTool(..))) => Borrowed("desktop tool"),
             Wake::Request(Some(Request::Busy(_))) => Borrowed("busy"),
+            Wake::Request(Some(Request::Growth(..))) => Borrowed("a growth request"),
             Wake::Request(Some(Request::Status(..))) => Borrowed("a squad's status"),
             Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
             Wake::Request(Some(Request::SignIn(..))) => Borrowed("person's sign-in"),
@@ -1915,6 +1939,8 @@ impl Wake {
             Wake::Internal(Internal::TurnEndsDue) => Borrowed("a paused run's time"),
             Wake::Internal(Internal::AuthRecheck(_)) => Borrowed("an engine's sign-in looked at again"),
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
+            Wake::Internal(Internal::GrowthGathered { .. }) => Borrowed("a growth run's numbers"),
+            Wake::Internal(Internal::GrowthMeasured { .. }) => Borrowed("a growth card's follow-up"),
             Wake::Internal(Internal::DeploysLooked { .. }) => Borrowed("a look at what went live"),
             Wake::Internal(Internal::GoLiveRead { .. }) => Borrowed("how a project goes live"),
             Wake::Internal(Internal::GoLiveDue { .. }) => Borrowed("a project's deploy coming due"),
@@ -2061,6 +2087,9 @@ impl Runtime {
                     self.read_codex_usage(true);
                 }
                 Some(Request::Tool(call, reply)) => self.tool(call, reply).await,
+                Some(Request::Growth(method, params, reply)) => {
+                    let _ = reply.send(self.growth_request(&method, params));
+                }
                 Some(Request::PersonWindow(url, reply)) => {
                     let _ = reply.send(self.start_sign_in(&url, true).opened);
                 }
@@ -2222,6 +2251,8 @@ impl Runtime {
                 Internal::SignIns { squad, record, turn } => self.sign_ins_read(&squad, record.map(|r| *r), turn),
                 Internal::Wake { session, prompt } => self.set_going(session, prompt).await,
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
+                Internal::GrowthGathered { squad, gathered } => Box::pin(self.growth_gathered(&squad, *gathered)).await,
+                Internal::GrowthMeasured { squad, card, after_days, outcome } => self.growth_measured(&squad, card, after_days, *outcome),
                 Internal::DeploysLooked { squad, looks, declared } => self.deploys_looked(&squad, looks, declared),
                 Internal::GoLiveRead { squad, project, found, channel_known } => self.go_live_read(&squad, project, found, channel_known),
                 Internal::GoLiveDue { squad, project } => self.go_live_due(&squad, project),
@@ -2388,6 +2419,8 @@ impl Runtime {
             self.wake_idle_pms().await;
             pulse.step("minute tick: signals");
             self.run_due_signals();
+            pulse.step("minute tick: growth");
+            self.growth_tick();
         }
         pulse.step("minute tick: deploys");
         self.deploys_tick();
@@ -10977,6 +11010,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
+            crate::growth::PROPOSE => self.propose_growth(&squad, &member, id, &args),
             board::WITHDRAW_DECISION => self.withdraw_decision(&squad, &member, id, &args),
             board::REVISE_TICKET => self.revise_ticket(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),

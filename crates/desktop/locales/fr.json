@@ -4872,5 +4872,15 @@
   "keys.use_daily_fetch": "Relevé quotidien des métriques",
   "keys.last_fetched": "Dernier relevé {when}",
   "keys.never_fetched": "Pas encore relevée",
-  "keys.manage_connection": "Remplacer ou supprimer"
+  "keys.manage_connection": "Remplacer ou supprimer",
+  "progress.growth": "Croissance",
+  "growth.status_open": "attend votre réponse",
+  "growth.status_later": "plus tard",
+  "growth.status_declined": "refusée",
+  "growth.status_accepted": "acceptée · T-{ticket}",
+  "growth.status_measuring": "en ligne · mesure en cours",
+  "growth.status_worked": "a marché {pct}",
+  "growth.status_no_change": "pas de changement {pct}",
+  "growth.status_worse": "moins bien {pct}",
+  "growth.status_dropped": "abandonnée"
 }
