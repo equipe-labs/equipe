@@ -111,6 +111,7 @@ pub mod signin_store;
 pub mod window_handoff;
 pub mod skills;
 pub mod runtime;
+pub mod turn_context;
 pub mod squad_home;
 pub mod squad_memory;
 pub mod squad_secrets;

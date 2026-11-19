@@ -26,6 +26,9 @@ pub struct UsageArgs {
     /// Every measure and signal, as JSON
     #[arg(long)]
     pub json: bool,
+    /// What the PM's desk turns carry, part by part: the blocks in front of each message, the message, the charter
+    #[arg(long)]
+    pub pm_context: bool,
 }
 
 #[derive(Subcommand)]
@@ -47,6 +50,7 @@ fn now() -> i64 {
 pub fn command(args: UsageArgs) -> Result<(), String> {
     match args.action {
         Some(UsageAction::Digest { state, squad }) => digest(squad, state),
+        None if args.pm_context => pm_context(args.squad, &args.since, args.json),
         None => report(args.squad, &args.since, args.compare.as_deref(), args.json),
     }
 }
@@ -87,6 +91,41 @@ fn report(squad: Option<String>, since_text: &str, compare: Option<&str>, json: 
         }
     }
     Ok(())
+}
+
+/// `--pm-context`: what the PM's desk turns carried in the window, part by part.
+fn pm_context(squad: Option<String>, since_text: &str, json: bool) -> Result<(), String> {
+    let (home, squad) = squad_of(squad)?;
+    let until = now().max(0) as u64;
+    let since = equipe_core::design::qa_stats::since(since_text, now()).ok_or_else(|| t!("usage.bad_since", since = since_text))?.max(0) as u64;
+    let db = equipe_core::journal::squad_dir(&home, &squad).join("squad.db");
+    if !db.is_file() {
+        return Err(t!("design.qa.no_journal", squad = squad));
+    }
+    let parts = usage::pm_context(&db, since, until.saturating_add(1))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&json!({ "squad": squad, "parts": parts })).unwrap_or_default());
+    } else {
+        println!("{}", pm_context_text(&squad, since_text, &parts));
+    }
+    Ok(())
+}
+
+/// [`pm_context`]'s words: a line a part, the largest sent first, then what
+/// went in front of the message in all (the message and the charter apart).
+pub(crate) fn pm_context_text(squad: &str, since: &str, parts: &[usage::ContextPart]) -> String {
+    if parts.is_empty() {
+        return t!("usage.pm_context.none", squad = squad);
+    }
+    let mut out = vec![t!("usage.pm_context.title", squad = squad, since = since)];
+    for p in parts {
+        out.push(t!("usage.pm_context.row", part = p.part, full = amount(p.full), sent = amount(p.sent), turns = p.turns));
+    }
+    let blocks = parts.iter().filter(|p| p.part != "message" && p.part != "opening" && !p.part.starts_with("charter"));
+    let (full, sent) = blocks.fold((0, 0), |(f, s), p| (f + p.full, s + p.sent));
+    // A token is three to four characters of English, about one of Hangul or Kanji: a third, roughly.
+    out.push(t!("usage.pm_context.total", full = amount(full), sent = amount(sent), tokens = amount(sent / 3)));
+    out.join("\n")
 }
 
 /// A number as `compare` names it: a time as a span, a share with its %, the rest to a decimal.
@@ -268,5 +307,14 @@ mod tests {
             assert!(out.contains(want), "{want}\n{out}");
         }
         assert!(out.contains("send-backs per accepted ticket: – → – (–)"), "{out}");
+    }
+
+    #[test]
+    fn what_a_pm_turn_carries_prints_a_part_a_line_and_the_blocks_in_all() {
+        assert!(pm_context_text("acme", "7d", &[]).contains("No PM turn in acme"));
+        let part = |part: &str, full: u64, sent: u64| usage::ContextPart { part: part.into(), turns: 4, full, sent };
+        let out = pm_context_text("acme", "7d", &[part("charter", 27_000, 27_000), part("overview", 9_000, 1_200), part("waiting", 1_700, 300), part("message", 400, 400)]);
+        assert!(out.contains("overview: 1200 of 9000 sent · turns: 4"), "{out}");
+        assert!(out.contains("In front of the message, in all: 1500 of 11k sent (about 500 tokens)"), "the charter and the message apart: {out}");
     }
 }

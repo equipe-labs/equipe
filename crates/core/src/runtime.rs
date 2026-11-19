@@ -47,6 +47,7 @@ use crate::permissions;
 use crate::roles::{self, Teammate};
 use crate::routines;
 use crate::skills;
+use crate::turn_context;
 use crate::vault;
 use equipe_protocol::routines::Routine;
 use crate::squad_home;
@@ -136,6 +137,7 @@ pub use hygiene::{NATIVE_DESK_TOKENS, NATIVE_TICKET_TOKENS, ROTATE_DESK_TOKENS, 
 mod pace;
 mod verify;
 mod guards;
+mod told;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -1115,6 +1117,9 @@ struct Session {
     /// The words a message sent at once ([`Command::SendNow`]) goes to the
     /// engine as — each part with its project — in place of the message.
     send_now_prompt: Option<String>,
+    /// What its conversation has been told of the blocks in front of a
+    /// message, to say only what changed after ([`turn_context`]).
+    told: turn_context::Told,
     /// The subagents it handed work to this turn and that haven't handed
     /// back, for a screen that attaches now.
     subagents: Vec<SubRun>,
@@ -4960,6 +4965,7 @@ runbooks and reports live there, and work across the projects or on running them
                 wind_down: None,
                 taken_back: Vec::new(),
                 send_now_prompt: None,
+                told: Default::default(),
                 subagents: Vec::new(),
                 compacting: None,
                 answers_person: false,
@@ -5364,48 +5370,44 @@ runbooks and reports live there, and work across the projects or on running them
         // A message sent at once about several projects: each part says its own.
         let text = session.send_now_prompt.take().unwrap_or(text);
         // What the PM missed travels with its next message; the person sees only theirs.
-        let mut prompt = match std::mem::take(&mut session.briefing) {
+        let prompt = match std::mem::take(&mut session.briefing) {
             briefing if briefing.is_empty() => text,
             briefing => format!(
                 "[equipe: since your last turn —\n{}]\n\n{text}",
                 briefing.iter().map(|line| format!("- {line}")).collect::<Vec<_>>().join("\n")
             ),
         };
-        if let Some(waiting) = waiting {
-            prompt = format!("[equipe: {waiting}]\n\n{prompt}");
+        // What goes in front of it, in the order the message reads: the
+        // project it is about first (the conversation reads that back), then
+        // the phone mark; then the blocks said once per conversation and
+        // after that only as they change (`turn_context`).
+        let mut parts: Vec<turn_context::Part> = Vec::new();
+        let whole = about.is_none() && overview.is_some();
+        if let Some(project) = &about {
+            parts.push(turn_context::Part::every_time("scope", format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]")));
+        } else if whole {
+            parts.push(turn_context::Part::every_time("scope", turn_context::WHOLE_SQUAD_FRAMING.to_owned()));
         }
-        if let Some(previewing) = previewing {
-            prompt = format!("[equipe: {previewing}]\n\n{prompt}");
-        }
-        if let Some(requests) = requests {
-            prompt = format!("{requests}\n\n{prompt}");
-        }
-        if let Some(stops) = stops {
-            prompt = format!("{stops}\n\n{prompt}");
-        }
-        if let Some(designing) = designing {
-            prompt = format!("[equipe: {designing}]\n\n{prompt}");
-        }
-        if let Some(cards) = cards {
-            prompt = format!("[equipe: {cards}]\n\n{prompt}");
-        }
-        // Read on the phone: the member answers for its screen. Before the
-        // project's word, which opens the message as the conversation reads it.
+        // Read on the phone: the member answers for its screen.
         if session.on_phone {
-            prompt = format!("{}\n\n{prompt}", crate::roles::PHONE_MARK);
+            parts.push(turn_context::Part::every_time("phone", crate::roles::PHONE_MARK.to_owned()));
         }
-        // With several projects, which one the person is looking at.
-        if let Some(project) = about {
-            prompt = format!("[equipe: the person is looking at the project {project} — new work is for it unless they say otherwise]\n\n{prompt}");
-        } else if let Some(overview) = overview {
-            prompt = format!(
-                "[equipe: the person is looking at the whole squad — you oversee every project. Where each stands \
-now:\n{overview}\nAnswer for the whole: priorities, what waits on the person, what goes next across projects. Work \
-for one project goes to it as tickets for its owners, with that project — and you say where it went.]\n\n{prompt}"
-            );
+        if whole {
+            parts.push(turn_context::Part::told("overview", overview.map(|o| format!("Where each project stands now:\n{o}"))).still("Where each project stands: as told earlier in this conversation, unchanged."));
+        }
+        parts.push(turn_context::Part::told("cards", cards).gone("None of your decision cards is open now."));
+        parts.push(turn_context::Part::told("design", designing));
+        parts.push(turn_context::Part::told("stops", stops.map(|s| turn_context::inner(&s))).gone("No stop is in force now: the person lifted them."));
+        parts.push(turn_context::Part::told("requests", requests.map(|r| turn_context::inner(&r))).gone("None of the person's requests you were told of is open now."));
+        parts.push(turn_context::Part::told("previewing", previewing));
+        if self.sessions.get(&id).is_some_and(|s| s.is_pm() && s.work.is_none()) {
+            let still = waiting.as_deref().map(waiting_still);
+            let mut part = turn_context::Part::told("waiting", waiting).gone("Nothing waits on the person now.");
+            part.still = still;
+            parts.push(part);
         }
         self.save_waiting(id);
-        self.start_turn(id, prompt);
+        self.start_turn_with(id, parts, prompt);
         if let Some(session) = self.sessions.get_mut(&id)
             && session.is_working()
         {
@@ -5471,18 +5473,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                 }
             }
             let mut line = format!("- {name}: {}", if at.is_empty() { "no one on it now".to_owned() } else { at.join("; ") });
-            for t in here.iter().filter(|t| t.status == TicketStatus::Review) {
-                line.push_str(&format!("; T-{} ({}) waits for the person's review", t.id, t.title));
-            }
-            for t in here.iter().filter(|t| t.status == TicketStatus::Waiting) {
-                let needs = t.note.as_deref().map(board::waiting_needs).unwrap_or_default();
-                let needs = if needs.is_empty() { String::new() } else { format!(": needs {}", needs.join("; ")) };
-                line.push_str(&format!("; T-{} ({}) waits for the person{needs}", t.id, t.title));
-            }
-            let open = here.iter().filter(|t| matches!(t.status, TicketStatus::Todo | TicketStatus::InProgress)).count();
-            if open > 0 {
-                line.push_str(&format!("; {open} to do or in progress"));
-            }
+            line.push_str(&turn_context::project_tickets(&here));
             lines.push(line);
         }
         Some(lines.join("\n"))
@@ -5718,25 +5709,33 @@ for one project goes to it as tickets for its owners, with that project — and 
     /// Run a turn with `prompt` in the session's current place: its ticket's
     /// project when it has one, its desk otherwise.
     fn start_turn(&mut self, id: SessionId, prompt: String) {
+        self.start_turn_with(id, Vec::new(), prompt);
+    }
+
+    /// [`Self::start_turn`] with `parts` in front of the prompt's `body`:
+    /// each said whole the first time in its conversation, then only as it
+    /// changes ([`turn_context`]) — decided once it is known whether this
+    /// turn goes on in the same conversation or a fresh one.
+    fn start_turn_with(&mut self, id: SessionId, parts: Vec<turn_context::Part>, body: String) {
         // A run whose workspace is still being made takes no turn yet: what
         // comes for it waits, as a memo does, for its first turn's end.
         if let Some(session) = self.sessions.get_mut(&id)
             && session.is_preparing()
         {
-            session.queued.push(prompt);
+            session.queued.push(turn_context::full(&parts, &body));
             session.memo_threads.push(None);
             return;
         }
         // On a lighter model since its own reached its limit: back on its own once that started over.
         self.back_from_lighter(id);
-        // On an engine that is out of its limit nothing would run: kept for later.
-        if self.hold_for_limit(id, &prompt) {
+        // On an engine that is out of its limit nothing would run: kept for later, whole.
+        if self.hold_for_limit(id, &turn_context::full(&parts, &body)) {
             return;
         }
         if let Some(session) = self.sessions.get_mut(&id) {
             session.answers_person = false;
             session.turn_began = Some(now_secs());
-            session.watch.begin(&prompt);
+            session.watch.begin(&body);
             if let Some(work) = session.work.as_mut() {
                 work.end.nudged = false;
                 work.end.stopped = false;
@@ -5748,14 +5747,23 @@ for one project goes to it as tickets for its owners, with that project — and 
         self.unpark_on_turn(id);
         self.guess_estimate(id);
         // A desk conversation grown too large, or gone cold, starts afresh.
-        let prompt = match self.refresh_desk(id) {
-            Some(handoff) => format!("{handoff}\n\n{prompt}"),
-            // Else one that reached its context budget — at the desk or on a
-            // ticket — goes on in a fresh session, opened with a packet.
-            None => match self.rotate_context(id, &prompt) {
-                Some(packet) => format!("{packet}\n\n{prompt}"),
-                None => prompt,
-            },
+        // Else one that reached its context budget — at the desk or on a
+        // ticket — goes on in a fresh session, opened with a packet.
+        let opening = match self.refresh_desk(id) {
+            Some(handoff) => Some(handoff),
+            None => self.rotate_context(id, &body),
+        };
+        // The blocks in front, as this conversation has been told them so far.
+        let (prompt, mut context_parts) = if parts.is_empty() { (body.clone(), Vec::new()) } else { self.compose_turn(id, &parts, &body) };
+        if !context_parts.is_empty() {
+            context_parts.push(turn_context::Measure { key: "message", full: body.len(), sent: body.len() });
+            if let Some(opening) = &opening {
+                context_parts.push(turn_context::Measure { key: "opening", full: opening.len(), sent: opening.len() });
+            }
+        }
+        let prompt = match opening {
+            Some(opening) => format!("{opening}\n\n{prompt}"),
+            None => prompt,
         };
         // A member that just moved engines: equipe's brief of where it was.
         // The brief is the member's; its first run's first turn carries it
@@ -6015,6 +6023,10 @@ for one project goes to it as tickets for its owners, with that project — and 
             Some(note) => format!("{text} {note}"),
             None => text,
         });
+        // What a PM's turn carries, block by block, kept for `equipe usage --pm-context`.
+        if !context_parts.is_empty() {
+            self.keep_turn_context(id, &context_parts, charter.as_deref(), memory.as_deref(), machine.as_deref());
+        }
         watchdog::mark("turn start: engine");
         let (cwd, access, resume, history, ticket, add_dirs) = match &session.work {
             Some(work) => {
@@ -11661,6 +11673,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                         wind_down: None,
                         taken_back: Vec::new(),
                         send_now_prompt: None,
+                told: Default::default(),
                         subagents: Vec::new(),
                         compacting: None,
                         briefing: journal.waiting(record.id, "briefing").unwrap_or_default(),
@@ -12539,6 +12552,20 @@ fn current_page(tabs: &Event) -> Option<equipe_protocol::BrowserPage> {
 const REFRESH_TAIL: usize = 12;
 
 /// `text` cut to about `max` characters, on a character boundary.
+/// The line a PM's message carries in place of the list of what waits on
+/// the person when that list is as it last heard it: how many, and how many
+/// went stale — the counts it acts on — read off the note
+/// ([`importance::pm_note`]).
+fn waiting_still(note: &str) -> String {
+    let number_before = |marker: &str| note.find(marker).and_then(|at| note[..at].rsplit(|c: char| !c.is_ascii_digit()).next()).and_then(|n| n.parse::<usize>().ok());
+    let all = number_before(" in all)").unwrap_or(0);
+    let stale = match number_before(" of them waited") {
+        Some(n) if n > 0 => format!(", {n} of them STALE"),
+        _ => String::new(),
+    };
+    format!("{all} things wait on the person{stale} — the list you were given earlier in this conversation still stands; lead with its most blocking when you remind them.")
+}
+
 fn clip(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_owned();
@@ -12897,6 +12924,7 @@ fn lane_of(main: SessionId, m: &Session, project: Option<String>, thread: DeskTh
         wind_down: None,
         taken_back: Vec::new(),
         send_now_prompt: None,
+                told: Default::default(),
         subagents: Vec::new(),
         compacting: None,
         answers_person: false,

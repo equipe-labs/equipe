@@ -104,6 +104,8 @@ impl Runtime {
         let info = CompactingInfo { trigger, started_at, estimate_ms };
         if let Some(s) = self.sessions.get_mut(&id) {
             s.compacting = Some((info, key, std::time::Instant::now()));
+            // Compacted, what it was told before may be gone from it: told whole again.
+            s.told.forget();
         }
         let (member, project) = self.compact_who(id);
         self.publish(Event::Compacting { session: id, member, project, trigger, started_at, estimate_ms });

@@ -7809,3 +7809,35 @@ async fn a_decision_the_person_cant_perceive_is_turned_back_to_the_member() {
     assert!(!again.is_error, "{again:?}");
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn the_pm_hears_where_each_project_stands_once_per_conversation_then_only_what_changed() {
+    use equipe_core::protocol::transcript::scope;
+    let site = named("site");
+    let app = named("app");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&site, &app])));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Login page", "body": "-", "owner": "qa", "project": "app" })).await;
+    let say = |text: &'static str| Command::Submit { session: 1, text: text.into(), about: Some(None) };
+    handle.send(say("how is everything?"));
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    handle.send(say("and now?"));
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let made = tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Hero", "body": "-", "owner": "qa", "project": "site", "request": 0 })).await;
+    assert!(!made.is_error, "{made:?}");
+    handle.send(say("and after that?"));
+    until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    let all = calls(&recorded);
+    let prompt = |said: &str| all.iter().filter_map(|c| arg(c, "-p")).find(|p| p.ends_with(said)).unwrap_or_else(|| panic!("no call ends with {said}: {all:?}")).to_owned();
+    let (first, second, third) = (prompt("how is everything?"), prompt("and now?"), prompt("and after that?"));
+    // The first message of the conversation: where each project stands, whole.
+    assert!(first.starts_with(scope::WHOLE_SQUAD) && first.contains("- app: no one on it now; 1 to do or in progress") && first.contains("- site: no one on it now"), "{first}");
+    // Nothing changed: the framing, and that the overview stands as told.
+    assert!(second.starts_with(scope::WHOLE_SQUAD), "every message still says what it is about: {second}");
+    assert!(!second.contains("- app: no one on it now") && second.contains("as told earlier in this conversation, unchanged"), "{second}");
+    assert!(second.len() < first.len(), "{second}");
+    // One project changed: said again (a block this small, whole; a big one, its changed lines — `turn_context`'s tests).
+    assert!(third.contains("- site: no one on it now; 1 to do or in progress"), "{third}");
+    handle.shutdown().await;
+}
