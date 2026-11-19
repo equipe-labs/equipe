@@ -956,5 +956,21 @@
   "autonomy.level.decide_and_tell": "정하고 알려 주기",
   "autonomy.level.just_do": "알아서 하기",
   "control.autonomy": "{kind}: {level}",
-  "control.autonomy_window": "정하고 알려 주는 선택은 {minutes}분 동안 답을 기다려요"
+  "control.autonomy_window": "정하고 알려 주는 선택은 {minutes}분 동안 답을 기다려요",
+  "growth.question": "{title}\n{change}\n\n근거 수치:\n{evidence}\n\n기대 효과: {metric}에서 {expected}. 크기 {size} · 위험 {risk}.",
+  "growth.header": "성장 G-{id}",
+  "growth.accept": "수락",
+  "growth.later": "나중에",
+  "growth.no": "아니요",
+  "growth.risk_low": "낮음",
+  "growth.risk_medium": "보통",
+  "growth.risk_high": "높음",
+  "news.growth_run": "성장 점검: 수치 {count}개를 읽었어요. PM이 이를 카드로 정리해 드려요.",
+  "news.growth_nothing": "성장 점검: 참고할 수치가 없어요 ({why}).",
+  "news.growth_budget": "성장 점검: 이번 주 토큰 예산을 다 써서 PM에게 넘기지 않았어요.",
+  "news.growth_live": "G-{id} “{title}”이(가) T-{ticket}로 반영됐어요. 7일, 14일 뒤에 다시 측정해요.",
+  "news.growth_worked": "G-{id} “{title}”, 반영 {days}일째: 효과가 있었어요 — 이전 {before} → {after} ({pct}).",
+  "news.growth_no_change": "G-{id} “{title}”, 반영 {days}일째: 변화가 없어요 — 이전 {before} → {after} ({pct}).",
+  "news.growth_worse": "G-{id} “{title}”, 반영 {days}일째: 나빠졌어요 — 이전 {before} → {after} ({pct}).",
+  "news.growth_unmeasured": "G-{id} “{title}”, 반영 {days}일째: 다시 측정하지 못했어요."
 }

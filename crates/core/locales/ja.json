@@ -956,5 +956,21 @@
   "autonomy.level.decide_and_tell": "決めてから知らせる",
   "autonomy.level.just_do": "任せる",
   "control.autonomy": "{kind}: {level}",
-  "control.autonomy_window": "決めてから知らせる選択は{minutes}分あなたの回答を待ちます"
+  "control.autonomy_window": "決めてから知らせる選択は{minutes}分あなたの回答を待ちます",
+  "growth.question": "{title}\n{change}\n\n根拠の数字:\n{evidence}\n\n期待する効果: {metric} で {expected}。規模 {size} · リスク {risk}。",
+  "growth.header": "グロース G-{id}",
+  "growth.accept": "受け入れる",
+  "growth.later": "あとで",
+  "growth.no": "いいえ",
+  "growth.risk_low": "低",
+  "growth.risk_medium": "中",
+  "growth.risk_high": "高",
+  "news.growth_run": "グロース点検: 数字を {count} 件読みました。PM がカードにまとめます。",
+  "news.growth_nothing": "グロース点検: 使える数字がありません（{why}）。",
+  "news.growth_budget": "グロース点検: 今週のトークン予算を使い切ったため、PM には渡していません。",
+  "news.growth_live": "G-{id}「{title}」が T-{ticket} で公開されました。7 日後と 14 日後にもう一度測ります。",
+  "news.growth_worked": "G-{id}「{title}」、公開 {days} 日目: 効果がありました — 以前 {before} → {after}（{pct}）。",
+  "news.growth_no_change": "G-{id}「{title}」、公開 {days} 日目: 変化なし — 以前 {before} → {after}（{pct}）。",
+  "news.growth_worse": "G-{id}「{title}」、公開 {days} 日目: 悪化しました — 以前 {before} → {after}（{pct}）。",
+  "news.growth_unmeasured": "G-{id}「{title}」、公開 {days} 日目: もう一度測ることができませんでした。"
 }

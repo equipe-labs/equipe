@@ -968,5 +968,21 @@
   "autonomy.level.decide_and_tell": "Decide and tell me",
   "autonomy.level.just_do": "Just do it",
   "control.autonomy": "{kind}: {level}",
-  "control.autonomy_window": "Decide-and-tell choices wait {minutes} min for you"
+  "control.autonomy_window": "Decide-and-tell choices wait {minutes} min for you",
+  "growth.question": "{title}\n{change}\n\nNumbers:\n{evidence}\n\nExpected: {expected} on {metric}. Size {size} · risk {risk}.",
+  "growth.header": "Growth G-{id}",
+  "growth.accept": "Accept",
+  "growth.later": "Later",
+  "growth.no": "No",
+  "growth.risk_low": "low",
+  "growth.risk_medium": "medium",
+  "growth.risk_high": "high",
+  "news.growth_run": "Growth run: {count} numbers read; the PM turns them into cards for you.",
+  "news.growth_nothing": "Growth run: no numbers to work from ({why}).",
+  "news.growth_budget": "Growth run: not handed to the PM — the loop's weekly token budget is spent.",
+  "news.growth_live": "G-{id} “{title}” is live with T-{ticket}: measured again in 7 and 14 days.",
+  "news.growth_worked": "G-{id} “{title}”, {days} days live: it worked — {after} beside {before} before ({pct}).",
+  "news.growth_no_change": "G-{id} “{title}”, {days} days live: no change — {after} beside {before} before ({pct}).",
+  "news.growth_worse": "G-{id} “{title}”, {days} days live: worse — {after} beside {before} before ({pct}).",
+  "news.growth_unmeasured": "G-{id} “{title}”, {days} days live: it couldn't be measured again."
 }

@@ -1618,5 +1618,10 @@
   "autonomy.no_answer": "El daemon no respondió. ¿Está actualizado? Ejecuta equipe update.",
   "metrics_query.no_daemon": "Ningún daemon responde en esta máquina: inícialo con `equipe daemon start` y vuelve a preguntar.",
   "metrics_query.rows": "{rows} filas de {connection} en {ms} ms",
-  "metrics_query.truncated": "Había más filas: solo se muestran las primeras {limit}. Pide más con --limit (hasta {most}) o agrega en la consulta."
+  "metrics_query.truncated": "Había más filas: solo se muestran las primeras {limit}. Pide más con --limit (hasta {most}) o agrega en la consulta.",
+  "growth.started": "Empezó una revisión de crecimiento para {squad}: equipe lee las cifras y luego el PM propone tarjetas.",
+  "growth.not_started": "No se inició ninguna revisión de crecimiento: {why}",
+  "growth.none": "Todavía no hay tarjetas de crecimiento para {squad}.",
+  "growth.summary": "{squad} · última revisión {when} · {spent} de {cap} tokens en los últimos 7 días",
+  "growth.never": "nunca"
 }

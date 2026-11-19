@@ -103,6 +103,7 @@ mod live;
 mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
+mod growth;
 mod status;
 mod status_line;
 mod models;
@@ -342,6 +343,8 @@ pub struct Shell {
     pub updated_card: Option<live::Notes>,
     /// Metrics' state: what the daemon said, the form being filled.
     pub metrics: metrics::Metrics,
+    /// The growth loop's cards, as the daemon last said (`growth.list`), shown in Progress.
+    pub growth: Option<equipe_core::protocol::growth::Growth>,
     pub metrics_ui: views::metrics::Inputs,
     /// Status' state: what the daemon said of how the squad's work goes (`status.rs`).
     pub status: status::StatusUi,
@@ -586,6 +589,7 @@ impl Shell {
             updated_from: None,
             updated_card: None,
             metrics: metrics::Metrics::new(),
+            growth: None,
             metrics_ui: Default::default(),
             status: Default::default(),
             design_taste: Default::default(),

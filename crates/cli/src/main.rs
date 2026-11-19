@@ -23,6 +23,7 @@ mod design_system;
 mod desktop;
 mod disk;
 mod flow;
+mod growth;
 mod health;
 mod home;
 mod i18n;
@@ -401,6 +402,11 @@ enum Command {
         #[command(subcommand)]
         action: logins::LoginsAction,
     },
+    /// The growth loop: `run` reads the squad's product data now for recommendation cards; `list` shows the cards and what they did
+    Growth {
+        #[command(subcommand)]
+        action: growth::GrowthAction,
+    },
     /// A squad's product analytics: `query` asks its PostHog connection one read-only HogQL SELECT through the daemon
     Metrics {
         #[command(subcommand)]
@@ -689,6 +695,7 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Brief { action } => brief::command(action).await.map_err(Failure::new),
         Command::Logins { action } => logins::command(action).map_err(Failure::new),
         Command::Metrics { action } => metrics::command(action).await.map_err(Failure::new),
+        Command::Growth { action } => growth::command(action).await.map_err(Failure::new),
         Command::Secrets { action } => secrets::command(action).map_err(Failure::new),
         Command::Usage(args) => usage::command(args).map_err(Failure::new),
         Command::Flow(args) => flow::command(args).map_err(Failure::new),
