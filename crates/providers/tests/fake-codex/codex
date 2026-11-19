@@ -22,8 +22,9 @@ What a turn does depends on its prompt:
   with what developer messages it was given ("misaligned always": refused there too);
 - "sandboxcheck": a check that writes a test runner's cache
   (`node_modules/.vite/vitest/results.json`) and changes the tracked
-  `README.md` in its working directory, then waits for `turn/steer` and
-  answers with what it read;
+  `README.md` in its working directory, then — when its sandbox lets it
+  write (`workspaceWrite`) — waits for `turn/steer` and answers with what it
+  read; read-only, it writes nothing and says so;
 - "slowly": the recorded turn below, two seconds in — long enough for a test
   to call the board while it runs;
 - anything else: the recorded turn — a read, a new file written for real, an
@@ -253,6 +254,10 @@ def steer_turn():
 
 
 def sandbox_check_turn():
+    if state.get("sandbox") != "workspaceWrite":
+        say("m1", "Read-only: no tests ran.")
+        turn_completed()
+        return
     cache = os.path.join(state["cwd"], "node_modules", ".vite", "vitest")
     os.makedirs(cache, exist_ok=True)
     with open(os.path.join(cache, "results.json"), "w") as f:
@@ -334,6 +339,7 @@ def handle(message):
         notify("thread/started", {"thread": thread(state["thread"])})
     elif method == "turn/start":
         state["cwd"] = params.get("cwd") or state["cwd"]
+        state["sandbox"] = (params.get("sandboxPolicy") or {}).get("type")
         send({"id": request_id, "result": {"turn": {"id": TURN, "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": None, "startedAt": None, "completedAt": None, "durationMs": None}}})
         notify("turn/started", {"threadId": state["thread"], "turn": {"id": TURN, "items": [], "status": "inProgress"}})
         prompt = "".join(i.get("text", "") for i in params.get("input", []))
