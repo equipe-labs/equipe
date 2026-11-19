@@ -133,6 +133,7 @@ mod status;
 pub use hygiene::{NATIVE_DESK_TOKENS, NATIVE_TICKET_TOKENS, ROTATE_DESK_TOKENS, ROTATE_TICKET_TOKENS, wants_large_window};
 mod pace;
 mod verify;
+mod guards;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -768,6 +769,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
     let telemetry = if config.persist { crate::telemetry::Telemetry::start(&config.home, &config.client_version) } else { crate::telemetry::Telemetry::off() };
     let screens = std::sync::Arc::new(crate::screens::Screens::default());
     let mut runtime = Runtime {
+        guards: Default::default(),
         telemetry,
         screens: screens.clone(),
         remote_told: HashMap::new(),
@@ -1326,6 +1328,8 @@ enum Internal {
     /// Something waits for a conversation to act on — work handed in for the
     /// PM to accept: it is woken with `prompt` (read at its next step, at work).
     Wake { session: SessionId, prompt: String },
+    /// A squad's projects' git facts, read off the loop for its self-watch (`guards`).
+    RepoFacts { squad: String, facts: Vec<crate::health::RepoFacts> },
     /// Hand ready work out in every squad again (the disk has room once more).
     Dispatch,
     /// A `show_references` call's pictures, fetched and kept off the loop ([`refcards::Shown`]).
@@ -1461,6 +1465,8 @@ enum WorkEnd {
 
 struct Runtime {
     config: Config,
+    /// The waste stops and the squad's self-watch (`guards`).
+    guards: guards::Guards,
     client: reqwest::Client,
     /// Anonymous usage events, after the person's yes (docs/TELEMETRY.md):
     /// the daemon's only, never a terminal's own runtime.
@@ -1946,6 +1952,7 @@ impl Wake {
             Wake::Internal(Internal::SideDone(_)) => Borrowed("a side chat's turn ended"),
             Wake::Internal(Internal::CallJudged { .. }) => Borrowed("a call's utterance judged"),
             Wake::Internal(Internal::CallTold { .. }) => Borrowed("a call's words about the board"),
+            Wake::Internal(Internal::RepoFacts { .. }) => Borrowed("a squad's projects looked at for its self-watch"),
             Wake::Host(_) => Borrowed("the browser host's news"),
             Wake::Daily => Borrowed("daily prune"),
             Wake::DesktopTick => Borrowed("desktop tick"),
@@ -2299,6 +2306,7 @@ impl Runtime {
                 Internal::SideDone(done) => self.side_done(done),
                 Internal::CallJudged { call, judged } => self.call_judged(call, *judged).await,
                 Internal::CallTold { call, text } => self.call_told(call, text).await,
+                Internal::RepoFacts { squad, facts } => self.repo_facts_read(squad, facts),
             },
             Wake::Host(said) => self.on_host(said).await,
             Wake::Daily => self.prune(),
@@ -2384,6 +2392,8 @@ impl Runtime {
         pulse.step("minute tick: deploys");
         self.deploys_tick();
         self.go_live_tick();
+        pulse.step("minute tick: spend guards and self-watch");
+        self.guards_tick().await;
         pulse.step("minute tick: engines");
         self.engines_tick().await;
         pulse.step("minute tick: calls");
@@ -7099,6 +7109,8 @@ for one project goes to it as tickets for its owners, with that project — and 
         // Runs on tickets cancelled meanwhile stop; tickets that look obsolete wait for the PM.
         self.stop_obsolete_runs(squad);
         self.hold_obsolete(squad, &mut tickets, first);
+        // A ticket whose turns cost its budget already goes to the PM instead (`guards`).
+        self.hold_over_budget(squad, &mut tickets);
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();

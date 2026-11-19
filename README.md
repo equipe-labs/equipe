@@ -228,6 +228,7 @@ one person does, so give the busiest roles to the plan with the most room.
 | | |
 |---|---|
 | [docs/USAGE.md](docs/USAGE.md) | Every command and console feature, and how engines sign in |
+| [docs/HEALTH.md](docs/HEALTH.md) | How a squad stops waste and watches itself: ticket budgets, spend alarms, `equipe health` |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Design decisions and the shape of the code |
 | [docs/OPEN-MODELS.md](docs/OPEN-MODELS.md) | Members on open models (NVIDIA Nemotron, OpenAI-compatible servers) and the Nemotron code review |
 | [docs/DESKTOP.md](docs/DESKTOP.md) | The desktop app, including connecting to a daemon over SSH |

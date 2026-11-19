@@ -482,7 +482,7 @@ impl Runtime {
     }
 
     /// What each engine can take on: signed in, and what Codex members can do.
-    fn reach(&self) -> Reach {
+    pub(super) fn reach(&self) -> Reach {
         let mut ready = Vec::new();
         let claude_on = self.sessions.values().any(|s| s.engine == Engine::Claude) || self.engines.plans.contains_key(&Engine::Claude);
         if claude_on || self.engines.claude_ready.is_some_and(|(_, ok)| ok) {
