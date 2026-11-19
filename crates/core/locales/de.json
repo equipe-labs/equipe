@@ -481,6 +481,7 @@
   "notice.fresh_clean": "── ein neues Gespräch: ein leerer Neustart wurde gewünscht ──",
   "notice.context_rotated": "── Kontext aufgefrischt: in einer neuen Sitzung mit Zusammenfassung fortgesetzt ──",
   "notice.codex_refused_retry": "OpenAI hat diesen Zug als möglicherweise unbeabsichtigte Aktivität abgelehnt – vermutlich wurden equipes eigene Hinweise so gelesen, als kämen sie von dir. equipe hat einmal erneut gefragt, in einer neuen Unterhaltung, mit seinen Hinweisen als Anweisungen statt als deine Worte.",
+  "notice.check_copy_undone": "Ein Mitglied, das dieses Ticket prüft, hat {files} in seiner Kopie des Projekts geändert; equipe hat es rückgängig gemacht. Dein eigener Checkout wurde nie angefasst.",
   "news.obsolete_blocker": "T-{id} {title} wurde zurückgehalten, nicht gestartet: T-{other}, worauf es wartet, wurde abgebrochen. Der PM entscheidet, ob es noch läuft.",
   "news.obsolete_duplicate": "T-{id} {title} wurde zurückgehalten, nicht gestartet: T-{other} hat denselben Titel und ist noch offen. Der PM entscheidet, ob es noch läuft.",
   "news.budget_stop": "T-{id} {title} wurde vor dem nächsten Turn angehalten: Es hat zu viel gekostet für das, was vorankam. Der PM entscheidet, ob es weitergeht, enger gefasst oder gar nicht.",

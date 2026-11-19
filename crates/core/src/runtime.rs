@@ -6244,12 +6244,24 @@ for one project goes to it as tickets for its owners, with that project — and 
                     _ => None,
                 };
                 let writable: Vec<PathBuf> = writable.iter().map(PathBuf::from).collect();
+                // A member that checks a ticket's work without changing it — QA, a reviewer —
+                // runs its tests and builds in a disposable copy of the project: Codex's
+                // read-only sandbox would refuse even a test runner's cache, and its
+                // workspace-write would open the person's checkout (`crate::check_copy`).
+                // Not in the read-only mode, which the person chose so nothing runs.
+                let copy_at = scratch
+                    .as_deref()
+                    .filter(|_| session.member.is_some() && access == claude_code::Access::ReadOnly && mode != Mode::ReadOnly)
+                    .filter(|_| session.work.as_ref().is_some_and(|w| !w.lite && !w.kind.in_home()))
+                    .map(crate::check_copy::dir_in);
                 // Refused by OpenAI's safety check as possibly unintended activity: asked again,
                 // once, in a fresh thread that opens with where this one left off — and, refused
                 // again, Claude offered when the member could carry on there. Not on another provider.
                 let refused_retry = provider.is_none().then(|| self.refused_handoff(id));
                 let claude_instead = squad.as_deref().filter(|s| provider.is_none() && self.claude_open(s)).and(session.name()).map(str::to_owned);
                 let (steer_tx, steer_rx) = mpsc::unbounded_channel::<String>();
+                // What equipe itself says into the turn: a change to a copy's source undone.
+                let say_in_turn = steer_tx.clone();
                 steer = Some(steer_tx);
                 let (stop_tx, stop_rx) = oneshot::channel::<()>();
                 stop = Some(stop_tx);
@@ -6289,6 +6301,49 @@ for one project goes to it as tickets for its owners, with that project — and 
                     // person's words as theirs: OpenAI's safety check reads instructions in the
                     // person's message that they didn't write as possibly unintended activity.
                     let (asked, framing) = crate::design::session::framing_apart(&prompt);
+                    // A checking turn in its copy, told where it is; where no copy can be
+                    // made (no git, no copy-on-write), read-only as before.
+                    let mut cwd = cwd;
+                    let mut copy = None;
+                    if let Some(at) = copy_at {
+                        let project = cwd.clone();
+                        match tokio::task::spawn_blocking(move || crate::check_copy::prepare(&project, &at)).await {
+                            Ok(Ok(made)) => copy = Some(made),
+                            Ok(Err(why)) => crate::daemon_log!("equipe: session {id} checks read-only in {}: no copy ({why})", cwd.display()),
+                            Err(_) => {}
+                        }
+                    }
+                    let framing = match (&copy, framing) {
+                        (Some(made), framing) => {
+                            let note = crate::check_copy::framing(made, &cwd);
+                            Some(framing.map_or_else(|| note.clone(), |f| format!("{f}\n\n{note}")))
+                        }
+                        (None, framing) => framing,
+                    };
+                    if let Some(made) = &copy {
+                        cwd = made.cwd.clone();
+                    }
+                    // Its source checked as the turn goes, after each tool that could
+                    // write: a change undone at once, and the member told in the turn.
+                    let (poke, mut poked) = mpsc::unbounded_channel::<()>();
+                    let checker = copy.as_ref().map(|made| {
+                        let (root, internal) = (made.root.clone(), internal.clone());
+                        tokio::spawn(async move {
+                            while poked.recv().await.is_some() {
+                                while poked.try_recv().is_ok() {}
+                                let at = root.clone();
+                                if let Ok(Ok(undone)) = tokio::task::spawn_blocking(move || crate::check_copy::undo_changes(&at)).await
+                                    && !undone.is_empty()
+                                {
+                                    crate::daemon_log!("equipe: session {id} changed its copy's source; undone: {}", undone.join(", "));
+                                    let _ = say_in_turn.send(crate::check_copy::undone_note(&undone));
+                                    let text = crate::i18n::core(lang).fill("notice.check_copy_undone", &[("files", crate::check_copy::listed(&undone))]);
+                                    let _ = internal.send(Internal::Event(Box::new(Event::Notice { undo: None, session: id, text })));
+                                }
+                            }
+                        })
+                    });
+                    let poke = checker.is_some().then_some(poke);
                     let request = codex_app::TurnRequest {
                         prompt: &asked,
                         model: model.as_deref(),
@@ -6302,6 +6357,7 @@ for one project goes to it as tickets for its owners, with that project — and 
                         framing: framing.as_deref(),
                         mcp_servers: servers.as_ref(),
                         writable: &writable,
+                        checks: copy.is_some(),
                         env: &env,
                         provider: provider.as_ref(),
                         subagents: subagents.and(set_at_once),
@@ -6319,6 +6375,11 @@ for one project goes to it as tickets for its owners, with that project — and 
                     let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
+                        }
+                        if let (Some(poke), Activity::ToolDone(done)) = (&poke, &activity)
+                            && crate::check_copy::may_write(&done.name)
+                        {
+                            let _ = poke.send(());
                         }
                         match activity {
                             // Said as it happens, in the person's words: the turn goes on afresh.
@@ -6357,6 +6418,22 @@ for one project goes to it as tickets for its owners, with that project — and 
                     .await;
                     // The engine is gone: nothing is bound to it any more.
                     drop(bound);
+                    // Its copy's source looked at once more, the checks under way done first:
+                    // a change made at the very end is undone too, and the person told.
+                    drop(poke);
+                    if let Some(checker) = checker {
+                        let _ = checker.await;
+                    }
+                    if let Some(made) = &copy {
+                        let root = made.root.clone();
+                        if let Ok(Ok(undone)) = tokio::task::spawn_blocking(move || crate::check_copy::undo_changes(&root)).await
+                            && !undone.is_empty()
+                        {
+                            crate::daemon_log!("equipe: session {id} changed its copy's source at its turn's end; undone: {}", undone.join(", "));
+                            let text = crate::i18n::core(lang).fill("notice.check_copy_undone", &[("files", crate::check_copy::listed(&undone))]);
+                            emit(Event::Notice { undo: None, session: id, text });
+                        }
+                    }
                     // Refused with nothing to fall back on: said before the turn's end, so its
                     // failure is never taken for the engine's limit.
                     if let Err(equipe_providers::Error::Backend { message, code }) = &outcome

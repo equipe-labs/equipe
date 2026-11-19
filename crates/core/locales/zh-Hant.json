@@ -477,6 +477,7 @@
   "notice.fresh_clean": "── 新的對話：要求從零開始 ──",
   "notice.context_rotated": "── 上下文已重新整理：已在附摘要的新對話中繼續 ──",
   "notice.codex_refused_retry": "OpenAI 以可能是非預期操作為由拒絕了這一輪——很可能是 equipe 自己附加的說明被當成了你的話。equipe 已將這些說明作為指令而非你的話傳送，並在新對話中重新請求了一次。",
+  "notice.check_copy_undone": "檢查此工單的成員在專案副本中修改了 {files}，equipe 已將其復原。你自己的檢出從未被更動。",
   "news.obsolete_blocker": "T-{id} {title} 已暫緩，未啟動：它所依賴的 T-{other} 已被取消。是否仍要執行由 PM 決定。",
   "news.obsolete_duplicate": "T-{id} {title} 已暫緩，未啟動：T-{other} 標題相同且仍在進行。是否仍要執行由 PM 決定。",
   "news.budget_stop": "T-{id} {title} 在下一輪之前被停下：相對進展，花費太高。是否繼續、縮小範圍或放棄，由 PM 決定。",

@@ -203,6 +203,17 @@ pub fn sandbox_policy(access: Access, writable: &[PathBuf]) -> Value {
     }
 }
 
+/// The access a turn's sandbox is drawn for. A turn that checks work it may
+/// not change ([`TurnRequest::checks`]) is read-only, yet runs its project's
+/// tests and builds: Codex's `read-only` refuses every write, so not even a
+/// test runner's cache could be made. It gets `workspace-write` instead —
+/// its working directory (a disposable copy of the project, never the
+/// person's checkout) and `writable`, no network — while asking stays as
+/// read-only's ([`approval_policy`]: never).
+pub fn sandbox_access(access: Access, checks: bool) -> Access {
+    if checks && access == Access::ReadOnly { Access::EditFiles } else { access }
+}
+
 /// An MCP server for a thread, run as a command, as Codex's `mcp_servers`
 /// config takes it. `approved`: its tools run without asking (equipe's own
 /// board tools); otherwise each call asks the person.
@@ -370,6 +381,11 @@ pub struct TurnRequest<'a> {
     pub mcp_servers: Option<&'a Value>,
     /// Directories outside the working directory the turn may write: a build cache.
     pub writable: &'a [PathBuf],
+    /// A read-only turn that checks work — QA, a review — in a disposable copy
+    /// of the project (its working directory): it may write there and in
+    /// `writable`, to run tests and builds ([`sandbox_access`]). No effect on
+    /// any other access.
+    pub checks: bool,
     /// More environment for the app-server, and so for its commands.
     pub env: &'a [(String, String)],
     /// Another provider to run the turn on ([`Provider`]); `None`: the
@@ -390,7 +406,7 @@ pub fn start_params(request: &TurnRequest<'_>, cwd: &Path, others: Option<&Value
     let mut params = json!({
         "cwd": cwd,
         "approvalPolicy": approval_policy(request.access),
-        "sandbox": sandbox_mode(request.access),
+        "sandbox": sandbox_mode(sandbox_access(request.access, request.checks)),
         "config": thread_config(request.mcp_servers, others),
         "serviceName": CLIENT_NAME,
     });
@@ -465,7 +481,7 @@ pub fn turn_params(request: &TurnRequest<'_>, cwd: &Path, thread: &str) -> Value
         "input": [text_input(request.prompt)],
         "cwd": cwd,
         "approvalPolicy": approval_policy(request.access),
-        "sandboxPolicy": sandbox_policy(request.access, request.writable),
+        "sandboxPolicy": sandbox_policy(sandbox_access(request.access, request.checks), request.writable),
         "summary": "auto",
         // Standard speed for a member, whatever the person's own Codex is set
         // to (Fast, `service_tier = "priority"`, spends the plan 2–2.5× as
@@ -2034,6 +2050,33 @@ mod tests {
         assert_eq!(edit["writableRoots"], json!(["/h/builds/fe"]), "the worktree (its cwd) and the build cache, nothing else");
         assert_eq!(edit["networkAccess"], false, "reaching out asks the person");
         assert_eq!(sandbox_policy(Access::Full, &build), json!({ "type": "dangerFullAccess" }));
+    }
+
+    #[test]
+    fn a_read_only_turn_that_checks_writes_its_copy_and_never_asks() {
+        let build = [PathBuf::from("/h/builds/qa"), PathBuf::from("/h/tmp/acme/t7")];
+        // Only read-only changes: every other access is drawn as it is.
+        assert_eq!(sandbox_access(Access::ReadOnly, true), Access::EditFiles);
+        for access in [Access::ReadOnly, Access::EditFiles, Access::Ask, Access::Full] {
+            assert_eq!(sandbox_access(access, false), access);
+        }
+        for access in [Access::EditFiles, Access::Ask, Access::Full] {
+            assert_eq!(sandbox_access(access, true), access);
+        }
+        let request = TurnRequest { prompt: "check it", access: Access::ReadOnly, checks: true, writable: &build, ..Default::default() };
+        let start = start_params(&request, Path::new("/h/tmp/acme/t7/checkout"), None);
+        assert_eq!((start["sandbox"].as_str(), start["approvalPolicy"].as_str()), (Some("workspace-write"), Some("never")), "nothing asks, as read-only");
+        let turn = turn_params(&request, Path::new("/h/tmp/acme/t7/checkout"), "thr-1");
+        assert_eq!(turn["approvalPolicy"], "never");
+        assert_eq!(
+            turn["sandboxPolicy"],
+            json!({ "type": "workspaceWrite", "writableRoots": ["/h/builds/qa", "/h/tmp/acme/t7"], "networkAccess": false, "excludeTmpdirEnvVar": false, "excludeSlashTmp": false }),
+            "its copy (the cwd), its build cache and temporary folder; the network stays off"
+        );
+        // Not checking: read-only, as ever.
+        let plain = TurnRequest { checks: false, ..request };
+        assert_eq!(start_params(&plain, Path::new("/r"), None)["sandbox"], "read-only");
+        assert_eq!(turn_params(&plain, Path::new("/r"), "thr-1")["sandboxPolicy"], json!({ "type": "readOnly", "networkAccess": false }));
     }
 
     #[test]

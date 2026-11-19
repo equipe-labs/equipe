@@ -481,6 +481,7 @@
   "notice.fresh_clean": "── une nouvelle conversation : un départ à blanc a été demandé ──",
   "notice.context_rotated": "── Contexte rafraîchi : la suite se poursuit dans une nouvelle session avec un résumé ──",
   "notice.codex_refused_retry": "OpenAI a refusé ce tour comme une activité peut-être non voulue — sans doute parce que les notes d'equipe ont été lues comme si elles venaient de vous. equipe l'a redemandé une fois, dans une nouvelle conversation, en envoyant ses notes comme des instructions et non comme vos mots.",
+  "notice.check_copy_undone": "Un membre qui vérifiait ce ticket a modifié {files} dans sa copie du projet ; equipe l'a annulé. Votre propre copie de travail n'a jamais été touchée.",
   "news.obsolete_blocker": "T-{id} {title} a été retenu, pas démarré : T-{other}, dont il dépend, a été annulé. Le PM décide s'il tourne encore.",
   "news.obsolete_duplicate": "T-{id} {title} a été retenu, pas démarré : T-{other} a le même titre et reste ouvert. Le PM décide s'il tourne encore.",
   "news.budget_stop": "T-{id} {title} a été arrêté avant un nouveau tour : il a coûté trop cher pour ce qui a avancé. Le PM décide s'il continue, plus restreint, ou pas du tout.",

@@ -527,3 +527,69 @@ async fn refused_again_the_person_is_told_in_their_words_with_no_offer_when_clau
     assert_eq!(params_of(&log, "turn/start").len(), 2, "asked again once, not more");
     handle.shutdown().await;
 }
+
+/// QA on Codex checks a ticket it doesn't edit. Codex's read-only sandbox
+/// refuses every write — a test runner couldn't make its cache, and no test
+/// ran — so its turn runs in a disposable copy of the project, sandboxed to
+/// write only there (and its build cache and temporary folder), no network,
+/// asking nothing. Its cache stays; its change to a tracked file is undone at
+/// once and it is told in the turn, the person too; the person's checkout is
+/// never written. Where this filesystem can't clone copy-on-write, the turn
+/// stays read-only in the project, as before.
+#[tokio::test]
+async fn a_codex_member_that_checks_runs_its_tests_in_a_copy_and_its_source_changes_are_undone() {
+    use equipe_core::protocol::rpc::ToolCall;
+    let (codex, log) = fake_codex("");
+    let cwd = repo();
+    std::fs::write(cwd.join(".gitignore"), "node_modules/\n").unwrap();
+    git(&cwd, &["add", "-A"]);
+    git(&cwd, &["commit", "-q", "-m", "ignore dependencies"]);
+    let home = scratch("home");
+    squads::create(&home, "acme", &cwd).unwrap();
+    let mut config = config(&codex, &home);
+    config.equipe_binary = Some("/opt/equipe".into());
+    config.persist = true;
+    let (handle, mut events) = runtime::start(config);
+    add(&handle, &mut events, 1, on_codex(&cwd, "pm")).await;
+    add(&handle, &mut events, 2, on_codex(&cwd, "qa")).await;
+    let call = ToolCall { run: None, squad: "acme".into(), member: "pm".into(), name: "create_ticket".into(), arguments: serde_json::json!({ "title": "Run the suite sandboxcheck", "body": "Check the export.", "owner": "qa" }) };
+    let made = handle.tool(call).await;
+    assert!(!made.is_error, "{made:?}");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
+    let run = started.iter().find_map(|e| if let Event::WorkStarted { session, of: Some(2), .. } = e { Some(*session) } else { None }).unwrap();
+    let ended = until(&mut events, |e| matches!(e, Event::TurnEnded { session, .. } if *session == run)).await;
+
+    let lane = home.join("tmp").join("acme").join("t1");
+    let start = params_of(&log, "thread/start").into_iter().find(|p| p["config"]["mcp_servers"]["equipe"]["args"].as_array().is_some_and(|a| a.iter().any(|x| x == "qa"))).expect("the run's thread");
+    if !equipe_core::check_copy::can_copy_in(&lane) {
+        // No copy-on-write here: read-only in the project, as before.
+        assert_eq!(start["cwd"], cwd.to_string_lossy().as_ref());
+        assert_eq!(start["sandbox"], "read-only");
+        handle.shutdown().await;
+        return;
+    }
+    let copy = lane.join("checkout");
+    assert_eq!(start["cwd"], copy.to_string_lossy().as_ref(), "its turns run in the copy, not the person's checkout");
+    assert_eq!((start["sandbox"].as_str(), start["approvalPolicy"].as_str()), (Some("workspace-write"), Some("never")));
+    let turn = params_of(&log, "turn/start").into_iter().find(|p| p["cwd"] == start["cwd"]).expect("its turn");
+    let policy = &turn["sandboxPolicy"];
+    assert_eq!((policy["type"].as_str(), policy["networkAccess"].as_bool()), (Some("workspaceWrite"), Some(false)), "{policy}");
+    assert!(policy["writableRoots"].as_array().unwrap().iter().any(|r| r == lane.to_string_lossy().as_ref()), "{policy}");
+    // Told where it is, as equipe's own note.
+    let notes: Vec<String> = params_of(&log, "thread/inject_items").iter().flat_map(|p| p["items"].as_array().cloned().unwrap_or_default()).flat_map(|i| i["content"].as_array().cloned().unwrap_or_default()).filter_map(|c| c["text"].as_str().map(str::to_owned)).collect();
+    assert!(notes.iter().any(|n| n.contains("disposable copy of the project") && n.contains(&cwd.to_string_lossy().into_owned())), "{notes:#?}");
+
+    // Its test runner's cache stays in the copy; its change to the tracked README is undone…
+    assert!(copy.join("node_modules/.vite/vitest/results.json").is_file());
+    assert_eq!(std::fs::read_to_string(copy.join("README.md")).unwrap(), "hello\n");
+    // …and it was told in the turn, the person too.
+    let steers: Vec<String> = params_of(&log, "turn/steer").iter().filter_map(|p| p["input"][0]["text"].as_str().map(str::to_owned)).collect();
+    assert!(steers.iter().any(|s| s.contains("equipe undid your change to `README.md`")), "{steers:#?}");
+    assert!(text_of(&ended).contains("Read: equipe undid your change"), "{}", text_of(&ended));
+    assert!(ended.iter().any(|e| matches!(e, Event::Notice { session, text, .. } if *session == run && text.contains("README.md"))), "{ended:#?}");
+    // The person's checkout: never written.
+    assert_eq!(std::fs::read_to_string(cwd.join("README.md")).unwrap(), "hello\n");
+    assert!(!cwd.join("node_modules").exists());
+    assert_eq!(git(&cwd, &["status", "--porcelain"]), "");
+    handle.shutdown().await;
+}

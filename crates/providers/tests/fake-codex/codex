@@ -20,6 +20,11 @@ What a turn does depends on its prompt:
   activity (`misalignmentPolicyViolation`) before it does anything — on the
   first thread this app-server opened; on a fresh one started after, answers
   with what developer messages it was given ("misaligned always": refused there too);
+- "sandboxcheck": a check that writes a test runner's cache
+  (`node_modules/.vite/vitest/results.json`) and changes the tracked
+  `README.md` in its working directory, then — when its sandbox lets it
+  write (`workspaceWrite`) — waits for `turn/steer` and answers with what it
+  read; read-only, it writes nothing and says so;
 - "slowly": the recorded turn below, two seconds in — long enough for a test
   to call the board while it runs;
 - anything else: the recorded turn — a read, a new file written for real, an
@@ -248,6 +253,30 @@ def steer_turn():
     turn_completed()
 
 
+def sandbox_check_turn():
+    if state.get("sandbox") != "workspaceWrite":
+        say("m1", "Read-only: no tests ran.")
+        turn_completed()
+        return
+    cache = os.path.join(state["cwd"], "node_modules", ".vite", "vitest")
+    os.makedirs(cache, exist_ok=True)
+    with open(os.path.join(cache, "results.json"), "w") as f:
+        f.write("{}")
+    command("c1", "/bin/zsh -lc 'npx vitest run'", [{"type": "unknown", "command": "npx vitest run"}], "completed", 0, "Tests 3 passed\n")
+    readme = os.path.join(state["cwd"], "README.md")
+    changes = [{"path": readme, "kind": {"type": "update", "move_path": None}, "diff": "-hello\n+fixed\n"}]
+    started("fileChange", id="p1", changes=changes, status="inProgress")
+    with open(readme, "w") as f:
+        f.write("fixed\n")
+    completed("fileChange", id="p1", changes=changes, status="completed")
+    request = wait_for("turn/steer")
+    send({"id": request["id"], "result": {"turnId": TURN}})
+    text = request["params"]["input"][0]["text"]
+    completed("userMessage", id="u1", clientId=None, content=[{"type": "text", "text": text, "text_elements": []}])
+    say("m2", "Read: " + text)
+    turn_completed()
+
+
 def failing_turn():
     turn_completed("failed", {"message": "You've hit your usage limit. Try again at 5:00 PM.", "codexErrorInfo": "usageLimitExceeded", "additionalDetails": None, "misalignment": None})
 
@@ -310,11 +339,14 @@ def handle(message):
         notify("thread/started", {"thread": thread(state["thread"])})
     elif method == "turn/start":
         state["cwd"] = params.get("cwd") or state["cwd"]
+        state["sandbox"] = (params.get("sandboxPolicy") or {}).get("type")
         send({"id": request_id, "result": {"turn": {"id": TURN, "items": [], "itemsView": "notLoaded", "status": "inProgress", "error": None, "startedAt": None, "completedAt": None, "durationMs": None}}})
         notify("turn/started", {"threadId": state["thread"], "turn": {"id": TURN, "items": [], "status": "inProgress"}})
         prompt = "".join(i.get("text", "") for i in params.get("input", []))
         completed("userMessage", id="u0", clientId=None, content=[{"type": "text", "text": prompt, "text_elements": []}])
-        if "approve" in prompt:
+        if "sandboxcheck" in prompt:
+            sandbox_check_turn()
+        elif "approve" in prompt:
             approval_turn()
         elif "interrupt" in prompt:
             interrupt_turn()

@@ -211,6 +211,7 @@ pub fn request<'a>(
         framing: None,
         mcp_servers: Some(&NO_SERVERS),
         writable: &[],
+        checks: false,
         env,
         provider: Some(provider),
         // None of its own on another provider, nor any to cap.

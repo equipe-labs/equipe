@@ -477,6 +477,7 @@
   "notice.fresh_clean": "── 새 대화: 깨끗하게 시작해 달라는 요청 ──",
   "notice.context_rotated": "── 컨텍스트를 새로 고쳤어요: 요약과 함께 새 세션에서 이어가요 ──",
   "notice.codex_refused_retry": "OpenAI가 이 턴을 의도하지 않은 활동일 수 있다며 거절했어요. equipe가 덧붙인 안내가 사용자의 말처럼 읽혔을 가능성이 커요. equipe가 안내를 사용자의 말이 아닌 지시로 보내, 새 대화에서 한 번 다시 요청했어요.",
+  "notice.check_copy_undone": "이 티켓을 검증하던 멤버가 프로젝트 사본에서 {files}을(를) 바꿔서 equipe가 되돌렸어요. 사용자의 체크아웃은 건드리지 않았어요.",
   "news.obsolete_blocker": "T-{id} {title}은(는) 보류하고 시작하지 않았어요: 기다리던 T-{other}이(가) 취소됐어요. 계속 실행할지는 PM이 정해요.",
   "news.obsolete_duplicate": "T-{id} {title}은(는) 보류하고 시작하지 않았어요: 제목이 같은 T-{other}이(가) 아직 열려 있어요. 계속 실행할지는 PM이 정해요.",
   "news.budget_stop": "T-{id} {title}은(는) 다음 턴 전에 멈췄어요: 진척에 비해 비용이 너무 컸어요. 계속할지, 범위를 줄일지, 그만둘지는 PM이 정해요.",

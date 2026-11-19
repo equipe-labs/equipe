@@ -481,6 +481,7 @@
   "notice.fresh_clean": "── a fresh conversation: asked for a clean start ──",
   "notice.context_rotated": "── Context refreshed: continued in a fresh session with a summary ──",
   "notice.codex_refused_retry": "OpenAI refused this turn as possibly unintended activity — most likely equipe's own notes read as if they were yours. equipe asked again once, in a fresh conversation, with its notes sent as instructions rather than as your words.",
+  "notice.check_copy_undone": "A member checking this ticket changed {files} in its copy of the project; equipe undid it. Your own checkout was never touched.",
   "news.obsolete_blocker": "T-{id} {title} was held, not started: T-{other}, which it waits on, was cancelled. The PM decides whether it still runs.",
   "news.obsolete_duplicate": "T-{id} {title} was held, not started: T-{other} has the same title and is still open. The PM decides whether it still runs.",
   "news.budget_stop": "T-{id} {title} was stopped before another turn: it cost too much for what moved. The PM decides whether it goes on, narrower, or not at all.",
