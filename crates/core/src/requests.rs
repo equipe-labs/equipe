@@ -245,10 +245,10 @@ pub fn shipped_status(links: &[RequestTicket], tickets: &[Ticket], asking: &[Tic
 /// was a decision or an instruction answered, whose production lead time
 /// doesn't apply (`crate::lead_time` reads it the same way).
 fn decided_only(cover: &[TicketId], tickets: &[Ticket]) -> bool {
-    cover.iter().filter_map(|id| tickets.iter().find(|t| t.id == *id)).all(|t| {
-        let shipped = t.kind == TicketKind::Code && t.status == TicketStatus::Done && t.merged.is_some();
-        !shipped && t.label != Some(TicketLabel::Deploy)
-    })
+    let covering: Vec<&Ticket> = cover.iter().filter_map(|id| tickets.iter().find(|t| t.id == *id)).collect();
+    let ships = |t: &Ticket| (t.kind == TicketKind::Code && t.status == TicketStatus::Done && t.merged.is_some()) || t.label == Some(TicketLabel::Deploy);
+    // All of it dropped is dropped, not answered.
+    covering.iter().any(|t| t.status == TicketStatus::Done) && !covering.iter().any(|t| ships(t))
 }
 
 /// Where the request kept as `row` stands at `now`: [`status`], and — still
@@ -1147,6 +1147,10 @@ mod tests {
         let mut deploy = decision;
         deploy.label = Some(TicketLabel::Deploy);
         assert!(!status(&links, &[deploy], &[]).decided);
+        // All of it dropped: dropped, not answered.
+        let s = status(&links, &[ticket(7, "Go with option B", TicketStatus::Cancelled)], &[]);
+        assert!(s.done && !s.decided);
+        assert!(line(&s, words, &clock).ends_with("all done"));
         // Still open: neither.
         assert!(!status(&links, &[ticket(7, "Go with option B", TicketStatus::InProgress)], &[]).decided);
     }

@@ -359,7 +359,8 @@ pub fn summarize(input: &Input, since: u64, until: u64) -> Report {
         let merged_any = ids.iter().any(|id| merged_at(events_of(*id)).is_some() || tickets.get(id).is_some_and(|t| t.merged == Some(true)));
         let awaiting_merge = work.iter().any(|id| tickets.get(id).is_some_and(|t| t.kind == "code" && t.status == "done" && t.merged == Some(false)));
         let all_closed = work.iter().all(|id| tickets.get(id).is_none_or(|t| closed(&t.status)));
-        let decided = deploy.is_none() && !merged_any && !awaiting_merge && all_closed;
+        let any_done = work.iter().any(|id| tickets.get(id).is_some_and(|t| t.status == "done"));
+        let decided = deploy.is_none() && !merged_any && !awaiting_merge && all_closed && any_done;
         let live = if decided {
             report.decided += 1;
             None

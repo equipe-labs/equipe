@@ -387,15 +387,6 @@ pub struct Handle {
 }
 
 impl Handle {
-    /// A handle whose loop never answers — as a loop busy with a long step
-    /// (a merge, a worktree) doesn't — kept so while the second half lives:
-    /// for tests of what must not wait on the loop.
-    #[cfg(test)]
-    pub(crate) fn unanswered() -> (Handle, impl Sized) {
-        let (requests, held) = mpsc::unbounded_channel::<Request>();
-        (Handle { requests, pulse: watchdog::Pulse::new(), screens: std::sync::Arc::new(crate::screens::Screens::default()) }, held)
-    }
-
     /// The screens following each squad: a screen takes a seat as it says
     /// hello, and leaves with its connection.
     pub fn screens(&self) -> &std::sync::Arc<crate::screens::Screens> {
@@ -13636,5 +13627,19 @@ mod tests {
         let sent = recent_history(&exchange(10, 50_000));
         let chars: usize = sent.iter().skip(1).map(|m| m.text.len()).sum();
         assert!(chars <= HISTORY_CHARS, "{chars}");
+    }
+}
+
+/// What tests elsewhere in the crate need of the runtime's insides.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// A handle whose loop never answers — as a loop busy with a long step
+    /// (a merge, a worktree) doesn't — kept so while the second half lives:
+    /// for tests of what must not wait on the loop.
+    pub(crate) fn unanswered() -> (Handle, impl Sized) {
+        let (requests, held) = mpsc::unbounded_channel::<Request>();
+        (Handle { requests, pulse: watchdog::Pulse::new(), screens: std::sync::Arc::new(crate::screens::Screens::default()) }, held)
     }
 }

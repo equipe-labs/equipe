@@ -1625,7 +1625,7 @@ mod binding_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn a_runs_engine_is_bound_to_its_member_while_the_loop_is_busy() {
-        let (core, _busy) = Handle::unanswered();
+        let (core, _busy) = crate::runtime::test_support::unanswered();
         // The run's engine: a child of this process, as every engine is the daemon's.
         let mut engine = std::process::Command::new("sleep").arg("30").spawn().unwrap();
         let pid = engine.id();
