@@ -4670,9 +4670,10 @@ async fn asking_again_for_a_sign_in_still_open_makes_no_second_ask() {
     let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": url, "why": why })).await;
     assert!(!said.is_error && said.text.contains("browser panel"), "{said:?}");
     // The notice, and the host's word that the browser is in the person's hands, in either order.
+    let handed = |e: &Event| matches!(e, Event::BrowserControl { by: Some(_), why: Some(w), .. } if w == why);
     let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
-    if !seen.iter().any(|e| matches!(e, Event::BrowserControl { by: Some(_), .. })) {
-        until(&mut events, |e| matches!(e, Event::BrowserControl { by: Some(_), .. })).await;
+    if !seen.iter().any(handed) {
+        until(&mut events, handed).await;
     }
 
     // Asked again at once, and again: the same ask, still open with the person.
@@ -4690,7 +4691,8 @@ async fn asking_again_for_a_sign_in_still_open_makes_no_second_ask() {
         extra.push(event);
     }
     assert!(!extra.iter().any(|e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains(why))), "no second notice: {extra:?}");
-    assert!(!extra.iter().any(|e| matches!(e, Event::BrowserControl { by: Some(_), .. })), "no second hand-off: {extra:?}");
+    // (The host may say again who holds the lane as its page loads; a hand-off says what for.)
+    assert!(!extra.iter().any(handed), "no second hand-off: {extra:?}");
 
     // Handed back: it looks at its page first, once, then may ask anew.
     handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
