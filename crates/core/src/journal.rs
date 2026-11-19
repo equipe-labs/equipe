@@ -781,6 +781,13 @@ impl Journal {
             "CREATE TABLE IF NOT EXISTS context_rotations (at INTEGER NOT NULL, session INTEGER NOT NULL, member TEXT, ticket INTEGER, kind TEXT NOT NULL, tokens INTEGER NOT NULL)",
             [],
         );
+        // What each of the PM's desk turns carried in front of its message,
+        // block by block, in characters — whole, and as sent once only what
+        // changed is said (`crate::turn_context`): `equipe usage --pm-context`.
+        let _ = conn.execute(
+            "CREATE TABLE IF NOT EXISTS turn_context (at INTEGER NOT NULL, session INTEGER NOT NULL, part TEXT NOT NULL, full INTEGER NOT NULL, sent INTEGER NOT NULL)",
+            [],
+        );
         // Work sent back, and why: what decides whether a stronger model would
         // help (`tiers::after_send_back`). Send-backs from before have none:
         // none counted.
@@ -1688,6 +1695,20 @@ impl Journal {
             params![now(), session as i64, member, ticket, kind, tokens as i64],
         )?;
         self.conn.execute("DELETE FROM context_rotations WHERE at < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// Keep what a PM desk turn of `session` carried: `(part, full, sent)`
+    /// in characters, one row a part.
+    pub fn record_turn_context(&self, session: SessionId, parts: &[(&str, usize, usize)]) -> Result<()> {
+        let at = now();
+        for (part, full, sent) in parts {
+            self.conn.execute(
+                "INSERT INTO turn_context (at, session, part, full, sent) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![at, session as i64, part, *full as i64, *sent as i64],
+            )?;
+        }
+        self.conn.execute("DELETE FROM turn_context WHERE at < ?1", [now() - KEPT_FOR_RETROS])?;
         Ok(())
     }
 

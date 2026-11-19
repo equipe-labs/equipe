@@ -385,7 +385,7 @@ pub fn pm_note(list: &[Waiting], n: usize, now: u64) -> Option<String> {
     }
     let mut lines: Vec<String> = list.iter().take(n).map(|w| pm_line(w, now)).collect();
     if list.len() > n {
-        lines.push(format!("- … and {} more", list.len() - n));
+        lines.push(format!("- … and {} more (`board` with `status: waiting` lists them)", list.len() - n));
     }
     let mut text = format!(
         "Waiting on the person ({} in all), the most blocking first. When you remind them, lead with these and say in plain words what each holds up:\n{}",

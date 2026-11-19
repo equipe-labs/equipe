@@ -737,6 +737,41 @@ pub fn read(db: &Path, since: u64, until: u64) -> Result<Input, String> {
     select(&conn, since, until).map_err(|e| e.to_string())
 }
 
+// ── what a PM turn carries ──
+
+/// One part of what the PM's desk turns carried in the window
+/// ([`crate::turn_context`]): a block in front of the message, the message,
+/// or a part of the charter — on average per turn it was in, in characters.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ContextPart {
+    pub part: String,
+    /// The turns it was measured in.
+    pub turns: u64,
+    /// Its size whole, on average.
+    pub full: u64,
+    /// What was sent of it, on average: less where only what changed was said.
+    pub sent: u64,
+}
+
+/// What the PM's desk turns that began in `since..until` carried, part by
+/// part, the largest sent first. Empty for a journal from before it was kept.
+pub fn pm_context(db: &Path, since: u64, until: u64) -> Result<Vec<ContextPart>, String> {
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).map_err(|e| format!("{}: {e}", db.display()))?;
+    let _ = conn.busy_timeout(std::time::Duration::from_secs(5));
+    if !has_table(&conn, "turn_context") {
+        return Ok(Vec::new());
+    }
+    let window = [since.min(i64::MAX as u64) as i64, until.min(i64::MAX as u64) as i64];
+    let read = || -> rusqlite::Result<Vec<ContextPart>> {
+        let mut stmt = conn.prepare(
+            "SELECT part, COUNT(*), CAST(AVG(full) AS INTEGER), CAST(AVG(sent) AS INTEGER) FROM turn_context WHERE at >= ?1 AND at < ?2 GROUP BY part ORDER BY AVG(sent) DESC, part",
+        )?;
+        let n = |v: i64| v.max(0) as u64;
+        stmt.query_map(window, |r| Ok(ContextPart { part: r.get(0)?, turns: n(r.get(1)?), full: n(r.get(2)?), sent: n(r.get(3)?) }))?.collect()
+    };
+    read().map_err(|e| e.to_string())
+}
+
 // ── the daily note ──
 
 /// What the daily note says: the last day against the days before it.
