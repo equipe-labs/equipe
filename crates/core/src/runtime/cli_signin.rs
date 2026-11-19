@@ -236,7 +236,7 @@ or end your turn saying in a line what you're waiting for.",
     }
 
     /// Take card `id` away everywhere, and its process with it.
-    fn close_card(&mut self, squad: &str, id: u64) -> Option<CliSignIn> {
+    pub(super) fn close_card(&mut self, squad: &str, id: u64) -> Option<CliSignIn> {
         let list = self.cli_signins(squad);
         let at = list.iter().position(|l| l.card.id == id)?;
         let mut live = list.remove(at);

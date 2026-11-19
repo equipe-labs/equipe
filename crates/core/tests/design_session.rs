@@ -340,7 +340,7 @@ async fn a_member_withdraws_its_own_card_when_the_persons_words_settle_it() {
     // The person's message carries the open card, and says to withdraw rather than steer them.
     say_to_designer(&handle, &mut events, "show me references first").await;
     let said = turns(&log).pop().unwrap();
-    assert!(said.contains(&format!("#{}", set.id)) && said.contains("Which left menu?") && said.contains("withdraw_decision"), "{said}");
+    assert!(said.contains(&format!("#{}", set.id)) && said.contains("Which left menu?") && said.contains("withdraw_card"), "{said}");
 
     let done = tool(&handle, "designer", "withdraw_decision", json!({ "id": set.id, "why": "references first" })).await;
     assert!(!done.is_error && done.text.contains("Withdrawn"), "{done:?}");

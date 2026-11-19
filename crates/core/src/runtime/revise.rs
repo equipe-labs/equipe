@@ -1,7 +1,7 @@
 //! A member changing its own work from what the person says in conversation,
 //! rather than asking them to answer a card a certain way or to edit the
 //! board themselves: its open decision cards taken back
-//! ([`board::WITHDRAW_DECISION`]), and its own tickets that haven't started
+//! (`withdraw_card`, `runtime::withdraw`), and its own tickets that haven't started
 //! re-scoped or dropped ([`board::REVISE_TICKET`]). Each change is said in a
 //! line in its conversation, and the PM hears of it. While a member has cards
 //! open, the person's next message to it carries a note of them
@@ -14,51 +14,6 @@ use super::*;
 const QUOTED: usize = 100;
 
 impl Runtime {
-    /// `withdraw_decision`: `member`'s own open cards — the one `id` names,
-    /// those about `ticket`, else all of them — taken back, said in its
-    /// conversation `session`.
-    pub(super) fn withdraw_decision(&mut self, squad: &str, member: &str, session: SessionId, args: &Value) -> Result<String, String> {
-        let id = args.get("id").and_then(Value::as_u64);
-        let ticket = board::arg_id(args, "ticket");
-        let why = board::arg_str(args, "why").map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned);
-        let mine: Vec<equipe_protocol::decide::QuestionSet> = self
-            .question_sets(squad)
-            .iter()
-            .filter(|s| s.member == member && id.is_none_or(|i| s.id == i) && ticket.is_none_or(|t| s.ticket == Some(t)))
-            .cloned()
-            .collect();
-        if mine.is_empty() {
-            return Err(match (id, ticket) {
-                (Some(id), _) => format!("You have no open card #{id}. Your open cards are listed with the person's message."),
-                (None, Some(t)) => format!("You have no open card about T-{t}."),
-                (None, None) => "You have no open card to withdraw.".into(),
-            });
-        }
-        let ids: Vec<u64> = mine.iter().map(|s| s.id).collect();
-        self.drop_questions(squad, |s| ids.contains(&s.id));
-        let mut said = Vec::new();
-        for set in &mine {
-            let question = clip(&super::decide::one_line(&set.questions[0].question), QUOTED);
-            if let (Some(t), Some(journal)) = (set.ticket, self.journal(squad)) {
-                let _ = journal.ticket_event(t, member, "withdrew", &question);
-            }
-            let shown = match set.ticket {
-                Some(t) => say!(self, "news.card_withdrawn_on", name = member, id = t, question = question.clone()),
-                None => say!(self, "news.card_withdrawn", name = member, question = question.clone()),
-            };
-            self.publish(Event::Notice { undo: None, session, text: shown });
-            said.push(question);
-        }
-        let reason = why.map(|w| format!(" ({w})")).unwrap_or_default();
-        self.brief_pm(squad, format!("{member} withdrew its card(s) after the person's word{reason}: {}", said.join("; ")), None);
-        crate::daemon_log!("equipe: {squad}: {member} withdrew {} card(s)", mine.len());
-        Ok(format!(
-            "Withdrawn: the person no longer sees {}. Say in a line what you took back and why. If something is still \
-theirs to choose, ask again with ask_decision — with the options as they stand now.",
-            if mine.len() == 1 { "it".to_owned() } else { format!("these {}", mine.len()) }
-        ))
-    }
-
     /// `revise_ticket`: one of `member`'s own tickets that hasn't started —
     /// one it proposed, owns or is on — re-scoped (title, body, waits) or
     /// dropped, as the person said in conversation.
@@ -152,7 +107,7 @@ pub(super) fn cards_note(open: &[(u64, Option<TicketId>, String)]) -> Option<Str
         .collect();
     Some(format!(
         "your decision cards still open for the person: {}. When their message settles one, makes it moot or changes \
-what it asks, withdraw it (withdraw_decision) or ask anew with ask_decision, and change your own tickets to match \
+what it asks, withdraw it (withdraw_card, kind decision, its number) or ask anew with ask_decision, and change your own tickets to match \
 (revise_ticket) — say in a line what you changed. Never ask them to answer a card a certain way.",
         cards.join("; ")
     ))
@@ -167,6 +122,6 @@ mod tests {
         assert_eq!(cards_note(&[]), None);
         let note = cards_note(&[(7, Some(3567), "Which left menu?".into()), (9, None, "Dark or light?".into())]).unwrap();
         assert!(note.contains("#7 on T-3567: \"Which left menu?\"; #9: \"Dark or light?\""), "{note}");
-        assert!(note.contains("withdraw_decision") && note.contains("revise_ticket") && note.contains("Never ask them to answer a card a certain way"), "{note}");
+        assert!(note.contains("withdraw_card") && note.contains("revise_ticket") && note.contains("Never ask them to answer a card a certain way"), "{note}");
     }
 }

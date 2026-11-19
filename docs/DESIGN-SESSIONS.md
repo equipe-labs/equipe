@@ -101,8 +101,10 @@ the prototype itself is not done yet.)
 
 The person shouldn't have to answer a stale card or edit the board to steer work they are already discussing:
 
-- `withdraw_decision` — a member takes back its own open decision cards (one, those of a ticket, or all), and asks
-  anew with `ask_decision` if something is still the person's to choose.
+- `withdraw_card` — a member takes back its own open cards (a decision, a secret or key request, a sign-in, an
+  `ask_person`; one by its kind and number, or those of a ticket), with a one-line reason the person reads, and asks
+  anew with `ask_decision` if something is still the person's to choose. The PM may take back any open card on the
+  squad. (`withdraw_decision`, its older name for decisions only, is still answered.)
 - `revise_ticket` — a member changes one of its own tickets that hasn't started (title, body, waits) or drops it.
 - While a member has cards open, the person's next message to it carries a note listing them and saying to withdraw
   or replace one their words settle — never to ask them to answer it a certain way.

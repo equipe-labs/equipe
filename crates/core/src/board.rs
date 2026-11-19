@@ -520,7 +520,7 @@ pub const CLOSE_REQUEST: &str = "close_request";
 pub const ASK_PERSON: &str = "ask_person";
 /// A member puts a decision to the person: questions with options to pick.
 pub const ASK_DECISION: &str = "ask_decision";
-/// A member takes back its own open decision cards (`runtime/revise.rs`).
+/// A member takes back its own open decision cards: `withdraw_card` before it took every kind of card: still answered, for conversations started then.
 pub const WITHDRAW_DECISION: &str = "withdraw_decision";
 /// A member re-scopes or drops its own ticket that hasn't started.
 pub const REVISE_TICKET: &str = "revise_ticket";
@@ -1006,21 +1006,8 @@ request, and this one waits on it and comes back to you once it lands. Your chan
             },
         }),
     ];
-    tools.push(json!({
-        "name": WITHDRAW_DECISION,
-        "description": "Take back your own decision cards still open for the person when their words in conversation \
-settled one, made it moot, or changed what it asks — never tell them to answer a card a certain way. `id` is the card's \
-number from the note of your open cards; `ticket` takes back those about a ticket; neither, all of yours. Ask anew with \
-ask_decision when something is still theirs to choose, and say in a line what you took back.",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "id": { "type": "integer", "description": "The card's number, as the note of your open cards gives it." },
-                "ticket": { "type": "integer", "description": "Take back your cards about this ticket." },
-                "why": { "type": "string", "description": "What the person said that settles it, in a line." },
-            },
-        },
-    }));
+    // Cards no longer needed taken away: a member's own, the PM's any on the squad.
+    tools.push(crate::withdraw::tool(is_pm));
     if !is_pm {
         tools.push(json!({
             "name": REVISE_TICKET,

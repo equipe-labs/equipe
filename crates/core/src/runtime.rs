@@ -138,6 +138,7 @@ mod pace;
 mod verify;
 mod guards;
 mod told;
+mod withdraw;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -897,6 +898,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         go_live: HashMap::new(),
         accepts: HashMap::new(),
         accepts_declined: HashMap::new(),
+        withdraw_reminded: HashMap::new(),
         merged_cache: Some(worktree::MergedCache::default()),
         settle_again: false,
         settled_at: None,
@@ -1670,6 +1672,8 @@ struct Runtime {
     accepts: HashMap<String, Vec<equipe_protocol::accept::AcceptProposal>>,
     /// Cards the person said no to lately, by squad: not put up again soon.
     accepts_declined: HashMap<String, Vec<crate::accept::Declined>>,
+    /// The cards each squad's PM was reminded of after saying they were withdrawn while still up: once each (`withdraw`).
+    withdraw_reminded: HashMap<String, HashSet<(crate::withdraw::Kind, u64)>>,
     /// What the look at done work off main remembers; `None` while a look is
     /// under way off the loop, and `settle_again` when another was asked meanwhile.
     merged_cache: Option<worktree::MergedCache>,
@@ -6906,6 +6910,13 @@ runbooks and reports live there, and work across the projects or on running them
         // The answer is already on every screen. Naming it is a separate,
         // tool-less side turn and can never hold up or fail that answer.
         self.start_conversation_title(done.session);
+        // The PM said a card is withdrawn or to be ignored: one still up is brought back to it.
+        if done.ticket.is_none()
+            && let Some(reply) = done.reply.as_deref()
+            && let Some(squad) = self.sessions.get(&done.session).filter(|s| s.is_pm()).and_then(|s| s.squad.clone())
+        {
+            self.check_said_withdrawn(&squad, reply);
+        }
         if let Some(reply) = done.reply.filter(|r| !r.trim().is_empty()) {
             let short: String = reply.chars().take(BRIEF_REPLY_CHARS).collect();
             let more = if short.len() < reply.len() { "…" } else { "" };
@@ -9025,6 +9036,8 @@ equipe tries the merge again on its own every few minutes; you hear if it still 
             let _ = journal.save_ticket(&found);
             let _ = journal.ticket_event(ticket, "you", "reopened", &note);
         }
+        // What it asked for under the old direction no longer waits on the person.
+        self.withdraw_ticket_cards(squad, ticket, withdraw::TicketTurn::SentBack);
         let line = format!("You reopened T-{} · {} — {note}", found.id, found.title);
         let shown = match said.trim() {
             "" => say!(self, "news.reopened", id = found.id, title = found.title),
@@ -9094,6 +9107,8 @@ equipe tries the merge again on its own every few minutes; you hear if it still 
                 if let Ok(Some(changed)) = journal.ticket(ticket) {
                     self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: changed });
                 }
+                // A fresh run asks afresh: what the stalled one asked for doesn't wait on the person.
+                self.withdraw_ticket_cards(squad, ticket, withdraw::TicketTurn::Restarted);
                 let line = format!(
                     "The person brought T-{ticket} back for {owner}: a fresh run on the same ticket, branch and worktree, nothing reset. \
 It starts when {owner} is free."
@@ -10976,6 +10991,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if let Some(label) = glance::label_arg(&args)? {
                     ticket.label = Some(label);
                 }
+                let replanned = board::arg_str(&args, "body").is_some_and(|b| b.trim() != ticket.body.trim());
                 if let Some(body) = board::arg_str(&args, "body") {
                     ticket.body = body.to_owned();
                 }
@@ -11034,10 +11050,16 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 let _ = journal.ticket_event(ticket_id, &member, "updated", &args.to_string());
                 let pitched = was_idea && ticket.status == TicketStatus::Proposed;
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
+                // A new plan: what its member asked the person for under the old one is taken away.
+                let withdrawn = if replanned { self.withdraw_ticket_cards(&squad, ticket_id, withdraw::TicketTurn::Replanned) } else { 0 };
+                let withdrawn = match withdrawn {
+                    0 => String::new(),
+                    n => format!(" Its plan changed, so {n} card(s) its member raised under the old one (a secret, a sign-in, an ask) were taken away; its member asks again if the new plan still needs them."),
+                };
                 if pitched {
-                    return Ok(format!("Put idea T-{ticket_id} to the person: its card asks whether to start it now. Tell them in a line or two why now; their click starts it."));
+                    return Ok(format!("Put idea T-{ticket_id} to the person: its card asks whether to start it now. Tell them in a line or two why now; their click starts it.{withdrawn}"));
                 }
-                Ok(format!("Updated T-{ticket_id}.{depends_note}"))
+                Ok(format!("Updated T-{ticket_id}.{depends_note}{withdrawn}"))
             }
             board::COMMENT => {
                 let ticket_id = board::arg_id(&args, "id").ok_or("Which ticket? Give its id.")?;
@@ -11180,7 +11202,9 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::growth::PROPOSE => self.propose_growth(&squad, &member, id, &args),
-            board::WITHDRAW_DECISION => self.withdraw_decision(&squad, &member, id, &args),
+            crate::withdraw::WITHDRAW_CARD => self.withdraw_card(&squad, &member, id, &args, is_pm, false),
+            // From before `withdraw_card`: a conversation started then still has it.
+            board::WITHDRAW_DECISION => self.withdraw_card(&squad, &member, id, &args, is_pm, true),
             board::REVISE_TICKET => self.revise_ticket(&squad, &member, id, &args),
             crate::secrets::ASK_SECRET => self.ask_secret(&squad, &member, id, &args),
             crate::cli_signin::CLI_SIGN_IN => self.cli_sign_in(&squad, &member, id, &args),

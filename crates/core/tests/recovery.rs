@@ -893,3 +893,31 @@ async fn a_member_closed_at_work_leaves_its_worktree_to_the_next_member() {
     assert!(git(&repo, &["log", "--format=%s", first.branch.as_deref().unwrap()]).contains("T-1 Hero"), "what it did is committed on its branch");
     handle.shutdown().await;
 }
+
+/// A stalled run brought back starts afresh: the secret it asked the person
+/// for under the stalled run is taken away, the reason said, rather than
+/// left on their screen for a run that may never need it.
+#[tokio::test]
+async fn a_restarted_ticket_takes_the_secret_card_its_stalled_run_raised_with_it() {
+    let engine = Engine0::new();
+    let (home, repo) = squad();
+    let (handle, mut events, _worktree) = idle_frontend(&engine, &home, &repo).await;
+    let snapshot = handle.snapshot("acme").await;
+    let run = snapshot.sessions.iter().find_map(|s| s.run.filter(|r| r.ticket == 1).map(|r| equipe_core::protocol::rpc::RunKey { session: s.session, ticket: 1, generation: r.generation }));
+    let request = json!({ "name": "vercel-deploy-token", "service": "vercel", "kind": "token", "why": "Deploy the site", "steps": ["Open Account Settings > Tokens", "Create a token"], "create_url": "https://vercel.com/account/tokens" });
+    let asked = handle.tool(ToolCall { run, squad: "acme".into(), member: "frontend".into(), name: "request_secret".into(), arguments: request }).await;
+    assert!(!asked.is_error, "{asked:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::SecretAsked { .. })).await;
+    let card = seen.iter().find_map(|e| if let Event::SecretAsked { ask, .. } = e { Some(ask.clone()) } else { None }).unwrap();
+    assert_eq!(card.ticket, Some(1));
+
+    handle.check_leases_at(now() + 1_000).await;
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.execution.as_ref().is_some_and(|x| x.state == ExecutionState::Stalled))).await;
+    assert_eq!(handle.snapshot("acme").await.secret_asks.len(), 1, "a stall alone takes nothing away");
+    handle.send(Command::Requeue { squad: "acme".into(), ticket: 1, operation: "card:1:w".into(), how: Recovery::Resume });
+    let seen = until(&mut events, |e| matches!(e, Event::SecretClosed { id, saved: false, .. } if *id == card.id)).await;
+    let seen = [seen, until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("withdrew frontend's card on T-1"))).await].concat();
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.ends_with("— its ticket was restarted"))), "{seen:#?}");
+    assert!(handle.snapshot("acme").await.secret_asks.is_empty());
+    handle.shutdown().await;
+}

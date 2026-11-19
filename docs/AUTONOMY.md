@@ -142,6 +142,20 @@ first, then the longest waiting.
   or more (`STALE_AFTER`) is marked stale, and is handed to the PM once so it
   brings it up with the person in plain words — or finds a way around it.
 
+- **A card that is no longer needed is taken away**, never left up with words
+  to ignore it (`withdraw_card`, `runtime/withdraw.rs`). A member takes back
+  its own cards; the PM any open card on the squad — a secret or key request,
+  a sign-in, an `ask_person`, a decision, its own proposal to accept — with a
+  one-line reason the person reads where the card was. The card closes on
+  every screen as if they had closed it (it leaves the composer and Needs
+  you), and the member that raised it is told it was withdrawn, not that the
+  person said no. equipe does this by itself for a ticket's secret, sign-in
+  and `ask_person` cards when the ticket is re-planned (the PM changes its
+  body), brought back after a stall, sent back, or closed. When a PM reply
+  says a card is withdrawn, not needed or to be ignored while it is still up
+  (`match.card_words` and `match.withdraw_words`, in every language), its next
+  turn is reminded once to take it away.
+
 ## Decide and tell, step by step
 
 1. A member asks a design choice with a recommended option.

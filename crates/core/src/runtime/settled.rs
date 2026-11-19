@@ -1,7 +1,8 @@
 //! Questions put to the person about a ticket that is settled — done,
 //! cancelled, merged — are withdrawn: a decision card for work already
 //! finished only asks again what was decided. Its member's conversation
-//! hears it in one line. Cards kept from before (a daemon that didn't do
+//! hears it in one line — and so do its secret, sign-in and `ask_person`
+//! cards (`runtime::withdraw`). Cards kept from before (a daemon that didn't do
 //! this) are swept when the squad's questions are first read.
 
 use equipe_protocol::decide::QuestionSet;
@@ -13,6 +14,8 @@ impl Runtime {
     /// withdrawn — the design review's and the retro's, which aren't about
     /// one ticket's work, aside.
     pub(super) fn withdraw_settled_questions(&mut self, squad: &str, ticket: TicketId) {
+        // Its secret, sign-in and `ask_person` cards go with it too.
+        self.withdraw_ticket_cards(squad, ticket, super::withdraw::TicketTurn::Closed);
         let settled = |s: &QuestionSet| s.ticket == Some(ticket) && !s.review && s.retro.is_none();
         let gone: Vec<(SessionId, String, usize)> =
             self.question_sets(squad).iter().filter(|s| settled(s)).map(|s| (s.session, s.member.clone(), s.questions.len())).collect();
