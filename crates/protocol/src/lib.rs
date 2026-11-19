@@ -1678,10 +1678,19 @@ pub enum Command {
     /// Forget a provider and its saved key. Members set to one of its
     /// models say so at their next turn.
     RemoveProvider { id: String },
-    /// Sign `engine` out with its own tool (`codex logout`). Claude Code's
-    /// login is the person's own: equipe never touches it. Answered by
-    /// [`Event::Engines`].
+    /// Sign `engine` out with its own tool's own command (`codex logout`,
+    /// `claude auth logout`), at once — turns running meanwhile fail for want
+    /// of a sign-in and carry on once it is back. equipe never reads the
+    /// login itself. Answered by [`Event::Engines`].
     SignOut { engine: Engine },
+    /// Sign `engine` out once the members mid-turn on it have finished that
+    /// turn (their turn is never cut off by the login going): until then
+    /// [`EngineStatus::sign_out_after_turns`] says it is waiting. With no one
+    /// mid-turn it signs out at once, as [`Command::SignOut`]. Answered by
+    /// [`Event::Engines`].
+    SignOutAfterTurns { engine: Engine },
+    /// Drop a [`Command::SignOutAfterTurns`] still waiting for turns to end.
+    SignOutCancel { engine: Engine },
     /// How the squad moves members between engines as their plans run low
     /// ([`engines::Switching`]). Answered by [`Event::EngineSwitchingChanged`].
     SetEngineSwitching { squad: SquadName, mode: engines::Switching },
@@ -2137,12 +2146,38 @@ pub struct EngineStatus {
     /// Who it is signed in as (the ChatGPT account's email), when its tool says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Members mid-turn on it right now, across squads (a subset of `members`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub working: Vec<MemberRef>,
+    /// A [`Command::SignOutAfterTurns`] waits for `working` to finish.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sign_out_after_turns: bool,
+    /// What kind of failure made the state [`EngineState::Unknown`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<CheckProblem>,
 }
 
 impl EngineStatus {
     pub fn new(engine: Engine, state: EngineState) -> Self {
-        Self { engine, state, plan: None, per_token: false, detail: None, members: Vec::new(), signing_in: false, legacy: false, account: None }
+        Self { engine, state, plan: None, per_token: false, detail: None, members: Vec::new(), signing_in: false, legacy: false, account: None, working: Vec::new(), sign_out_after_turns: false, check: None }
     }
+}
+
+/// Why asking an engine's own tool where it stands failed
+/// ([`EngineStatus::check`]), so a screen can say something specific.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckProblem {
+    /// The tool didn't answer in time (starting up, or waiting on a prompt
+    /// nobody sees on the daemon's machine).
+    TimedOut,
+    /// The tool couldn't be run, or ran and reported an error (`detail`).
+    Failed,
+    /// It answered, but not in a form this build reads (a newer or older tool).
+    Unrecognized,
+    /// A reason this build doesn't know.
+    #[serde(other)]
+    Other,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -5274,6 +5309,8 @@ mod tests {
             Command::SignIn { engine: Engine::Codex, device: true },
             Command::SignInCancel { engine: Engine::Codex },
             Command::SignOut { engine: Engine::Codex },
+            Command::SignOutAfterTurns { engine: Engine::Claude },
+            Command::SignOutCancel { engine: Engine::Claude },
         ];
         for command in commands {
             let json = serde_json::to_string(&command).unwrap();
@@ -5287,6 +5324,16 @@ mod tests {
         codex.members = vec![MemberRef { squad: "acme".into(), member: "backend".into() }];
         let mut claude = EngineStatus::new(Engine::Claude, EngineState::SignedIn);
         claude.plan = Some("max".into());
+        claude.working = vec![MemberRef { squad: "acme".into(), member: "backend".into() }];
+        claude.sign_out_after_turns = true;
+        let mut unreadable = EngineStatus::new(Engine::Codex, EngineState::Unknown);
+        unreadable.check = Some(CheckProblem::TimedOut);
+        assert_eq!(serde_json::to_value(&unreadable).unwrap()["check"], "timed_out");
+        // An older daemon leaves the new fields out; a newer one's reason this build can't name is still read.
+        let old: EngineStatus = serde_json::from_str(r#"{"engine":"codex","state":"unknown"}"#).unwrap();
+        assert_eq!((old.check, old.working.len(), old.sign_out_after_turns), (None, 0, false));
+        let newer: EngineStatus = serde_json::from_str(r#"{"engine":"codex","state":"unknown","check":"somewhere_new"}"#).unwrap();
+        assert_eq!(newer.check, Some(CheckProblem::Other));
         let events = [
             Event::Engines { engines: vec![claude, codex, EngineStatus::new(Engine::Codex, EngineState::NotInstalled)] },
             Event::SignIn { engine: Engine::Codex, step: SignInStep::Browser { url: Some("https://auth.openai.com/oauth/authorize?state=s".into()) } },

@@ -901,6 +901,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         side_chats: HashMap::new(),
         awake: Default::default(),
         sign_ins: HashMap::new(),
+        sign_out_after: std::collections::HashSet::new(),
         next_sign_in: 1,
         sign_in_codes: HashMap::new(),
         auth: HashMap::new(),
@@ -1689,6 +1690,9 @@ struct Runtime {
     awake: crate::awake::Awake,
     /// Sign-ins under way on this machine, by engine: which one, and its task.
     sign_ins: HashMap<Engine, (u64, JoinHandle<()>)>,
+    /// Engines the person asked to sign out once the members mid-turn on
+    /// them finish that turn ([`Command::SignOutAfterTurns`]).
+    sign_out_after: std::collections::HashSet<Engine>,
     next_sign_in: u64,
     /// The code each sign-in under way waits for (Claude Code's, pasted on a screen).
     sign_in_codes: HashMap<Engine, mpsc::UnboundedSender<String>>,
@@ -2542,6 +2546,9 @@ impl Runtime {
         if let Event::TurnEnded { session, .. } = &event {
             self.tool_repeats.remove(session);
             self.qa_budgets.remove(session);
+            if !self.sign_out_after.is_empty() {
+                self.turn_ended_for_sign_out(*session);
+            }
         }
         // Where a member's browser goes, to bring it back there on screen.
         if let Event::ToolUse { session, tool, target: Some(url), .. } = &event
@@ -3372,7 +3379,16 @@ impl Runtime {
                 self.check_engine(engine);
             }
             Command::MoveIntoLogin => self.move_into_login(),
-            Command::SignOut { engine } => self.sign_out(engine),
+            Command::SignOut { engine } => {
+                self.sign_out_after.remove(&engine);
+                self.sign_out(engine);
+            }
+            Command::SignOutAfterTurns { engine } => self.sign_out_after_turns(engine),
+            Command::SignOutCancel { engine } => {
+                if self.sign_out_after.remove(&engine) {
+                    self.look_at_engines();
+                }
+            }
             Command::InstallEngine { engine } => self.install_engine(engine),
             Command::SetEngineSwitching { squad, mode } => self.set_engine_switching(&squad, mode).await,
             Command::SetParallel { squad, parallel } => self.set_parallel(&squad, parallel).await,
@@ -3503,6 +3519,15 @@ impl Runtime {
             members.dedup();
             status.members = members;
             status.signing_in = self.sign_ins.contains_key(&status.engine);
+            let mut working: Vec<MemberRef> = self.sessions.values().filter(|s| s.engine == status.engine && s.is_working()).filter_map(session_member).collect();
+            working.sort_by(|a, b| (&a.squad, &a.member).cmp(&(&b.squad, &b.member)));
+            working.dedup();
+            status.working = working;
+            // Signed out some other way meanwhile: nothing left to wait for.
+            if status.state != equipe_protocol::EngineState::SignedIn {
+                self.sign_out_after.remove(&status.engine);
+            }
+            status.sign_out_after_turns = self.sign_out_after.contains(&status.engine);
         }
         // Signed in by whatever means — a terminal at the Mac's own screen —
         // while turns wait: they are looked at again, and carried on.
@@ -3579,6 +3604,35 @@ impl Runtime {
         self.plans.retain(|p| p.engine != Engine::Codex);
         // Another account may offer other models (a paid plan has more).
         self.codex_models = None;
+    }
+
+    /// Whether a member is mid-turn on `engine`, not counting `except`
+    /// (a session whose turn just ended, its task not yet finished).
+    fn engine_in_turn(&self, engine: Engine, except: Option<SessionId>) -> bool {
+        self.sessions.iter().any(|(id, s)| s.engine == engine && Some(*id) != except && s.is_working())
+    }
+
+    /// "After current turns": signs `engine` out at once when no member is
+    /// mid-turn on it, else once the last of those turns has ended
+    /// ([`Runtime::turn_ended_for_sign_out`]).
+    fn sign_out_after_turns(&mut self, engine: Engine) {
+        if self.engine_in_turn(engine, None) {
+            self.sign_out_after.insert(engine);
+            self.look_at_engines();
+        } else {
+            self.sign_out_after.remove(&engine);
+            self.sign_out(engine);
+        }
+    }
+
+    /// A turn ended: a sign-out waiting for the turns on its engine goes
+    /// ahead once none is left.
+    fn turn_ended_for_sign_out(&mut self, session: SessionId) {
+        let Some(engine) = self.sessions.get(&session).map(|s| s.engine) else { return };
+        if self.sign_out_after.contains(&engine) && !self.engine_in_turn(engine, Some(session)) {
+            self.sign_out_after.remove(&engine);
+            self.sign_out(engine);
+        }
     }
 
     /// Sign `engine` out with its own tool, when the person asks on its card.

@@ -1406,6 +1406,12 @@ impl Shell {
                             if let Some(wait) = effect.later {
                                 this.engines_later(wait, cx);
                             }
+                            // Signed out as the first half of "Use another account": its sign-in follows.
+                            if let Some(engine) = effect.switch
+                                && !cfg!(feature = "snapshot")
+                            {
+                                this.engine_sign_in_any(engine, window, cx);
+                            }
                             // Installed as the person asked: straight on to its sign-in.
                             if let Some(engine) = effect.sign_in
                                 && !cfg!(feature = "snapshot")

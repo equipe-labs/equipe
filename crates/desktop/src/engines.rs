@@ -12,7 +12,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use equipe_core::protocol::{AuthState, Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, ProviderProblem, ProviderStatus, ProviderTest, SessionId, SignInFailure, SignInStep};
+use equipe_core::protocol::{AuthState, CheckProblem, Command, Engine, EngineState, EngineStatus, Event, InstallStep, PlanUsage, ProviderProblem, ProviderStatus, ProviderTest, SessionId, SignInFailure, SignInStep};
 use equipe_core::t;
 
 use crate::icons::Icon;
@@ -100,6 +100,9 @@ pub const SIGNED_IN_SHOWN: Duration = Duration::from_secs(8);
 pub const TERMINAL_POLL: Duration = Duration::from_secs(4);
 /// …for at most this long.
 pub const TERMINAL_WATCH: Duration = Duration::from_secs(10 * 60);
+/// A sign-out the daemon hasn't answered this long after its last word failed
+/// (its tool allows 20 seconds, then the daemon looks again).
+pub const SIGN_OUT_WAIT: Duration = Duration::from_secs(45);
 
 /// Why a card's sign-in stopped, as it explains it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +113,8 @@ pub enum Problem {
     NoAnswer,
     /// The window lost the daemon.
     Lost,
+    /// The tool's own sign-out ran, and the engine still says it is signed in.
+    SignOutFailed,
 }
 
 /// Where one card's sign-in (or sign-out) stands.
@@ -194,6 +199,23 @@ pub fn offers(status: Option<&EngineStatus>, card: &Card, installing: bool, conn
     }
 }
 
+/// What a card whose check failed ("Couldn't check") offers instead of
+/// guessing: look again, and the way out of a login that can't be read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Recover {
+    /// "Check again" can be pressed.
+    pub recheck: bool,
+    /// "Sign out" and "Use another account" can be pressed.
+    pub manage: bool,
+}
+
+/// What an unreadable card offers: the check can be repeated unless it is
+/// being repeated; the login's own actions wait for nothing else to be on
+/// its way.
+pub fn recover(card: &Card, connected: bool, checking: bool) -> Recover {
+    Recover { recheck: connected && !checking, manage: connected && card.settled() }
+}
+
 /// What an event asks of the window besides drawing.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Effect {
@@ -204,6 +226,8 @@ pub struct Effect {
     pub sign_in: Option<Engine>,
     /// Draw again this much later (a note that goes).
     pub later: Option<Duration>,
+    /// Signed out as the first half of "Use another account": its sign-in starts at once.
+    pub switch: Option<Engine>,
 }
 
 #[derive(Debug, Default)]
@@ -245,6 +269,14 @@ pub struct Engines {
     auth_asked: std::collections::HashSet<Engine>,
     /// When a sign-in followed on a card finished, said there a moment.
     signed_in_at: HashMap<Engine, Instant>,
+    /// Engines whose sign-out (asked or running) is the first half of
+    /// "Use another account": their sign-in follows it.
+    switching: std::collections::HashSet<Engine>,
+    /// Since when a sign-out has had no word from the daemon.
+    signing_out_since: HashMap<Engine, Instant>,
+    /// Engines whose status the person asked to look at again, and when:
+    /// until the daemon answers, the card says it is checking.
+    rechecking: HashMap<Engine, Instant>,
 }
 
 /// Why an engine can't serve its members, as the daemon said ([`Event::EngineAuth`]).
@@ -307,7 +339,7 @@ impl Engines {
     /// "Sign in": the daemon runs the tool's sign-in; `remote` (the daemon is on
     /// another Mac, the browser here) asks for a code instead of its browser.
     pub fn sign_in(&mut self, engine: Engine, remote: bool, now: Instant) -> Vec<Command> {
-        if self.card(engine).under_way() || self.card(engine) == &Card::SigningOut || platform(engine).signs_in != SignsIn::FromApp {
+        if self.card(engine).under_way() || *self.card(engine) == Card::SigningOut || platform(engine).signs_in != SignsIn::FromApp {
             return vec![];
         }
         self.signed_in_at.remove(&engine);
@@ -319,7 +351,7 @@ impl Engines {
     /// Claude Code's too, whose page and pasted code work from any Mac.
     pub fn sign_in_again(&mut self, engine: Engine, remote: bool, now: Instant) -> Vec<Command> {
         // Not over a sign-in on its way, nor over a sign-out under way.
-        if self.card(engine).under_way() || self.card(engine) == &Card::SigningOut {
+        if self.card(engine).under_way() || *self.card(engine) == Card::SigningOut {
             return vec![];
         }
         self.signed_in_at.remove(&engine);
@@ -399,32 +431,106 @@ impl Engines {
         // Not over a sign-in on its way or a sign-out under way; a failure is put away.
         if self.card(engine).settled() {
             self.signed_in_at.remove(&engine);
+            self.switching.remove(&engine);
             self.set(engine, Card::ConfirmSignOut);
         }
     }
 
+    /// "Use another account" asks first too: it signs out, then starts the
+    /// engine's own sign-in.
+    pub fn ask_switch(&mut self, engine: Engine) {
+        if self.card(engine).settled() {
+            self.ask_sign_out(engine);
+            self.switching.insert(engine);
+        }
+    }
+
+    /// Whether the question on the card is about switching accounts.
+    pub fn switching(&self, engine: Engine) -> bool {
+        self.switching.contains(&engine)
+    }
+
     pub fn keep(&mut self, engine: Engine) {
         if matches!(self.card(engine), Card::ConfirmSignOut | Card::Failed { .. }) {
+            self.switching.remove(&engine);
             self.set(engine, Card::Idle);
         }
     }
 
+    /// The question answered "now": the daemon signs the engine out at once.
     pub fn sign_out(&mut self, engine: Engine) -> Vec<Command> {
-        if self.card(engine) != &Card::ConfirmSignOut {
+        self.signing_out(engine, Command::SignOut { engine })
+    }
+
+    /// The question answered "after current turns": the daemon waits for the
+    /// members mid-turn on the engine to finish that turn.
+    pub fn sign_out_after_turns(&mut self, engine: Engine) -> Vec<Command> {
+        self.signing_out(engine, Command::SignOutAfterTurns { engine })
+    }
+
+    fn signing_out(&mut self, engine: Engine, command: Command) -> Vec<Command> {
+        // Pressed while waiting for turns, "now" overrides the wait (a double click otherwise sends nothing twice).
+        let waiting = self.status(engine).is_some_and(|s| s.sign_out_after_turns);
+        if *self.card(engine) == Card::SigningOut && waiting && matches!(command, Command::SignOut { .. }) {
+            self.signing_out_since.insert(engine, Instant::now());
+            return vec![command];
+        }
+        if *self.card(engine) != Card::ConfirmSignOut {
             return vec![];
         }
+        self.signing_out_since.insert(engine, Instant::now());
         self.set(engine, Card::SigningOut);
-        vec![Command::SignOut { engine }]
+        vec![command]
+    }
+
+    /// "Cancel" while the sign-out waits for turns: the daemon drops the wait.
+    pub fn cancel_sign_out(&mut self, engine: Engine) -> Vec<Command> {
+        if *self.card(engine) != Card::SigningOut {
+            return vec![];
+        }
+        self.switching.remove(&engine);
+        self.signing_out_since.remove(&engine);
+        self.set(engine, Card::Idle);
+        vec![Command::SignOutCancel { engine }]
+    }
+
+    /// "Check again": ask the daemon where the engines stand, saying so on the card meanwhile.
+    pub fn check_again(&mut self, engine: Engine, now: Instant) -> Vec<Command> {
+        if self.checking_again(engine, now) {
+            return vec![];
+        }
+        self.rechecking.insert(engine, now);
+        self.turn += 1;
+        vec![Command::Engines]
+    }
+
+    /// The daemon was asked to look again and hasn't answered yet.
+    pub fn checking_again(&self, engine: Engine, now: Instant) -> bool {
+        self.rechecking.get(&engine).is_some_and(|at| now.duration_since(*at) < NO_ANSWER)
     }
 
     pub fn on_event(&mut self, event: &Event) -> Effect {
         match event {
             Event::Engines { engines } => {
                 self.statuses = Some(engines.clone());
+                self.rechecking.clear();
+                let mut switch = None;
                 for status in engines {
                     let card = self.card(status.engine).clone();
                     match card {
-                        Card::SigningOut => self.set(status.engine, Card::Idle),
+                        // Waiting for turns: the daemon says so while it does; the clock restarts.
+                        Card::SigningOut if status.sign_out_after_turns => {
+                            self.signing_out_since.insert(status.engine, Instant::now());
+                        }
+                        // Still signed in: the sign-out is running, or it failed (`tick` tells which).
+                        Card::SigningOut if status.state == EngineState::SignedIn => {}
+                        Card::SigningOut => {
+                            self.signing_out_since.remove(&status.engine);
+                            self.set(status.engine, Card::Idle);
+                            if self.switching.remove(&status.engine) {
+                                switch = Some(status.engine);
+                            }
+                        }
                         Card::Idle if status.signing_in => self.set(status.engine, Card::Elsewhere),
                         Card::Elsewhere if !status.signing_in => self.set(status.engine, Card::Idle),
                         _ => {}
@@ -433,7 +539,7 @@ impl Engines {
                         self.terminal = None;
                     }
                 }
-                Effect { changed: true, ..Effect::default() }
+                Effect { changed: true, switch, ..Effect::default() }
             }
             Event::EngineInstall { engine, step } => {
                 let mut sign_in = None;
@@ -541,15 +647,27 @@ impl Engines {
         if self.terminal.is_some_and(|since| now.duration_since(since) >= TERMINAL_WATCH) {
             self.terminal = None;
         }
-        !silent.is_empty()
+        // A sign-out the engine still answers "signed in" to, long after: it failed.
+        let stuck: Vec<Engine> = self.signing_out_since.iter().filter(|(e, since)| *self.card(**e) == Card::SigningOut && now.duration_since(**since) >= SIGN_OUT_WAIT).map(|(e, _)| *e).collect();
+        for engine in &stuck {
+            self.signing_out_since.remove(engine);
+            self.switching.remove(engine);
+            self.set(*engine, Card::Failed { problem: Problem::SignOutFailed, detail: String::new() });
+        }
+        let before = self.rechecking.len();
+        self.rechecking.retain(|_, at| now.duration_since(*at) < NO_ANSWER);
+        !silent.is_empty() || !stuck.is_empty() || self.rechecking.len() != before
     }
 
     /// The window lost the daemon: what was on its way stops, said so.
     pub fn disconnected(&mut self) {
         let going: Vec<Engine> = self.cards.iter().filter(|(_, c)| c.under_way() || **c == Card::SigningOut).map(|(e, _)| *e).collect();
         for engine in going {
+            self.switching.remove(&engine);
+            self.signing_out_since.remove(&engine);
             self.set(engine, Card::Failed { problem: Problem::Lost, detail: String::new() });
         }
+        self.rechecking.clear();
         self.asked = None;
     }
 
@@ -635,7 +753,27 @@ pub fn problem_words(problem: Problem, host: &str) -> String {
         Problem::Daemon(SignInFailure::Unsupported | SignInFailure::Failed) => t!("engines.fail_other").to_owned(),
         Problem::NoAnswer => t!("engines.fail_no_answer").to_owned(),
         Problem::Lost => t!("engines.fail_lost").to_owned(),
+        Problem::SignOutFailed => t!("engines.fail_sign_out", host = host),
     }
+}
+
+/// Why "Couldn't check", in a line the person can act on: the tool's own
+/// kind of failure, or that the window can't ask at all.
+pub fn unreadable_words(status: Option<&EngineStatus>, platform: &Platform, host: &str) -> String {
+    let (tool, name) = (platform.tool, platform.name);
+    match status.map(|s| (s.check, s.state)) {
+        None => t!("engines.why_disconnected", host = host),
+        Some((Some(CheckProblem::TimedOut), _)) => t!("engines.why_timed_out", tool = tool, host = host),
+        Some((Some(CheckProblem::Failed), _)) => t!("engines.why_failed", tool = tool, host = host),
+        Some((Some(CheckProblem::Unrecognized), _)) => t!("engines.why_unrecognized", tool = tool, host = host),
+        Some((Some(CheckProblem::Other) | None, _)) => t!("engines.why_unknown", name = name, host = host),
+    }
+}
+
+/// Members mid-turn on `status`'s engine: names in this squad, `squad/name` elsewhere.
+pub fn working_line(status: &EngineStatus, squad: &str) -> Option<String> {
+    let names: Vec<String> = status.working.iter().map(|m| if m.squad == squad { m.member.clone() } else { format!("{}/{}", m.squad, m.member) }).collect();
+    (!names.is_empty()).then(|| names.join(", "))
 }
 
 #[cfg(test)]
@@ -823,6 +961,131 @@ mod tests {
         e.ask_sign_out(claude);
         e.disconnected();
         assert!(!matches!(e.card(claude), Card::SigningOut));
+    }
+
+    fn working_on(engine: Engine, who: &[&str]) -> EngineStatus {
+        let members = who.iter().map(|m| MemberRef { squad: "acme".into(), member: (*m).into() }).collect::<Vec<_>>();
+        EngineStatus { members: members.clone(), working: members, ..status(engine, EngineState::SignedIn) }
+    }
+
+    #[test]
+    fn members_mid_turn_are_named_and_sign_out_can_wait_for_their_turns() {
+        let claude = Engine::Claude;
+        let mut e = Engines::default();
+        e.on_event(&Event::Engines { engines: vec![working_on(claude, &["backend", "designer"])] });
+        let line = working_line(e.status(claude).unwrap(), "acme");
+        assert_eq!(line.as_deref(), Some("backend, designer"));
+        assert_eq!(working_line(e.status(claude).unwrap(), "other").as_deref(), Some("acme/backend, acme/designer"), "another squad's members say which");
+        assert_eq!(working_line(&status(claude, EngineState::SignedIn), "acme"), None);
+
+        // "After current turns": the daemon waits; the card stays on the wait while it says so.
+        e.ask_sign_out(claude);
+        assert_eq!(e.sign_out_after_turns(claude), vec![Command::SignOutAfterTurns { engine: claude }]);
+        assert_eq!(e.card(claude), &Card::SigningOut);
+        let waiting = EngineStatus { sign_out_after_turns: true, ..working_on(claude, &["backend"]) };
+        e.on_event(&Event::Engines { engines: vec![waiting] });
+        assert_eq!(e.card(claude), &Card::SigningOut, "still waiting for the turn");
+        // Taking the wait back tells the daemon and frees the card.
+        assert_eq!(e.cancel_sign_out(claude), vec![Command::SignOutCancel { engine: claude }]);
+        assert_eq!(e.card(claude), &Card::Idle);
+        assert!(e.cancel_sign_out(claude).is_empty(), "nothing waits");
+        e.on_event(&Event::Engines { engines: vec![working_on(claude, &["backend"])] });
+
+        // "Now" over a wait goes at once; the turn ending signs out and frees the card.
+        e.ask_sign_out(claude);
+        e.sign_out_after_turns(claude);
+        assert!(e.sign_out(claude).is_empty(), "until the daemon says it waits, a second press sends nothing");
+        e.on_event(&Event::Engines { engines: vec![EngineStatus { sign_out_after_turns: true, ..working_on(claude, &["backend"]) }] });
+        assert_eq!(e.sign_out(claude), vec![Command::SignOut { engine: claude }], "\"Sign out now\" overrides the wait");
+        e.on_event(&Event::Engines { engines: vec![status(claude, EngineState::SignedOut)] });
+        assert_eq!(e.card(claude), &Card::Idle);
+    }
+
+    #[test]
+    fn a_sign_out_the_engine_still_answers_signed_in_to_has_failed_by_and_by() {
+        let claude = Engine::Claude;
+        let mut e = Engines::default();
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("me@example.com")] });
+        e.ask_sign_out(claude);
+        e.sign_out(claude);
+        // Another look at the engines arrives before the logout finished: still waiting.
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("me@example.com")] });
+        assert_eq!(e.card(claude), &Card::SigningOut);
+        assert!(!e.tick(Instant::now()), "not yet");
+        assert!(e.tick(Instant::now() + SIGN_OUT_WAIT));
+        assert_eq!(e.card(claude), &Card::Failed { problem: Problem::SignOutFailed, detail: String::new() });
+        assert!(!problem_words(Problem::SignOutFailed, "the Mac").is_empty());
+        // Dismissed, it can be asked again.
+        e.keep(claude);
+        e.ask_sign_out(claude);
+        assert_eq!(e.card(claude), &Card::ConfirmSignOut);
+    }
+
+    #[test]
+    fn switching_account_signs_out_then_starts_the_sign_in() {
+        let claude = Engine::Claude;
+        let mut e = Engines::default();
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("me@example.com")] });
+        e.ask_switch(claude);
+        assert!(e.switching(claude));
+        assert_eq!(e.card(claude), &Card::ConfirmSignOut);
+        // Keeping the account drops the switch.
+        e.keep(claude);
+        assert!(!e.switching(claude));
+        e.ask_switch(claude);
+        assert_eq!(e.sign_out(claude), vec![Command::SignOut { engine: claude }]);
+        // Signed in still: nothing starts yet.
+        assert_eq!(e.on_event(&Event::Engines { engines: vec![claude_signed_in("me@example.com")] }).switch, None);
+        // Signed out: the sign-in starts, once.
+        let done = e.on_event(&Event::Engines { engines: vec![status(claude, EngineState::SignedOut)] });
+        assert_eq!(done.switch, Some(claude));
+        assert_eq!(e.on_event(&Event::Engines { engines: vec![status(claude, EngineState::SignedOut)] }).switch, None, "only once");
+        // A plain sign-out starts no sign-in.
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("me@example.com")] });
+        e.ask_sign_out(claude);
+        e.sign_out(claude);
+        assert_eq!(e.on_event(&Event::Engines { engines: vec![status(claude, EngineState::SignedOut)] }).switch, None);
+        // Losing the daemon mid-switch ends it, said so.
+        e.on_event(&Event::Engines { engines: vec![claude_signed_in("me@example.com")] });
+        e.ask_switch(claude);
+        e.sign_out(claude);
+        e.disconnected();
+        assert!(!e.switching(claude));
+        assert!(matches!(e.card(claude), Card::Failed { problem: Problem::Lost, .. }));
+    }
+
+    #[test]
+    fn a_card_that_could_not_check_says_why_and_can_look_again() {
+        let codex = Engine::Codex;
+        let now = Instant::now();
+        let mut e = Engines::default();
+        let timed_out = EngineStatus { check: Some(CheckProblem::TimedOut), detail: Some("`codex login status` didn't answer in 20s".into()), ..status(codex, EngineState::Unknown) };
+        e.on_event(&Event::Engines { engines: vec![timed_out.clone()] });
+        let platform = platform(codex);
+        let said = |status: Option<&EngineStatus>| unreadable_words(status, platform, "the Mac");
+        assert!(!said(Some(&timed_out)).is_empty());
+        for check in [CheckProblem::Failed, CheckProblem::Unrecognized, CheckProblem::Other] {
+            let other = EngineStatus { check: Some(check), ..timed_out.clone() };
+            assert_ne!(said(Some(&other)), said(Some(&timed_out)), "{check:?} has its own words");
+        }
+        assert_ne!(said(Some(&status(codex, EngineState::Unknown))), said(Some(&timed_out)), "no reason from an older daemon: a general one");
+        assert_ne!(said(None), said(Some(&timed_out)), "no status at all: the window can't ask");
+
+        // Sign out and the account switch stay at hand, but wait for anything else on the card.
+        assert_eq!(recover(e.card(codex), true, false), Recover { recheck: true, manage: true });
+        assert_eq!(recover(&Card::ConfirmSignOut, true, false), Recover { recheck: true, manage: false });
+        assert_eq!(recover(e.card(codex), false, false), Recover { recheck: false, manage: false }, "not while the window has lost the daemon");
+        // "Check again" asks once, says it is checking, and ends with the daemon's answer.
+        assert_eq!(e.check_again(codex, now), vec![Command::Engines]);
+        assert!(e.checking_again(codex, now));
+        assert!(e.check_again(codex, now).is_empty(), "not twice at once");
+        assert_eq!(recover(e.card(codex), true, true).recheck, false);
+        e.on_event(&Event::Engines { engines: vec![status(codex, EngineState::SignedOut)] });
+        assert!(!e.checking_again(codex, now));
+        // A daemon that never answers: the checking ends by itself.
+        e.check_again(codex, now);
+        assert!(e.tick(now + NO_ANSWER));
+        assert!(!e.checking_again(codex, now + NO_ANSWER));
     }
 
     /// Claude Code's card as the daemon says it: signed in on Max as `me@example.com`.

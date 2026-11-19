@@ -224,6 +224,98 @@ async fn claude_code_signs_out_with_its_own_tool_when_asked_on_its_card() {
     assert_eq!(auth, vec!["auth logout"], "only the tool's own logout is run, once: {calls}");
 }
 
+/// A `claude` whose turns hold until `release` exists, keeping its login as
+/// a file in `dir` and writing down every `auth` call.
+fn fake_claude_holding(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("claude");
+    let (login, calls, release) = (dir.join("login"), dir.join("calls"), dir.join("release"));
+    std::fs::write(&login, "").unwrap();
+    let script = format!(
+        r#"#!/bin/sh
+case "$*" in
+  "auth status --json") if [ -f '{login}' ]; then echo '{{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max","email":"someone@example.com"}}'; else echo '{{"loggedIn":false}}'; exit 1; fi;;
+  "auth logout") echo "$*" >> '{calls}'; rm -f '{login}'; echo 'Successfully logged out from your Anthropic account.';;
+  *)
+    echo '{{"type":"system","subtype":"init","model":"m","session_id":"sess-1"}}'
+    while [ ! -f '{release}' ]; do sleep 0.1; done
+    echo '{{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":1,"output_tokens":1}}}}';;
+esac
+"#,
+        login = login.display(),
+        calls = calls.display(),
+        release = release.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+/// "After current turns": a member mid-turn on Claude Code is told on its
+/// card, nothing is signed out while the turn runs (and asking again to wait
+/// can be taken back), and the tool's own `auth logout` runs once the turn
+/// has ended.
+#[tokio::test]
+async fn a_sign_out_after_turns_waits_for_the_members_mid_turn_on_that_engine() {
+    use_fake_codex();
+    let home = scratch("home");
+    let project = scratch("proj");
+    equipe_core::squads::create(&home, "acme", &project.canonicalize().unwrap()).unwrap();
+    let dir = scratch("claude-holding");
+    let (core, mut events) = runtime::start(config(&home, &fake_claude_holding(&dir)));
+    let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: project.clone(), role: Some("designer".into()), squad: Some("acme".into()) };
+    core.send(Command::Start { session: 7, spec });
+    next(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+    core.send(Command::Submit { session: 7, text: "work".into(), about: None });
+
+    // Mid-turn: the card hears who is working.
+    let me = MemberRef { squad: "acme".into(), member: "designer".into() };
+    let mut working = false;
+    for _ in 0..50 {
+        core.send(Command::Engines);
+        let claude = engines(&mut events).await.into_iter().find(|e| e.engine == Engine::Claude).unwrap();
+        if claude.working == vec![me.clone()] {
+            working = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(working, "the member's turn is on the card");
+
+    core.send(Command::SignOutAfterTurns { engine: Engine::Claude });
+    let waiting = next(&mut events, |e| matches!(e, Event::Engines { engines } if engines.iter().any(|s| s.engine == Engine::Claude && s.sign_out_after_turns))).await;
+    let Event::Engines { engines: waiting } = waiting else { unreachable!() };
+    let claude = waiting.iter().find(|e| e.engine == Engine::Claude).unwrap();
+    assert_eq!((claude.state, claude.working.len()), (EngineState::SignedIn, 1), "still signed in while the turn runs");
+    assert!(!dir.join("calls").exists(), "nothing was signed out yet");
+
+    // Taken back: no longer waiting, still signed in.
+    core.send(Command::SignOutCancel { engine: Engine::Claude });
+    let Event::Engines { engines: back } = next(&mut events, |e| matches!(e, Event::Engines { engines } if engines.iter().any(|s| s.engine == Engine::Claude && !s.sign_out_after_turns))).await else { unreachable!() };
+    assert_eq!(back.iter().find(|e| e.engine == Engine::Claude).unwrap().state, EngineState::SignedIn);
+
+    // Asked again, and the turn ends: the tool's own logout runs, once.
+    core.send(Command::SignOutAfterTurns { engine: Engine::Claude });
+    next(&mut events, |e| matches!(e, Event::Engines { engines } if engines.iter().any(|s| s.engine == Engine::Claude && s.sign_out_after_turns))).await;
+    std::fs::write(dir.join("release"), "").unwrap();
+    let signed_out = |e: &Event| matches!(e, Event::Engines { engines } if engines.iter().any(|s| s.engine == Engine::Claude && s.state == EngineState::SignedOut && !s.sign_out_after_turns));
+    next(&mut events, signed_out).await;
+    assert_eq!(std::fs::read_to_string(dir.join("calls")).unwrap().lines().collect::<Vec<_>>(), vec!["auth logout"]);
+}
+
+/// With no one mid-turn "after current turns" is just a sign-out.
+#[tokio::test]
+async fn a_sign_out_after_turns_with_nobody_working_signs_out_at_once() {
+    use_fake_codex();
+    let home = scratch("home");
+    let dir = scratch("claude-login");
+    let (core, mut events) = runtime::start(config(&home, &fake_claude_login(&dir)));
+    core.send(Command::SignOutAfterTurns { engine: Engine::Claude });
+    let signed_out = |e: &Event| matches!(e, Event::Engines { engines } if engines.iter().any(|s| s.engine == Engine::Claude && s.state == EngineState::SignedOut));
+    next(&mut events, signed_out).await;
+    assert!(std::fs::read_to_string(dir.join("calls")).unwrap().lines().any(|l| l == "auth logout"));
+}
+
 /// Nebius Token Factory's status, as every screen hears it.
 async fn nebius(events: &mut UnboundedReceiver<Event>) -> equipe_core::protocol::NebiusStatus {
     match next(events, |e| matches!(e, Event::Nebius { .. })).await {

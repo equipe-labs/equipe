@@ -16,7 +16,7 @@
 use std::process::Stdio;
 use std::time::Duration;
 
-use equipe_protocol::{Engine, EngineState, EngineStatus, SignInFailure, SignInStep};
+use equipe_protocol::{CheckProblem, Engine, EngineState, EngineStatus, SignInFailure, SignInStep};
 use equipe_providers::{AuthMethod, CredentialStore, claude_code};
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 use tokio::process::Command;
@@ -127,7 +127,14 @@ pub async fn claude(binary: &str) -> EngineStatus {
             EngineStatus { plan, account, per_token: !status.uses_subscription(), ..EngineStatus::new(Engine::Claude, EngineState::SignedIn) }
         }
         Ok(Some(_)) => EngineStatus::new(Engine::Claude, EngineState::SignedOut),
-        Err(err) => EngineStatus { detail: Some(err.to_string()), ..EngineStatus::new(Engine::Claude, EngineState::Unknown) },
+        Err(err) => {
+            let check = match &err {
+                equipe_providers::Error::Io(io) if io.kind() == std::io::ErrorKind::TimedOut => CheckProblem::TimedOut,
+                equipe_providers::Error::Protocol(_) => CheckProblem::Unrecognized,
+                _ => CheckProblem::Failed,
+            };
+            EngineStatus { detail: Some(err.to_string()), check: Some(check), ..EngineStatus::new(Engine::Claude, EngineState::Unknown) }
+        }
     }
 }
 
@@ -137,9 +144,9 @@ pub async fn codex(binary: &str, store: &CredentialStore) -> EngineStatus {
     let legacy = matches!(store.load("openai"), Ok(Some(cred)) if cred.method == AuthMethod::OauthSubscription);
     let asked = Command::new(equipe_providers::tools_path::resolved(binary)).args(["login", "status"]).stdin(Stdio::null()).kill_on_drop(true).output();
     let mut status = match tokio::time::timeout(ASK_WAIT, asked).await {
-        Err(_) => EngineStatus { detail: Some(format!("`{binary} login status` didn't answer in {}s", ASK_WAIT.as_secs())), ..EngineStatus::new(Engine::Codex, EngineState::Unknown) },
+        Err(_) => EngineStatus { detail: Some(format!("`{binary} login status` didn't answer in {}s", ASK_WAIT.as_secs())), check: Some(CheckProblem::TimedOut), ..EngineStatus::new(Engine::Codex, EngineState::Unknown) },
         Ok(Err(err)) if err.kind() == std::io::ErrorKind::NotFound => EngineStatus::new(Engine::Codex, EngineState::NotInstalled),
-        Ok(Err(err)) => EngineStatus { detail: Some(err.to_string()), ..EngineStatus::new(Engine::Codex, EngineState::Unknown) },
+        Ok(Err(err)) => EngineStatus { detail: Some(err.to_string()), check: Some(CheckProblem::Failed), ..EngineStatus::new(Engine::Codex, EngineState::Unknown) },
         Ok(Ok(out)) => {
             let said = format!("{}\n{}", String::from_utf8_lossy(&out.stderr), String::from_utf8_lossy(&out.stdout));
             codex_status(out.status.success(), &said)
@@ -174,7 +181,10 @@ pub fn codex_status(ok: bool, said: &str) -> EngineStatus {
     if ok {
         return signed_in(false);
     }
-    EngineStatus { detail: lines.last().map(|l| short(l)), ..EngineStatus::new(Engine::Codex, EngineState::Unknown) }
+    // It ran and said something that is neither a login nor "Not logged in":
+    // an error of its own (its words are the detail) or a wording this build doesn't know.
+    let check = if lines.iter().any(|l| l.to_ascii_lowercase().contains("error")) { CheckProblem::Failed } else { CheckProblem::Unrecognized };
+    EngineStatus { detail: lines.last().map(|l| short(l)), check: Some(check), ..EngineStatus::new(Engine::Codex, EngineState::Unknown) }
 }
 
 /// Every engine, in the order the screens show them.
@@ -461,6 +471,8 @@ mod tests {
         assert_eq!(codex_status(false, "Not logged in\n").state, EngineState::SignedOut);
         let broken = codex_status(false, "Error checking login status: bad config\n");
         assert_eq!((broken.state, broken.detail.as_deref()), (EngineState::Unknown, Some("Error checking login status: bad config")));
+        assert_eq!(broken.check, Some(CheckProblem::Failed), "the tool's own error");
+        assert_eq!(codex_status(false, "Something new\n").check, Some(CheckProblem::Unrecognized), "a wording this build doesn't know");
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -468,6 +480,21 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_does_not_answer_or_speaks_unreadably_says_which_it_was() {
+        let dir = scratch("check");
+        // Claude Code printing something that isn't its status JSON.
+        let odd = script(&dir, "claude-odd", "echo 'Welcome!'");
+        let status = claude(&odd).await;
+        assert_eq!((status.state, status.check), (EngineState::Unknown, Some(CheckProblem::Unrecognized)));
+        // Codex that can't be run (a directory where the tool should be).
+        let broken = dir.join("codex-broken");
+        std::fs::create_dir_all(&broken).unwrap();
+        let status = codex(&broken.to_string_lossy(), &CredentialStore::new(dir.join("creds"))).await;
+        assert_eq!((status.state, status.check), (EngineState::Unknown, Some(CheckProblem::Failed)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn script(dir: &std::path::Path, name: &str, body: &str) -> String {

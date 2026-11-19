@@ -243,6 +243,8 @@ pub fn reads(command: &Command) -> bool {
         | C::TestProvider { .. }
         | C::RemoveProvider { .. }
         | C::SignOut { .. }
+        | C::SignOutAfterTurns { .. }
+        | C::SignOutCancel { .. }
         | C::SetEngineSwitching { .. }
         | C::SetPmAccepts { .. }
         | C::SetAutonomy { .. }
@@ -717,6 +719,8 @@ mod tests {
             Command::TestProvider { id: "ollama".into() },
             Command::RemoveProvider { id: "ollama".into() },
             Command::SignOut { engine: Engine::Codex },
+            Command::SignOutAfterTurns { engine: Engine::Claude },
+            Command::SignOutCancel { engine: Engine::Claude },
             Command::SetEngineSwitching { squad: s(), mode: engines::Switching::default() },
             Command::SetPmAccepts { squad: s(), on: false },
             Command::SetAutonomy { squad: s(), kind: equipe_core::protocol::autonomy::Kind::Design, level: equipe_core::protocol::autonomy::Level::Ask },
