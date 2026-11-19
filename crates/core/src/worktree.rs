@@ -464,7 +464,7 @@ pub fn seed_in_background(worktree: PathBuf) {
 /// Whether this system can clone a folder copy-on-write: APFS's
 /// `clonefile` on a Mac, a reflink copy on Linux (Btrfs, XFS…). Elsewhere
 /// nothing is seeded.
-const CAN_CLONE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
+pub(crate) const CAN_CLONE: bool = cfg!(any(target_os = "macos", target_os = "linux"));
 
 /// Give the new worktree at `worktree` the [`SHARED_DEPENDENCIES`] folders
 /// another checkout of its repository has installed, each as a
@@ -757,7 +757,7 @@ fn clone_new(from: &Path, to: &Path, retarget: Option<(&Path, &Path)>) -> Result
 
 /// APFS's `clonefile`: the whole folder at once, sharing every block.
 #[cfg(target_os = "macos")]
-fn clone_tree(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn clone_tree(from: &Path, to: &Path) -> Result<()> {
     use std::os::unix::ffi::OsStrExt as _;
     // From <sys/clonefile.h>: a link is cloned as a link; the clone is ours.
     const CLONE_NOFOLLOW: u32 = 0x0001;
@@ -774,7 +774,7 @@ fn clone_tree(from: &Path, to: &Path) -> Result<()> {
 
 /// A reflink copy; on a filesystem without reflinks it fails — never a full copy.
 #[cfg(target_os = "linux")]
-fn clone_tree(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn clone_tree(from: &Path, to: &Path) -> Result<()> {
     let mut cp = Command::new("cp");
     cp.args(["-R", "-P", "--reflink=always", "--"]).arg(from).arg(to);
     let out = output_within(cp, SEED_TIMEOUT)?;
@@ -782,7 +782,7 @@ fn clone_tree(from: &Path, to: &Path) -> Result<()> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn clone_tree(_: &Path, _: &Path) -> Result<()> {
+pub(crate) fn clone_tree(_: &Path, _: &Path) -> Result<()> {
     Err("this system can't clone a folder".to_owned())
 }
 

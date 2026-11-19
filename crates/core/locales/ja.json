@@ -477,6 +477,7 @@
   "notice.fresh_clean": "── 新しい会話: まっさらな開始を依頼されました ──",
   "notice.context_rotated": "── コンテキストを更新しました: 要約付きの新しいセッションで続けます ──",
   "notice.codex_refused_retry": "OpenAI がこのターンを意図しない操作の可能性があるとして拒否しました。equipe の補足があなたの言葉として読まれた可能性が高いです。equipe は補足をあなたの言葉ではなく指示として送り、新しい会話で一度だけ再送しました。",
+  "notice.check_copy_undone": "このチケットを検証中のメンバーがプロジェクトのコピーで {files} を変更したため、equipe が元に戻しました。あなたのチェックアウトには触れていません。",
   "news.obsolete_blocker": "T-{id} {title} は保留し、開始しませんでした: 依存先の T-{other} がキャンセルされています。実行するかは PM が判断します。",
   "news.obsolete_duplicate": "T-{id} {title} は保留し、開始しませんでした: 同じタイトルの T-{other} がまだ開いています。実行するかは PM が判断します。",
   "news.budget_stop": "T-{id} {title} は次のターンの前に停止しました: 進み具合に対してコストがかかりすぎています。続けるか、範囲を絞るか、やめるかは PM が判断します。",

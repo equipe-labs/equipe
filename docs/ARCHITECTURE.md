@@ -85,7 +85,12 @@ file with its diff, `mcp__<server>__<tool>`, `WebSearch`, its plan `TodoWrite` �
 screens show both alike. Access maps to Codex's sandbox and approval policy:
 read-only → `read-only` / `never`; edit → `workspace-write` (the worktree and the
 member's build cache, no network) / `on-request`; ask → `workspace-write` /
-`untrusted`; full → `danger-full-access` / `never`. Codex's approval requests go to
+`untrusted`; full → `danger-full-access` / `never`. A member that checks a ticket it
+doesn't edit (QA, a reviewer, any role without edits) is read-only, but on Codex
+read-only can't run tests — its `read-only` sandbox refuses every write, so a test
+runner can't even make its cache — and `workspace-write` would open the person's own
+checkout. So such a turn runs in a *checking copy* (`equipe_core::check_copy`; see
+*Where a member works*) with `workspace-write` / `never`. Codex's approval requests go to
 the person exactly as Claude Code's permission prompts do (`approve`), squad "always
 allow" rules included; Esc sends `turn/interrupt` and Codex winds the turn down.
 
@@ -726,6 +731,28 @@ reports, the things a task produces.
 | On a `code` ticket | the project's worktree | the squad home | the worktree |
 | On a `task` / `action` ticket | a worktree of the squad home | every project | the worktree |
 
+- **Checking on Codex** (`equipe_core::check_copy`): a member on a `code` ticket it
+  doesn't edit works in the project itself, read-only. On Claude Code its commands
+  still run (only the edit tools are refused), so it runs the tests. On Codex the
+  OS sandbox would refuse every write, so each such turn — in auto or full, never in
+  read-only — runs in a disposable copy of the checkout under the lane's temporary
+  folder (`~/.equipe/tmp/<squad>/t<N>/checkout`): a `git clone --shared` (the
+  person's objects read in place, nothing registered in their repository) with the
+  working tree cloned copy-on-write over it — uncommitted changes, `node_modules`,
+  `.env` and all; a Rust project's own `target` is left out, as members build in
+  their own place. The sandbox is `workspace-write` rooted in the copy, plus the
+  member's build cache and temporary folder, with the network off and approvals
+  `never`, as read-only's: tests, builds, caches and dev servers run; the person's
+  checkout can't be written. The member is told where it is (a developer note).
+  After each tool that could write (a command, an edit), and once more when the turn
+  ends, equipe compares the copy's source — tracked files and new files git doesn't
+  ignore — with how it was made: a change is undone, the member is told in the turn
+  (`turn/steer`), and the person gets a notice. What git ignores (caches, build
+  output) stays. The copy is kept while the checkout stands as it was (its HEAD, its
+  changed files and their times) and made again once it moves; it goes with the
+  lane's temporary folder. It is made only where the system clones copy-on-write
+  (APFS, a reflink filesystem such as Btrfs or XFS) — never a full copy; elsewhere,
+  or in a folder that isn't a git checkout, the turn stays read-only, as before.
 - **At the desk, by mode**: read-only writes nothing; ask puts each change to the
   person; auto writes the home on its own (`acceptEdits`), fenced in by the
   sandbox like a ticket; full writes freely. Repositories are read in every mode

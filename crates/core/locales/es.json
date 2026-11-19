@@ -481,6 +481,7 @@
   "notice.fresh_clean": "── una conversación nueva: se pidió empezar de cero ──",
   "notice.context_rotated": "── Contexto renovado: se continúa en una sesión nueva con un resumen ──",
   "notice.codex_refused_retry": "OpenAI rechazó este turno como posible actividad no intencionada; lo más probable es que las notas de equipe se leyeran como si fueran tuyas. equipe lo pidió de nuevo una vez, en una conversación nueva, enviando sus notas como instrucciones y no como tus palabras.",
+  "notice.check_copy_undone": "Un miembro que revisaba este ticket cambió {files} en su copia del proyecto; equipe lo deshizo. Tu propia copia de trabajo no se tocó.",
   "news.obsolete_blocker": "T-{id} {title} quedó retenido, sin iniciar: T-{other}, del que depende, fue cancelado. El PM decide si aún se ejecuta.",
   "news.obsolete_duplicate": "T-{id} {title} quedó retenido, sin iniciar: T-{other} tiene el mismo título y sigue abierto. El PM decide si aún se ejecuta.",
   "news.budget_stop": "T-{id} {title} se detuvo antes de otro turno: costó demasiado para lo que avanzó. El PM decide si sigue, más acotado, o no sigue.",

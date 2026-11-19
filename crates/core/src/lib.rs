@@ -19,6 +19,7 @@ pub mod board;
 pub mod briefs;
 pub mod by_words;
 pub mod call;
+pub mod check_copy;
 pub mod checks;
 pub mod command_watch;
 pub mod conversation_title;
