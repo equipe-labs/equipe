@@ -89,6 +89,7 @@ mod main_red;
 pub(crate) use gate::checks_scratch;
 mod secrets;
 mod cli_signin;
+mod machine_creds;
 mod squad_mcp;
 mod squad_keys;
 mod logins;
@@ -807,6 +808,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         autopilot: Default::default(),
         secret_asks: HashMap::new(),
         cli_signins: HashMap::new(),
+        machine_creds: Default::default(),
         mcp: squad_mcp::McpBook::default(),
         verify: Default::default(),
         secret_env: HashMap::new(),
@@ -1801,6 +1803,9 @@ struct Runtime {
     secret_asks: HashMap<String, Vec<crate::protocol::secrets::SecretAsk>>,
     /// Command-line sign-ins the person is finishing on cards (`cli_sign_in`), by squad.
     cli_signins: HashMap<String, Vec<cli_signin::Live>>,
+    /// The machine's own command-line credentials, by name and shape, read
+    /// now and then ([`crate::machine_creds`]).
+    machine_creds: crate::machine_creds::Cache,
     /// The squads' outside MCP servers: where each stands, checks under way,
     /// and the sign-ins the person put off ([`squad_mcp`]).
     mcp: squad_mcp::McpBook,
@@ -5775,6 +5780,8 @@ for one project goes to it as tickets for its owners, with that project — and 
             Some(sq) if board_tools && !lite => self.mcp_for_member(sq, id),
             _ => Default::default(),
         };
+        // The machine's own command-line credentials, by name: so a member picks one that works first.
+        let machine = if board_tools && !lite { self.machine_briefing() } else { None };
         let Some(session) = self.sessions.get(&id) else {
             return;
         };
@@ -5926,6 +5933,10 @@ for one project goes to it as tickets for its owners, with that project — and 
         });
         // Those it would have but doesn't this turn: why, in a line, so it never guesses.
         let charter = charter.map(|text| match squad_mcp::unavailable_note(&unavailable) {
+            Some(note) => format!("{text}\n\n{note}"),
+            None => text,
+        });
+        let charter = charter.map(|text| match &machine {
             Some(note) => format!("{text}\n\n{note}"),
             None => text,
         });
@@ -9023,6 +9034,11 @@ It starts when {owner} is free."
         }
         if call.name == permissions::APPROVE_TOOL {
             return self.ask_permission(call, reply);
+        }
+        // Never the person in front of a page that changes with every deploy.
+        if let Some(why) = self.per_deploy_refusal(&call) {
+            let _ = reply.send(ToolResult::error(why));
+            return;
         }
         if call.name == board::ASK_PERSON {
             return self.ask_person(call, reply);

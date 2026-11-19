@@ -513,6 +513,35 @@ Where "Approve device sign-ins" is on for `gh` or `aws sso`, the same approval a
 login --no-launch-browser`, `az login --use-device-code`; flags that would hand
 equipe a token, password or key are refused.
 
+**Machine credentials first** (`machine_creds`). equipe keeps an inventory of
+the command-line credentials already on the machine — names and shapes, never
+values — and gives members one line of it in their briefing, e.g. `AWS:
+example-read (read, non-interactive), example-console (interactive, expired); gh:
+signed in`. AWS profiles come from `~/.aws/config` and `~/.aws/credentials`
+(`credential_process`, a role from a working source, web identity or a static
+key: non-interactive; IAM Identity Center: signed in while its cached sign-in's
+`expiresAt` hasn't passed — only the start address and expiry of a cache file
+are read; `aws login`'s `login_session`: interactive). `gh auth status`, `az
+account show` and `npm whoami` give only their exit code, `gcloud auth list` an
+account kind, `kubectl config get-contexts` context names, docker's config
+registry names. Files are read again after five minutes, the tools asked again
+in the background after ten. Read and deploy are named only when a profile's
+name says so. While a credential for the tool already works, `cli_sign_in`
+refuses the card, names the working profiles and says to use
+`AWS_PROFILE=<name>`; the member gets the card only by naming the permission
+they lack in `why_not_machine`.
+
+**Per-deploy previews** (`preview_hosts`). A sign-in on an address that changes
+with every deploy never carries to the next one, so `sign_in`,
+`show_my_browser`, `block_on_person` and a `sign_in` kind of `ask_person` are
+refused for one: Vercel's `<project>-<hash>-<team>.vercel.app`, Netlify's
+`deploy-preview-<n>--<site>.netlify.app` and deploy permalinks, Cloudflare
+Pages' `<hash>.<project>.pages.dev`, Firebase preview channels, and the
+patterns in `per-deploy-hosts` in equipe's home (one per line, `*` for any
+run of characters). The member is told to verify on localhost with the
+project's test sign-in, or on the stable production address once its change
+has landed.
+
 A member can still print an environment variable its command was given; the
 values reach only commands run for members of that squad, and the guard's deny
 rules keep members away from the stores themselves.
