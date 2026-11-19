@@ -431,7 +431,7 @@ carry on meanwhile.",
     }
 
     /// Take proposal `id` out of what waits, if it still does.
-    fn take_accept(&mut self, squad: &str, id: u64) -> Option<AcceptProposal> {
+    pub(super) fn take_accept(&mut self, squad: &str, id: u64) -> Option<AcceptProposal> {
         let list = self.accepts(squad);
         let at = list.iter().position(|p| p.id == id)?;
         Some(list.remove(at))
@@ -527,6 +527,8 @@ carry on meanwhile.",
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
         journal.save_ticket(&found).map_err(|e| e.to_string())?;
         let _ = journal.ticket_event(ticket, by, rules::SENT_BACK, reason);
+        // What it asked for under the old direction no longer waits on the person.
+        self.withdraw_ticket_cards(squad, ticket, super::withdraw::TicketTurn::SentBack);
         let shown = say!(self, "news.pm_sent_back", id = ticket, title = found.title, name = member);
         self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
         if news && let Some(pm) = self.pm_of(squad) {

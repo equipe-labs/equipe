@@ -26,7 +26,7 @@ impl Runtime {
         self.secret_asks.get_mut(squad).expect("just put")
     }
 
-    fn keep_secret_asks(&mut self, squad: &str) {
+    pub(super) fn keep_secret_asks(&mut self, squad: &str) {
         let json = serde_json::to_string(self.secret_asks(squad)).unwrap_or_default();
         if let Some(journal) = self.journal(squad) {
             let _ = journal.set_secret_asks(&json);

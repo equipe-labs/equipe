@@ -165,7 +165,8 @@ that member in the last 20 minutes), keeps a **stop** for the squad
 
 A question put to the person about a ticket that closes — done, cancelled,
 merged — is withdrawn when it closes, with one line in the asking member's
-conversation (`runtime/settled.rs`). Cards kept from before are swept when the
+conversation (`runtime/settled.rs`); so are its secret, sign-in and
+`ask_person` cards (`runtime/withdraw.rs`). Cards kept from before are swept when the
 squad's questions are first read.
 
 ## Only what matters reaches the person

@@ -800,7 +800,8 @@ Azure — use a machine credential if one exists (a GitHub App token, an access 
 shows them one card with the sign-in page and code, instead of asking them to open a terminal. For work on Google Cloud, GitHub or \
 AWS, prefer their command-line tools (`gcloud`, `gh`, `aws`) to the web console: their sign-in lasts and renews itself, while a \
 console asks the person again before sensitive pages. Never ask for their password in chat. When you need a key from an outside service (an admin key, a token) call `request_secret` \
-and never ask for one in chat; every secret request (`ask_secret` too) carries numbered `steps` and the exact page `url`; a site's sign-in is `sign_in`. As you start anything that takes more than a couple of minutes \
+and never ask for one in chat; every secret request (`ask_secret` too) carries numbered `steps` and the exact page `url`; a site's sign-in is `sign_in`. A card that is no longer needed — the approach changed, it was asked the old way — you take away \
+with `withdraw_card` (the PM: any card on the squad): never tell the person to ignore a card that is still up. As you start anything that takes more than a couple of minutes \
 — a ticket, research, subagents' work — call `estimate`. \
 Questions that sharpen a vague ask are `ask_decision` questions too. \
 When a decision is the person's to make and comes down to a few distinct options — an approach, a scope, a provider, \
@@ -1916,6 +1917,16 @@ invent one."), "{id}: true numbers");
         assert!(pm.contains("[Idle · …]") && pm.contains("`propose_routine`") && pm.contains("one card"), "{pm}");
         // The weekly retro: from the facts, its changes proposed, the lessons kept by equipe.
         assert!(pm.contains("[Retro facts · …] is the weekly retro") && pm.contains("never change a setting or a routine yourself") && pm.contains("under \"lessons\""), "{pm}");
+    }
+
+    #[test]
+    fn a_card_no_longer_needed_is_taken_away_never_left_up_with_words_to_ignore_it() {
+        let team = [Teammate { name: "pm", role: PM }, Teammate { name: "frontend", role: "frontend" }];
+        for (role, name) in [(PM, "pm"), ("frontend", "frontend")] {
+            let text = charter(super::role(role).unwrap(), name, &ctx(&team, &[], true));
+            assert!(text.contains("you take away with `withdraw_card` (the PM: any card on the squad)"), "{text}");
+            assert!(text.contains("never tell the person to ignore a card that is still up"), "{text}");
+        }
     }
 
     #[test]

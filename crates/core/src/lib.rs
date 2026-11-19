@@ -97,6 +97,7 @@ pub mod retro;
 pub mod roles;
 pub mod routines;
 pub mod secrets;
+pub mod withdraw;
 pub mod cli_signin;
 pub mod squad_mcp;
 pub mod mcp_gateway;
