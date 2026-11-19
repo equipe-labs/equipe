@@ -90,6 +90,8 @@ impl Runtime {
     pub(super) fn cli_sign_in(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let asked = cs::check(args)?;
         let plan = cs::plan(asked.kind, asked.profile.as_deref(), &asked.extra)?;
+        // A credential that already works here comes first: no card for it.
+        self.machine_guard(squad, member, &asked)?;
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         // The same ask again (this member, this tool and profile) replaces its card.
         let again: Vec<u64> = self.cli_signins(squad).iter().filter(|l| l.card.session == id && l.card.tool == asked.kind.word() && l.card.profile == asked.profile).map(|l| l.card.id).collect();
