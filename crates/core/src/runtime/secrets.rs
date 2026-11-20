@@ -33,10 +33,67 @@ impl Runtime {
         }
     }
 
+    /// What `squad` already holds or has asked for: environment keys saved from
+    /// cards (with how they were asked), kept keys, and cards still open. Never values.
+    pub(super) fn held_secrets(&mut self, squad: &str) -> Vec<crate::secrets::Held> {
+        use crate::secrets::{Held, env_name};
+        let labels: std::collections::BTreeMap<String, (String, String)> = self.journal(squad).and_then(|j| j.secret_labels()).and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let mut held: Vec<Held> = Vec::new();
+        let add = |held: &mut Vec<Held>, h: Held| {
+            if let Some(found) = held.iter_mut().find(|x| x.key == h.key) {
+                found.open &= h.open;
+                if found.label.is_empty() {
+                    found.label = h.label;
+                }
+                if found.why.is_empty() {
+                    found.why = h.why;
+                }
+            } else {
+                held.push(h);
+            }
+        };
+        if let Ok(v) = self.vault.lock() {
+            for c in v.cli.iter().filter(|c| c.kind == crate::protocol::vault::CliKind::Env && c.squad.as_deref() == Some(squad)) {
+                let (label, why) = labels.get(&c.name).cloned().unwrap_or_default();
+                add(&mut held, Held { key: c.name.clone(), label, why, open: false });
+            }
+        }
+        for s in self.journal(squad).map(ks::read).unwrap_or_default() {
+            add(&mut held, Held { key: env_name(&s.name), label: s.service.clone(), why: s.note.clone(), open: false });
+        }
+        for a in self.secret_asks(squad).clone() {
+            for f in &a.fields {
+                add(&mut held, Held { key: env_name(&f.key), label: f.label.clone(), why: a.why.clone(), open: true });
+            }
+        }
+        held
+    }
+
+    /// Remember how the person was asked for `ask`'s keys, so a later member sees what they are for.
+    fn keep_secret_labels(&mut self, squad: &str, ask: &SecretAsk) {
+        let Some(journal) = self.journal(squad) else { return };
+        let mut labels: std::collections::BTreeMap<String, (String, String)> = journal.secret_labels().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        for f in &ask.fields {
+            labels.insert(f.key.clone(), (f.label.clone(), super::decide::one_line(&ask.why)));
+        }
+        let _ = journal.set_secret_labels(&serde_json::to_string(&labels).unwrap_or_default());
+    }
+
     /// A member asks: checked, kept and put on a card; it carries on meanwhile.
     pub(super) fn ask_secret(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let home = self.person_home().ok_or("No home folder to save it under.")?;
         let asked = crate::secrets::check(args, &home)?;
+        if !args.get("different").and_then(Value::as_bool).unwrap_or(false) {
+            // The card this very member would replace is not a duplicate of itself.
+            let held: Vec<_> = self
+                .held_secrets(squad)
+                .into_iter()
+                .filter(|h| !(h.open && self.secret_asks(squad).iter().any(|a| a.session == id && a.save_to == asked.shown && a.fields.iter().any(|f| crate::secrets::env_name(&f.key) == h.key))))
+                .collect();
+            if let Some(answer) = crate::secrets::duplicate_answer(&asked.fields, &held) {
+                return Err(answer);
+            }
+        }
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         let keys = asked.fields.iter().map(|f| f.key.clone()).collect::<Vec<_>>().join(", ");
         let ask = SecretAsk {
@@ -70,6 +127,15 @@ waiting for."
     /// squad's secret store and never to the member.
     pub(super) fn request_secret(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let asked = crate::connections::check_request(args)?;
+        if !args.get("different").and_then(Value::as_bool).unwrap_or(false) {
+            // The same name is a replacement on purpose (a rotated key); another name for the same thing is not.
+            let name = crate::secrets::env_name(&asked.name);
+            let held: Vec<_> = self.held_secrets(squad).into_iter().filter(|h| h.key != name).collect();
+            let field = crate::protocol::secrets::SecretField { key: asked.name.clone(), label: String::new(), secret: true };
+            if let Some(answer) = crate::secrets::duplicate_answer(&[field], &held) {
+                return Err(answer);
+            }
+        }
         let existing = self.journal(squad).map(ks::read).unwrap_or_default().into_iter().find(|s| s.name == asked.name);
         let projects = self.key_projects(squad, id, &asked.projects, existing.as_ref())?;
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
@@ -189,6 +255,7 @@ this machine's secret store under that name — you never see the value. When th
             Err(why) => return self.squad_error(squad, say!(self, "error.secret_not_saved", path = ask.save_to, why = why)),
         }
         let _ = self.internal.send(Internal::Autopilot(super::autopilot::Note::Changed(Ok(()))));
+        self.keep_secret_labels(squad, &ask);
         self.secret_asks(squad).retain(|a| a.id != id);
         self.keep_secret_asks(squad);
         self.publish(Event::SecretClosed { squad: squad.to_owned(), id, saved: true });

@@ -67,7 +67,7 @@ pub(super) type FillWaits = std::sync::Arc<std::sync::Mutex<HashMap<u64, oneshot
 const LOOK_FIRST_AGAIN: u64 = 10 * 60;
 
 /// How long a lane back from the person's hands is watched for its sign-in's finish.
-const VERIFY_BACK_WAIT: Duration = Duration::from_secs(120);
+const VERIFY_BACK_WAIT: Duration = Duration::from_secs(300);
 
 /// How long a fill waits for the browser host's answer (it holds the tab a
 /// few seconds after submitting, `browser-host.cjs`).
@@ -88,6 +88,11 @@ impl Runtime {
     pub(super) fn login_record(&mut self, squad: &str, entry: Entry) {
         if entry.site.is_empty() {
             return;
+        }
+        match (entry.kind, entry.cause) {
+            (Kind::SignedIn, _) => self.site_waits.signed_in(&entry.site),
+            (Kind::FillFailed, _) | (Kind::Handoff, Some(logins::Cause::Captcha)) => self.site_waits.blocked(&entry.site, &entry.member, entry.at),
+            _ => {}
         }
         if let Some(journal) = self.journal(squad) {
             let _ = journal.record_login(&entry);
@@ -122,10 +127,23 @@ impl Runtime {
 Don't hand over yours: end your turn saying you wait for that sign-in — you get a message when it is done, and carry on then."
             ));
         }
+        // Another member's ask for this site is open with the person (or it was handed back and still
+        // isn't through): this one waits on it, whichever browser it was — one question, not a second.
+        if cause.is_shared_step()
+            && !site.is_empty()
+            && let Some(wait) = self.site_waits.other(&site, &call.member, now_secs()).filter(|w| w.wait == logins::Wait::Pending)
+        {
+            if !wait.lane.is_empty() && wait.lane != lane {
+                self.login_waiters.entry(wait.lane.clone()).or_default().push((id, site.clone()));
+            }
+            crate::daemon_log!("equipe: {squad}: {} asked for a sign-in to {site} while {}'s ask for it waits on the person", call.member, wait.member);
+            return Some(logins::site_wait_told(&wait, now_secs()));
+        }
         self.login_record(&squad, Entry::new(now_secs(), &site, &call.member, Kind::Handoff, Some(cause), None));
         // Its sign-in is one ask until the person answers it.
         if cause.is_shared_step() {
             self.recent_asks.asked(&squad, &call.member, &site, now_secs());
+            self.site_waits.pending(&site, &call.member, &lane, now_secs());
         }
         // Whoever asked carries on when the person is done: a run, though the lane is its member's.
         self.asked_by.insert(lane.clone(), id);
@@ -327,6 +345,9 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         }
         // The person's main profile is every squad's: kept for each.
         let squads: Vec<String> = self.journals.keys().cloned().collect();
+        if !was.landed.is_empty() {
+            self.collect_sign_in(squads.clone(), "", &was.landed);
+        }
         self.collect_sign_in(squads, "", &was.site);
         self.reload_waiting(&was.site, "");
         self.offer_login(None, None, &was.site, &was.url)
@@ -354,6 +375,9 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
         self.recent_asks.signed_in(&was.site);
         self.login_record(&squad, Entry::new(now_secs(), &was.site, &member, Kind::SignedIn, None, Some(BY_PERSON)));
         // Kept for the squad, in the profile it was made in.
+        if !was.landed.is_empty() {
+            self.collect_sign_in(vec![squad.clone()], browser::split_profile(key).1.unwrap_or_default(), &was.landed);
+        }
         self.collect_sign_in(vec![squad.clone()], browser::split_profile(key).1.unwrap_or_default(), &was.site);
         self.reload_waiting(&was.site, lane);
         self.release_login_waiters(lane).await;

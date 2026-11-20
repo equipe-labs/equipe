@@ -1086,6 +1086,7 @@ browser with `show_my_browser` to sign in themselves. Never ask for a password i
                 "site": { "type": "string", "description": "The site, by host or address: github.com, https://dash.cloudflare.com/login." },
                 "account": { "type": "string", "description": "The username, when the person keeps several for that site." },
                 "why": { "type": "string", "description": "What you'll do once signed in, in one line, in the person's language: shown to them on the card." },
+                "why_not_machine": { "type": "string", "description": "Only for AWS's console: this machine has an AWS profile that works without the person, so the console sign-in is refused unless you name the permission those profiles lack and the error you got." },
             },
             "required": ["site", "why"],
         },
@@ -1104,6 +1105,7 @@ keep its server running until they are done. Never run `equipe browser` yourself
             "properties": {
                 "url": { "type": "string", "description": "The page to open for them." },
                 "why": { "type": "string", "description": "Exactly what they should do there, in one line — which site, which account, which button — in the person's language. Shown to them over the page." },
+                "why_not_machine": { "type": "string", "description": "Only for AWS's console: this machine has an AWS profile that works without the person (`AWS_PROFILE=<name>`), so a console sign-in is refused unless you name the permission those profiles lack and the error you got." },
             },
             "required": ["why"],
         },

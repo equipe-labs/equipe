@@ -32,7 +32,11 @@ echo or copy a value into chat, tickets, commits or logs. Only for a program equ
 must read a file, give `save_to`: equipe saves it there too (`KEY=\"value\"` lines, readable only by them). Never ask \
 for one in words, and never have the person run a command to type it. Every request carries `steps` (numbered on the card) and, \
 for anything from a website or console, the exact page as `url` (one button opens it): a card without them is refused. \
-A website sign-in is `sign_in`, not this.",
+A website sign-in is `sign_in`, not this. \
+Before asking, call `secret_list`: if the squad already holds a key for the same \
+thing — `ADMIN_PASSWORD` is there, you want `SOOM_ADMIN_PASSWORD` — use `$ADMIN_PASSWORD`, do not ask the person again. \
+A request whose key or label matches one already kept, or already on a card, is refused with the name to use; only when \
+it truly is a different credential, say so with `different: true`.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -54,6 +58,7 @@ A website sign-in is `sign_in`, not this.",
                 "url": { "type": "string", "description": "The exact page the value comes from (https, a real site: no credentials, port, IP or localhost). Required for anything from a website or console; left out only with `no_page`, or for a catalog service named in `service` (its key page is used)." },
                 "no_page": crate::connections::no_page_schema(),
                 "service": { "type": "string", "description": "The service or site it comes from, when it does (`anthropic`, `github`, `app.example.com`): for a service in equipe's catalog the key page is filled in when `url` is left out." },
+                "different": { "type": "boolean", "description": "Only after a request was refused as a duplicate of a key the squad already holds, and the credential really is a different one (another account, another environment): ask anyway." },
                 "save_to": { "type": "string", "description": "Only for a program equipe doesn't run that must read a file: the file to save it to as well, under the person's home: `~/.config/atinum/nas.env`. Keys already in it are replaced, the rest kept." },
             },
             "required": ["why", "fields", "steps"],
@@ -101,6 +106,68 @@ pub fn check(args: &Value, home: &Path) -> Result<Asked, String> {
     let save_to = text("save_to");
     let (path, shown) = if save_to.is_empty() { (None, String::new()) } else { place(&save_to, home).map(|(p, s)| (Some(p), s))? };
     Ok(Asked { why, fields, path, shown, guide })
+}
+
+/// A key the squad already holds or has already asked the person for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Held {
+    /// As a command reads it (`ADMIN_PASSWORD`; a kept key's name in capitals).
+    pub key: String,
+    /// How the person was asked for it; empty when unknown.
+    pub label: String,
+    /// What it is for; empty when unknown.
+    pub why: String,
+    /// Still a card waiting for the person, not yet saved.
+    pub open: bool,
+}
+
+/// A key name as an environment variable spells it.
+pub fn env_name(name: &str) -> String {
+    name.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }).collect()
+}
+
+fn tokens(key: &str) -> Vec<&str> {
+    key.split('_').filter(|t| !t.is_empty()).collect()
+}
+
+/// Whether `new` (a key and its label) asks for what `held` already is: the
+/// same key; one key made of the other's words (`SOOM_ADMIN_PASSWORD` holds
+/// `ADMIN_PASSWORD` — a single word like `TOKEN` is too common to count); or
+/// the same label.
+pub fn same_purpose(key: &str, label: &str, held: &Held) -> bool {
+    let (a, b) = (env_name(key), env_name(&held.key));
+    if a == b {
+        return true;
+    }
+    let (ta, tb) = (tokens(&a), tokens(&b));
+    let (short, long) = if ta.len() <= tb.len() { (&ta, &tb) } else { (&tb, &ta) };
+    if short.len() >= 2 && long.windows(short.len()).any(|w| w == short.as_slice()) {
+        return true;
+    }
+    let label = label.trim().to_lowercase();
+    !label.is_empty() && label != key.to_lowercase() && label == held.label.trim().to_lowercase()
+}
+
+/// What to tell a member whose request repeats a held key; `None` when each
+/// asked field is new.
+pub fn duplicate_answer(fields: &[SecretField], held: &[Held]) -> Option<String> {
+    let mut lines = Vec::new();
+    for f in fields {
+        if let Some(h) = held.iter().find(|h| same_purpose(&f.key, &f.label, h)) {
+            let about = [h.label.as_str(), h.why.as_str()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" — ");
+            let about = if about.is_empty() { String::new() } else { format!(" ({about})") };
+            let state = if h.open { "is already on a card waiting for the person; wait for it, then use" } else { "is already kept for this squad; use" };
+            lines.push(format!("{} looks like {}{about}, which {state} `${}` in your commands.", f.key, h.key, h.key));
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Not asked again. {} Do not ask the person for the same thing twice. If it really is a different credential (another account or \
+environment), ask again with `different: true`.",
+        lines.join(" ")
+    ))
 }
 
 pub(crate) fn valid_key(key: &str) -> bool {
@@ -282,5 +349,39 @@ mod tests {
         assert!(write(&path, &fields, &[SecretValue("a\nb".into()), SecretValue("x".into())]).is_err());
         assert!(write(&path, &fields, &[SecretValue("a".into())]).is_err(), "one for each");
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn held(key: &str, label: &str, open: bool) -> Held {
+        Held { key: key.into(), label: label.into(), why: "관리 화면".into(), open }
+    }
+
+    fn field(key: &str, label: &str) -> SecretField {
+        SecretField { key: key.into(), label: label.into(), secret: true }
+    }
+
+    #[test]
+    fn a_key_made_of_a_held_keys_words_is_the_same_purpose() {
+        let admin = held("ADMIN_PASSWORD", "관리 화면 비밀번호", false);
+        assert!(same_purpose("ADMIN_PASSWORD", "x", &admin), "same key");
+        assert!(same_purpose("SOOM_ADMIN_PASSWORD", "x", &admin), "the held key is inside the new one");
+        assert!(same_purpose("PASSWORD_ADMIN", "관리 화면 비밀번호", &admin), "the same label");
+        assert!(!same_purpose("DB_PASSWORD", "DB 비밀번호", &admin), "a different thing");
+        assert!(!same_purpose("ADMINISTRATOR_PASSWORD", "x", &admin), "words, not substrings");
+        // A one-word key is too common to swallow every key that ends with it.
+        assert!(!same_purpose("DB_PASSWORD", "x", &held("PASSWORD", "", false)));
+        // A label that is just the key's own name is not a reason.
+        assert!(!same_purpose("OTHER_KEY", "OTHER_KEY", &held("THING_KEY", "other_key", false)));
+        // A kept key's name (kebab) is compared as the variable it would be.
+        assert!(same_purpose("POSTHOG_PROJECT_KEY", "x", &held(&env_name("posthog-project-key"), "", false)));
+    }
+
+    #[test]
+    fn the_answer_names_the_key_to_use() {
+        let all = [held("ADMIN_PASSWORD", "관리 화면 비밀번호", false), held("STRIPE_KEY", "", true)];
+        assert!(duplicate_answer(&[field("DB_URL", "DB 주소")], &all).is_none());
+        let said = duplicate_answer(&[field("SOOM_ADMIN_PASSWORD", "비밀번호")], &all).unwrap();
+        assert!(said.contains("`$ADMIN_PASSWORD`") && said.contains("관리 화면 비밀번호") && said.contains("different: true"), "{said}");
+        let open = duplicate_answer(&[field("STRIPE_KEY", "x")], &all).unwrap();
+        assert!(open.contains("waiting for the person"), "{open}");
     }
 }
