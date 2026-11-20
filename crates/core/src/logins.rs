@@ -187,6 +187,10 @@ pub fn cause_of_handoff(why: &str, url: Option<&str>, check: Option<HumanCheck>,
         Cause::Consent
     } else if any("match.sign_in_words", &["logged out", "session expired"]) {
         if known { Cause::SessionExpired } else { Cause::NoLoginKept }
+    } else if crate::browser::sign_in_address(url.unwrap_or_default()) {
+        // Said nothing of why, but the page it hands over is a sign-in one: it is a sign-in,
+        // and seen through as one once it is handed back.
+        if known { Cause::SessionExpired } else { Cause::NoLoginKept }
     } else {
         Cause::Other
     }
@@ -203,6 +207,9 @@ pub struct SigningIn {
     pub site: String,
     /// The sign-in page's address, as it was.
     pub url: String,
+    /// Where it landed, when that is another host of the same organisation
+    /// (`mail.google.com` after `accounts.google.com`); empty otherwise.
+    pub landed: String,
 }
 
 /// Where a sign-in the person started began: its tab, site and address.
@@ -245,8 +252,8 @@ impl SignInWatch {
             let started = origin.as_ref().filter(|o| o.page == page.id);
             if crate::browser::signing_in(&page.url, &page.title, signals) {
                 let was = self.pages.entry(page.id).or_insert_with(|| match started {
-                    Some(o) => SigningIn { lane: lane.to_owned(), site: o.site.to_owned(), url: if crate::vault::serves(o.site, &page.url) { page.url.clone() } else { o.url.to_owned() } },
-                    None => SigningIn { lane: lane.to_owned(), site: crate::vault::site_of(&page.url), url: page.url.clone() },
+                    Some(o) => SigningIn { lane: lane.to_owned(), site: o.site.to_owned(), url: if crate::vault::serves(o.site, &page.url) { page.url.clone() } else { o.url.to_owned() }, landed: String::new() },
+                    None => SigningIn { lane: lane.to_owned(), site: crate::vault::site_of(&page.url), url: page.url.clone(), landed: String::new() },
                 });
                 // Begun on another page of the flow's site (its home, a provider's page): the site's own sign-in page is the one to keep.
                 if let Some(o) = started
@@ -261,9 +268,12 @@ impl SignInWatch {
             if !self.pages.contains_key(&page.id) || !crate::browser::past_sign_in(&page.url, &page.title, signals, page.loading) {
                 continue;
             }
-            if let Some(was) = self.pages.remove(&page.id)
-                && crate::vault::serves(&was.site, &page.url)
+            if let Some(mut was) = self.pages.remove(&page.id)
+                && crate::vault::same_org(&was.site, &page.url)
             {
+                if !crate::vault::serves(&was.site, &page.url) {
+                    was.landed = crate::vault::site_of(&page.url);
+                }
                 finished.push((page.id, was));
             }
         }
@@ -301,7 +311,7 @@ pub fn back_verdict(site: &str, page: &crate::browser::HostPage) -> Back {
     }
     let on = crate::vault::site_of(&page.url);
     let went_on = crate::vault::idp_provider(site).is_some() && crate::vault::idp_provider(&on).is_none();
-    if (crate::vault::serves(site, &page.url) || went_on) && crate::browser::past_sign_in(&page.url, &page.title, page.signals.as_ref(), page.loading) {
+    if (crate::vault::same_org(site, &page.url) || went_on) && crate::browser::past_sign_in(&page.url, &page.title, page.signals.as_ref(), page.loading) {
         Back::SignedIn { on }
     } else {
         Back::Wait
@@ -711,7 +721,7 @@ impl RecentAsks {
         }
         self.asks
             .iter()
-            .filter(|((s, m, asked), _)| s == squad && m == member && crate::vault::serves(asked, site))
+            .filter(|((s, m, asked), _)| s == squad && m == member && crate::vault::same_org(asked, site))
             .map(|(_, at)| now.saturating_sub(*at))
             .filter(|ago| *ago < ASK_COALESCE)
             .min()
@@ -729,7 +739,102 @@ impl RecentAsks {
         if site.is_empty() {
             return;
         }
-        self.asks.retain(|(_, _, asked), _| !crate::vault::serves(asked, site));
+        self.asks.retain(|(_, _, asked), _| !crate::vault::same_org(asked, site));
+    }
+}
+
+/// How long a site's sign-in waiting on the person, or refused to equipe's
+/// own fill, is told to other members instead of asking the person again.
+pub const SITE_WAIT: u64 = 3 * 60 * 60;
+
+/// What stands in the way of signing in to a site for the members other than
+/// the one who found out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Wait {
+    /// A member's browser went to the person for this sign-in, not yet handed back.
+    Pending,
+    /// equipe's own fill, or a CAPTCHA, didn't get past: the site blocks automation.
+    Blocked,
+}
+
+/// One site's sign-in standing, by who met it and when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteWait {
+    pub site: String,
+    pub member: String,
+    /// The lane that asked, for a pending ask: whose hand-back releases the others.
+    pub lane: String,
+    pub wait: Wait,
+    pub at: u64,
+}
+
+/// The sign-ins that wait on the person, or that automation was blocked at,
+/// in the last [`SITE_WAIT`]: told to the next member to ask for the same
+/// site, whoever it is, before it asks (one question, no second card).
+#[derive(Debug, Default)]
+pub struct SiteWaits {
+    waits: Vec<SiteWait>,
+}
+
+impl SiteWaits {
+    fn forget_old(&mut self, now: u64) {
+        self.waits.retain(|w| now.saturating_sub(w.at) < SITE_WAIT);
+    }
+
+    fn put(&mut self, site: &str, member: &str, lane: &str, wait: Wait, now: u64) {
+        let site = crate::vault::site_of(site);
+        if site.is_empty() {
+            return;
+        }
+        self.forget_old(now);
+        // A block outlasts a pending ask of the same site; one entry per site, member and kind.
+        self.waits.retain(|w| !(w.wait == wait && w.member == member && crate::vault::same_org(&w.site, &site)));
+        self.waits.push(SiteWait { site, member: member.to_owned(), lane: lane.to_owned(), wait, at: now });
+    }
+
+    /// `member`'s browser went to the person for a sign-in to `site`.
+    pub fn pending(&mut self, site: &str, member: &str, lane: &str, now: u64) {
+        self.put(site, member, lane, Wait::Pending, now);
+    }
+
+    /// A fill or a CAPTCHA at `site` didn't get through for `member`.
+    pub fn blocked(&mut self, site: &str, member: &str, now: u64) {
+        self.put(site, member, "", Wait::Blocked, now);
+    }
+
+    /// The person handed `member`'s browser back: what waited on it is over (a block stays).
+    pub fn answered(&mut self, member: &str) {
+        self.waits.retain(|w| !(w.wait == Wait::Pending && w.member == member));
+    }
+
+    /// A sign-in to `site` finished: nothing waits or blocks there any more.
+    pub fn signed_in(&mut self, site: &str) {
+        self.waits.retain(|w| !crate::vault::same_org(&w.site, site));
+    }
+
+    /// What another member than `member` has met at `site` lately, a pending ask first.
+    pub fn other(&mut self, site: &str, member: &str, now: u64) -> Option<SiteWait> {
+        self.forget_old(now);
+        let found = self.waits.iter().filter(|w| w.member != member && crate::vault::same_org(&w.site, site));
+        found.clone().find(|w| w.wait == Wait::Pending).or_else(|| found.clone().next()).cloned()
+    }
+}
+
+/// What a member is told, before it asks, when another member's sign-in to
+/// `site` waits on the person or was blocked for automation.
+pub fn site_wait_told(wait: &SiteWait, now: u64) -> String {
+    let ago = span(now.saturating_sub(wait.at));
+    let site = &wait.site;
+    let who = &wait.member;
+    match wait.wait {
+        Wait::Pending => format!(
+            "The sign-in to {site} is waiting on the person: {who}'s browser was handed to them {ago} ago, and every member shares the browser's sign-ins. \
+Don't ask again and don't put up another card: end your turn saying you wait for that sign-in — you get a message when it is done, and carry on then."
+        ),
+        Wait::Blocked => format!(
+            "The sign-in to {site} is blocked for automation: equipe's own fill (or a CAPTCHA) didn't get through for {who} {ago} ago, so another card would fail the same way. \
+No card was shown. Hand your browser to the person with `show_my_browser` only if the page really needs a sign-in — they sign in by hand — otherwise carry on without the site."
+        ),
     }
 }
 
@@ -915,6 +1020,73 @@ mod tests {
         assert_eq!(back_verdict("github.com", &loading), Back::Wait);
         assert_eq!(back_verdict("accounts.google.com", &host_page(3, "https://accounts.google.com/v3/signin/identifier", false, false)), Back::Wait);
         assert_eq!(back_verdict("slack.com", &host_page(3, "https://evil.example/", false, false)), Back::Wait, "another site than the one asked");
+    }
+
+    #[test]
+    fn a_sign_in_that_lands_on_a_sibling_host_is_a_sign_in_finished() {
+        // The sign-in host and the site it leads to are two hosts of one organisation.
+        let mut watch = SignInWatch::default();
+        for (from, to) in [
+            ("https://accounts.google.com/v3/signin/identifier", "https://myaccount.google.com/"),
+            ("https://signin.aws.amazon.com/signin", "https://console.aws.amazon.com/console/home"),
+            ("https://ap-northeast-2.signin.aws.amazon.com/oauth", "https://ap-northeast-2.console.aws.amazon.com/console/home"),
+        ] {
+            watch.see("acme/qa-2", &[host_page(5, from, true, false)]);
+            let done = watch.see("acme/qa-2", &[host_page(5, to, false, false)]);
+            assert_eq!(done.len(), 1, "{from} -> {to}");
+            assert_eq!(done[0].1.site, crate::vault::site_of(from));
+            assert_eq!(done[0].1.landed, crate::vault::site_of(to), "kept for the host it landed on too");
+        }
+        // The same host: nothing landed elsewhere. Another organisation, or a shared hosting suffix: no finish.
+        watch.see("acme/qa-2", &[host_page(6, "https://github.com/login", true, false)]);
+        assert_eq!(watch.see("acme/qa-2", &[host_page(6, "https://github.com/acme", false, false)])[0].1.landed, "");
+        watch.see("acme/qa-2", &[host_page(7, "https://login.alice.github.io/login", true, false)]);
+        assert!(watch.see("acme/qa-2", &[host_page(7, "https://bob.github.io/", false, false)]).is_empty());
+        watch.see("acme/qa-2", &[host_page(8, "https://accounts.google.com/signin", true, false)]);
+        assert!(watch.see("acme/qa-2", &[host_page(8, "https://evil.example/", false, false)]).is_empty());
+        // Handed back from AWS's sign-in, on its console: through.
+        assert_eq!(
+            back_verdict("ap-northeast-2.signin.aws.amazon.com", &host_page(3, "https://ap-northeast-2.console.aws.amazon.com/console/home", false, false)),
+            Back::SignedIn { on: "ap-northeast-2.console.aws.amazon.com".into() }
+        );
+        assert_eq!(back_verdict("accounts.google.com", &host_page(3, "https://mail.google.com/mail/u/0/", false, false)), Back::SignedIn { on: "mail.google.com".into() });
+    }
+
+    #[test]
+    fn a_hand_over_with_no_reason_on_a_sign_in_page_is_a_sign_in() {
+        // Said "other" before: never watched for its finish, so never on the record.
+        for url in ["https://accounts.google.com/v3/signin/identifier", "https://github.com/login", "https://app.example.com/sso/start"] {
+            assert_eq!(cause_of_handoff("Please take over", Some(url), None, false), Cause::NoLoginKept, "{url}");
+            assert_eq!(cause_of_handoff("Please take over", Some(url), None, true), Cause::SessionExpired, "{url}");
+        }
+        assert_eq!(cause_of_handoff("Please take over", Some("https://app.example.com/board"), None, true), Cause::Other);
+    }
+
+    #[test]
+    fn a_site_waiting_on_the_person_or_blocked_is_told_to_the_other_members() {
+        let mut waits = SiteWaits::default();
+        let t = 1_000_000;
+        assert!(waits.other("accounts.google.com", "backend", t).is_none());
+        waits.pending("accounts.google.com", "qa-2", "acme/qa-2", t);
+        let told = waits.other("mail.google.com", "backend", t + 600).expect("a sibling host of the same sign-in");
+        assert_eq!((told.wait, told.member.as_str(), told.lane.as_str()), (Wait::Pending, "qa-2", "acme/qa-2"));
+        let text = site_wait_told(&told, t + 600);
+        assert!(text.contains("waiting on the person") && text.contains("qa-2") && text.contains("10m") && text.contains("don't put up another card"), "{text}");
+        // Not for the member who asked, nor for another site.
+        assert!(waits.other("accounts.google.com", "qa-2", t + 600).is_none() && waits.other("github.com", "backend", t + 600).is_none());
+        // Handed back: no longer pending. A block outlasts it, and says so.
+        waits.answered("qa-2");
+        assert!(waits.other("accounts.google.com", "backend", t + 700).is_none());
+        waits.blocked("accounts.google.com", "qa-2", t + 800);
+        let blocked = waits.other("accounts.google.com", "backend", t + 900).unwrap();
+        assert!(blocked.wait == Wait::Blocked && site_wait_told(&blocked, t + 900).contains("blocked for automation"));
+        waits.answered("qa-2");
+        assert!(waits.other("accounts.google.com", "backend", t + 900).is_some(), "a hand-back doesn't lift a block");
+        // A few hours on, or once signed in: gone.
+        assert!(waits.other("accounts.google.com", "backend", t + 800 + SITE_WAIT).is_none());
+        waits.blocked("github.com", "qa-2", t);
+        waits.signed_in("github.com");
+        assert!(waits.other("github.com", "backend", t + 1).is_none());
     }
 
     #[test]

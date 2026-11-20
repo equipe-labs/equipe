@@ -809,6 +809,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         host_pages: HashMap::new(),
         looked_first: HashMap::new(),
         recent_asks: crate::logins::RecentAsks::default(),
+        site_waits: crate::logins::SiteWaits::default(),
         asking_cause: None,
         fill_waits: Default::default(),
         next_fill: 0,
@@ -1805,6 +1806,8 @@ struct Runtime {
     /// The sign-ins the person was asked for and hasn't answered, so a
     /// member asking again for the same site waits on that one ask.
     recent_asks: crate::logins::RecentAsks,
+    /// Sign-ins waiting on the person, or blocked for automation, told to the next member who asks.
+    site_waits: crate::logins::SiteWaits,
     /// The cause of the hand-off being asked for now, for what the person is told.
     asking_cause: Option<crate::logins::Cause>,
     /// equipe's fills of a kept login waiting for the browser host's answer, by token.
@@ -9260,6 +9263,11 @@ It starts when {owner} is free."
             self.with_person(&call);
             let url = call.arguments["url"].as_str().map(str::to_owned);
             let why = call.arguments["why"].as_str().unwrap_or_default().to_owned();
+            // Where a machine credential or a desktop app does it, the person isn't asked for the browser.
+            if let Some(text) = self.sign_in_elsewhere(&call, url.as_deref(), &why, false) {
+                let _ = reply.send(ToolResult::error(text));
+                return;
+            }
             // Its own page on that site shows no sign-in: it looks before anyone is asked.
             if let Some(text) = self.look_first(&call, url.as_deref(), &why) {
                 let _ = reply.send(ToolResult { text, is_error: false, image: None });
@@ -9930,6 +9938,17 @@ renames still needs the person — equipe holds that one at landing by itself.",
             let _ = reply.send(ToolResult::error("You have no browser on this machine (Node.js isn't installed), so there is nothing to sign in with."));
             return;
         }
+        let sign_in_site = format!("https://{}", vault::site_of(&site));
+        if let Some(text) = self.sign_in_elsewhere(&call, Some(&sign_in_site), &why, true) {
+            let _ = reply.send(ToolResult::error(text));
+            return;
+        }
+        // Another member met this site's sign-in lately — still with the person, or blocked for
+        // automation: told so, no second card.
+        if let Some(wait) = self.site_waits.other(&vault::site_of(&site), &call.member, now_secs()) {
+            let _ = reply.send(ToolResult::error(crate::logins::site_wait_told(&wait, now_secs())));
+            return;
+        }
         let kept: Vec<&crate::protocol::vault::Login> = self.logins.iter().filter(|l| vault::serves(&l.site, &site)).collect();
         let login = match (kept.as_slice(), account.is_empty()) {
             ([], _) => {
@@ -10385,6 +10404,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     && let Some((squad, key)) = lane.split_once('/')
                 {
                     self.recent_asks.answered(squad, browser::member_of(key));
+                    self.site_waits.answered(browser::member_of(key));
                 }
                 let session = if asked.is_some() { asker.or(session) } else { session };
                 // Handed back from a page that waited for them: passed — or, still
@@ -10516,6 +10536,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     self.release_login_waiters(&lane).await;
                 }
                 self.asked_site.clear();
+                self.site_waits = Default::default();
                 self.verify_back.clear();
                 self.finished_in_hands.clear();
                 self.host_pages.clear();
