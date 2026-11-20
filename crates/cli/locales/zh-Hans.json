@@ -1605,5 +1605,17 @@
   "growth.not_started": "没有开始增长检查：{why}",
   "growth.none": "{squad} 还没有增长卡片。",
   "growth.summary": "{squad} · 上次检查 {when} · 最近 7 天 token {spent}/{cap}",
-  "growth.never": "从未"
+  "growth.never": "从未",
+  "sprint.ended": "{squad} 进行中的冲刺现在开始评审：PM 会写复盘并提议下一个。",
+  "sprint.not_ended": "没有开始：{why}",
+  "sprint.saved": "已保存。",
+  "sprint.loop_on": "{squad} · 冲刺已开启 · 每周第 {weekday} 天 {hour}:00 评审 · {days} 天 · 预算 {budget} 个 token",
+  "sprint.loop_off": "{squad} · 冲刺已关闭：{why}",
+  "sprint.north_star": "北极星指标：{name}",
+  "sprint.this": "本次冲刺",
+  "sprint.status": "{total} 个工单中完成 {done} 个 · 已用 {spent} / {budget} 个 token · 评审 {review}",
+  "sprint.next": "下一个冲刺（提议）",
+  "sprint.waits": "等你在卡片上回答。",
+  "sprint.learned": "我们学到了什么",
+  "sprint.none": "{squad} 还没有冲刺。"
 }

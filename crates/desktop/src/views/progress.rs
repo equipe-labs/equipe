@@ -2,7 +2,9 @@
 //! how many finished, how many need a look, how many are under way — then
 //! the work that needs a look, in red, first; the rest under way by project,
 //! each with who is on it, the step it is at and when it is expected done;
-//! and what finished, on main or still on its branch.
+//! and what finished, on main or still on its branch. Once the product is
+//! live the sprint leads them: this sprint, the next one proposed, and what
+//! the last one taught (`crate::sprint`).
 
 use equipe_core::protocol::{Ticket, TicketId};
 use equipe_core::t;
@@ -94,6 +96,20 @@ pub fn render(shell: &Shell, cx: &mut Context<Shell>) -> AnyElement {
         .child(tile("progress-needs", needs, t!("progress.chip_needs"), Some(p.orange)).cursor_pointer().hover(move |s| s.bg(p.wash)).on_click(cx.listener(|this, _, _, cx| this.open_side_menu(crate::board::Menu::Inbox, cx))));
 
     let mut column = v_flex().w_full().gap_5().child(tiles);
+    // The sprint: this one, the next proposed, and what the last taught.
+    let sprint = shell.sprint.as_ref().map(|v| crate::sprint::shown(v, model.unix, short_span)).unwrap_or_default();
+    if let Some(note) = &sprint.note {
+        column = column.child(div().text_size(px(12.)).text_color(p.muted).child(note.clone()));
+    }
+    if let Some(this) = &sprint.this {
+        column = column.child(sprint_this(shell, this, cx));
+    }
+    if let Some(next) = &sprint.next {
+        column = column.child(sprint_section(shell, "progress-sprint-next", t!("progress.sprint_next"), &next.head, &[], &next.rows));
+    }
+    if let Some(learned) = &sprint.learned {
+        column = column.child(sprint_section(shell, "progress-sprint-learned", t!("progress.sprint_learned"), &learned.head, &learned.parts, &learned.rows));
+    }
     if risks.is_empty() && working.is_empty() && done.is_empty() {
         column = column.child(
             v_flex()
@@ -260,6 +276,79 @@ fn growth_row(shell: &Shell, i: usize, row: &crate::growth::Row) -> AnyElement {
         .into_any_element()
 }
 
+/// "This sprint": its section, with the button that reviews it now.
+fn sprint_this(shell: &Shell, this: &crate::sprint::This, cx: &mut Context<Shell>) -> AnyElement {
+    let p = shell.palette;
+    let section = sprint_section(shell, "progress-sprint-this", t!("progress.sprint_this"), &this.head, &[], &this.rows);
+    if !this.can_end {
+        return section;
+    }
+    let end = ui::button(p, "progress-sprint-end", crate::ui::Kind::Ghost, t!("sprint.end_now")).on_click(cx.listener(|this, _, _, cx| this.sprint_end(cx)));
+    v_flex().w_full().gap_1().child(section).child(h_flex().w_full().justify_end().child(end)).into_any_element()
+}
+
+/// A sprint section: its heading, its sprint and goal with a line or two,
+/// the retro's parts (a label and lines each), then its rows.
+fn sprint_section(shell: &Shell, id: &'static str, label: &str, head: &crate::sprint::Head, parts: &[(String, Vec<String>)], rows: &[crate::sprint::Row]) -> AnyElement {
+    let p = shell.palette;
+    let lines = head.lines.iter().map(|l| div().text_size(px(12.)).text_color(p.text2).child(l.clone()));
+    let parts = parts.iter().map(|(label, lines)| {
+        v_flex()
+            .gap(px(2.))
+            .child(div().text_size(px(12.)).font_weight(FontWeight::MEDIUM).text_color(p.text2).child(label.clone()))
+            .children(lines.iter().map(|l| div().text_size(px(13.)).text_color(p.text).child(format!("· {l}"))))
+    });
+    let rows = rows.iter().enumerate().map(|(i, r)| sprint_row(shell, id, i, r));
+    v_flex()
+        .id(id)
+        .w_full()
+        .gap_1()
+        .child(heading(shell, None, label.to_owned(), rows.len()))
+        .child(
+            v_flex()
+                .w_full()
+                .px_3()
+                .py_2()
+                .gap_1()
+                .rounded(px(R_LG))
+                .bg(p.raised)
+                .border_1()
+                .border_color(p.hair)
+                .child(div().text_size(px(14.)).font_weight(FontWeight::SEMIBOLD).text_color(p.text).child(head.title.clone()))
+                .children(lines)
+                .children(parts),
+        )
+        .children(rows)
+        .into_any_element()
+}
+
+/// A hypothesis or an item: its id, its words, where it stands — red when it made things worse.
+fn sprint_row(shell: &Shell, section: &'static str, i: usize, row: &crate::sprint::Row) -> AnyElement {
+    let p = shell.palette;
+    let color = if row.hot {
+        p.danger()
+    } else if row.good {
+        p.text
+    } else {
+        p.text2
+    };
+    h_flex()
+        .id((section, i))
+        .w_full()
+        .min_h(px(36.))
+        .px_2()
+        .py_1()
+        .gap_3()
+        .items_center()
+        .rounded(px(R_MD))
+        .text_size(px(SMALL))
+        .aria_label(format!("{} · {} · {}", row.id, row.title, row.state))
+        .child(div().w(px(52.)).flex_none().font_family(MONO).text_size(px(12.)).text_color(p.muted).child(row.id.clone()))
+        .child(div().flex_1().min_w_0().truncate().text_size(px(14.)).text_color(p.text2).child(row.title.clone()))
+        .child(div().flex_none().max_w(px(260.)).truncate().text_size(px(12.)).text_color(color).child(row.state.clone()))
+        .into_any_element()
+}
+
 fn base(shell: &Shell, id: TicketId, cx: &mut Context<Shell>) -> Stateful<Div> {
     let p = shell.palette;
     h_flex()
@@ -303,6 +392,37 @@ impl Shell {
         }
         self.show(Screen::Progress, cx);
         self.growth_load(cx);
+        self.sprint_load(cx);
+        cx.notify();
+    }
+
+    /// The sprint loop, asked of the daemon off the UI thread (`sprint.get`).
+    pub fn sprint_load(&mut self, cx: &mut Context<Self>) {
+        let Some(door) = self.link.as_ref().map(|l| l.uploader()) else { return };
+        let params = equipe_core::protocol::sprint::SprintParams { squad: self.model.squad.clone() };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let answer = door.call(equipe_core::protocol::sprint::GET, params, std::time::Duration::from_secs(20));
+            let _ = tx.send(answer.ok().and_then(|v| serde_json::from_value::<equipe_core::protocol::sprint::SprintView>(v).ok()));
+        });
+        cx.spawn(async move |this, cx| {
+            if let Ok(sprint) = rx.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.sprint = sprint;
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// The person ends the sprint under way now: its review starts (`sprint.end`).
+    pub fn sprint_end(&mut self, cx: &mut Context<Self>) {
+        let Some(door) = self.link.as_ref().map(|l| l.uploader()) else { return };
+        let params = equipe_core::protocol::sprint::SprintParams { squad: self.model.squad.clone() };
+        std::thread::spawn(move || {
+            let _ = door.call(equipe_core::protocol::sprint::END, params, std::time::Duration::from_secs(20));
+        });
         cx.notify();
     }
 
