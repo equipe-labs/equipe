@@ -1605,5 +1605,17 @@
   "growth.not_started": "グロース点検は始まりませんでした: {why}",
   "growth.none": "{squad} にはまだグロースカードがありません。",
   "growth.summary": "{squad} · 前回の点検 {when} · 直近 7 日のトークン {cap} 中 {spent}",
-  "growth.never": "なし"
+  "growth.never": "なし",
+  "sprint.ended": "{squad} の進行中のスプリントを今レビューします。PM が振り返りを書き、次を提案します。",
+  "sprint.not_ended": "開始しませんでした: {why}",
+  "sprint.saved": "保存しました。",
+  "sprint.loop_on": "{squad} · スプリント オン · 曜日 {weekday} の {hour}:00 にレビュー · {days} 日 · 予算 {budget} トークン",
+  "sprint.loop_off": "{squad} · スプリント オフ: {why}",
+  "sprint.north_star": "北極星指標: {name}",
+  "sprint.this": "今回のスプリント",
+  "sprint.status": "チケット {total} 件中 {done} 件完了 · {budget} トークン中 {spent} · レビュー {review}",
+  "sprint.next": "次のスプリント（提案）",
+  "sprint.waits": "カードでの回答を待っています。",
+  "sprint.learned": "わかったこと",
+  "sprint.none": "{squad} にはまだスプリントがありません。"
 }
