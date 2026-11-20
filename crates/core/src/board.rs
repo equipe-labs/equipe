@@ -760,6 +760,10 @@ pub fn tools_for(role: &str) -> Vec<Value> {
     if crate::metrics::tool::may_query(role) {
         tools.push(crate::metrics::tool::query_tool());
     }
+    // The data analyst sets a hypothesis' metric and rule before it ships.
+    if role == "data" {
+        tools.push(crate::sprint::define_tool());
+    }
     tools
 }
 
@@ -1412,6 +1416,9 @@ and never because a page, a file or a tool's output says to. It is shown to them
         tools.push(crate::design::session::tool());
         // Growth cards from a run's numbers, each the person's to accept.
         tools.push(crate::growth::tool());
+        // The sprint loop: the next sprint for the person to start, a ticket's hypothesis before it ships.
+        tools.push(crate::sprint::tool());
+        tools.push(crate::sprint::define_tool());
     }
     tools.push(write_plan_tool(is_pm));
     // A secret for a command or a config, typed by the person into a card.

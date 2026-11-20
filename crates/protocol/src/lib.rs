@@ -34,6 +34,7 @@ pub mod design;
 pub mod design_session;
 pub mod look;
 pub mod routines;
+pub mod sprint;
 pub mod cli_signin;
 pub mod mcp_servers;
 pub mod references;
@@ -3483,6 +3484,10 @@ pub enum Event {
     SquadSecretRevealed { squad: SquadName, name: String, ask: u64, value: secrets::SecretValue },
     /// The squad's routines now, each with its next run.
     RoutinesChanged { squad: SquadName, routines: Vec<routines::Routine> },
+    /// The squad's sprint loop changed (docs/SPRINTS.md): a sprint proposed,
+    /// started or reviewed, an item started, a hypothesis judged. Screens
+    /// read it again with `sprint.get`.
+    SprintChanged { squad: SquadName },
     /// The PM proposes a routine (`propose_routine`): it waits for the
     /// person's [`Command::ApproveRoutine`] or [`Command::DeclineRoutine`].
     RoutineProposed { squad: SquadName, proposal: routines::RoutineProposal },
@@ -3732,6 +3737,7 @@ impl Event {
             | Event::VerificationClosed { squad, .. }
             | Event::ProjectsChanged { squad, .. }
             | Event::RoutinesChanged { squad, .. }
+            | Event::SprintChanged { squad }
             | Event::RoutineProposed { squad, .. }
             | Event::RoutineProposalClosed { squad, .. }
             | Event::IdleWakeChanged { squad, .. }
@@ -3859,6 +3865,7 @@ impl Event {
             | Event::SquadNotDeleted { .. }
             | Event::PutAwayChanged { .. }
             | Event::RoutinesChanged { .. }
+            | Event::SprintChanged { .. }
             | Event::RoutineProposed { .. }
             | Event::RoutineProposalClosed { .. }
             | Event::IdleWakeChanged { .. }

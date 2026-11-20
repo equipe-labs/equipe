@@ -1628,5 +1628,17 @@
   "growth.not_started": "Kein Wachstumslauf gestartet: {why}",
   "growth.none": "Für {squad} gibt es noch keine Wachstumskarten.",
   "growth.summary": "{squad} · letzter Lauf {when} · {spent} von {cap} Tokens in den letzten 7 Tagen",
-  "growth.never": "nie"
+  "growth.never": "nie",
+  "sprint.ended": "Der laufende Sprint von {squad} wird jetzt reviewt: der PM schreibt die Retro und schlägt den nächsten vor.",
+  "sprint.not_ended": "Nichts gestartet: {why}",
+  "sprint.saved": "Gespeichert.",
+  "sprint.loop_on": "{squad} · Sprints an · Review an Wochentag {weekday} um {hour}:00 · {days} Tage · Budget {budget} Tokens",
+  "sprint.loop_off": "{squad} · Sprints aus: {why}",
+  "sprint.north_star": "Nordstern: {name}",
+  "sprint.this": "Dieser Sprint",
+  "sprint.status": "{done} von {total} Tickets erledigt · {spent} von {budget} Tokens · Review {review}",
+  "sprint.next": "Nächster Sprint (vorgeschlagen)",
+  "sprint.waits": "Wartet auf deine Antwort auf seiner Karte.",
+  "sprint.learned": "Was wir gelernt haben",
+  "sprint.none": "Noch kein Sprint in {squad}."
 }

@@ -1605,5 +1605,17 @@
   "growth.not_started": "성장 점검을 시작하지 않았어요: {why}",
   "growth.none": "{squad}에는 아직 성장 카드가 없어요.",
   "growth.summary": "{squad} · 마지막 점검 {when} · 최근 7일 토큰 {cap} 중 {spent}",
-  "growth.never": "없음"
+  "growth.never": "없음",
+  "sprint.ended": "{squad}의 진행 중인 스프린트를 지금 리뷰해요: PM이 회고를 쓰고 다음 스프린트를 제안해요.",
+  "sprint.not_ended": "시작하지 않았어요: {why}",
+  "sprint.saved": "저장했어요.",
+  "sprint.loop_on": "{squad} · 스프린트 켜짐 · 요일 {weekday} {hour}:00에 리뷰 · {days}일 · 예산 {budget} 토큰",
+  "sprint.loop_off": "{squad} · 스프린트 꺼짐: {why}",
+  "sprint.north_star": "북극성 지표: {name}",
+  "sprint.this": "이번 스프린트",
+  "sprint.status": "티켓 {total}개 중 {done}개 완료 · {budget} 토큰 중 {spent} · 리뷰 {review}",
+  "sprint.next": "다음 스프린트 (제안)",
+  "sprint.waits": "카드에서 답해 주시길 기다려요.",
+  "sprint.learned": "배운 것",
+  "sprint.none": "{squad}에는 아직 스프린트가 없어요."
 }

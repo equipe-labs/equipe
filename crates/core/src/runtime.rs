@@ -120,6 +120,7 @@ mod autonomy;
 mod review;
 mod retro;
 mod growth;
+mod sprint;
 mod watch;
 mod words;
 mod put_away;
@@ -345,6 +346,8 @@ enum Request {
     Busy(oneshot::Sender<equipe_protocol::rpc::Busy>),
     /// A screen's `growth.*` request: its method and params → its answer.
     Growth(String, Value, oneshot::Sender<Result<Value, (i64, String)>>),
+    /// A screen's `sprint.*` request: its method and params → its answer.
+    Sprint(String, Value, oneshot::Sender<Result<Value, (i64, String)>>),
     /// What uses the disk (`equipe disk`).
     Disk(oneshot::Sender<crate::disk::DiskReport>),
     /// A squad's status at a glance (`squad_status`).
@@ -450,6 +453,14 @@ impl Handle {
     pub async fn growth(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
         let (tx, rx) = oneshot::channel();
         let _ = self.requests.send(Request::Growth(method.to_owned(), params, tx));
+        rx.await.unwrap_or_else(|_| Err((-32000, "equipe is shutting down".into())))
+    }
+
+    /// A screen's `sprint.*` request (docs/SPRINTS.md): its answer, or a
+    /// JSON-RPC error's code and message.
+    pub async fn sprint(&self, method: &str, params: Value) -> Result<Value, (i64, String)> {
+        let (tx, rx) = oneshot::channel();
+        let _ = self.requests.send(Request::Sprint(method.to_owned(), params, tx));
         rx.await.unwrap_or_else(|_| Err((-32000, "equipe is shutting down".into())))
     }
 
@@ -895,6 +906,9 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         growth_running: HashSet::new(),
         growth_tried: HashMap::new(),
         growth_measuring: HashSet::new(),
+        sprint_gathering: HashSet::new(),
+        sprint_busy: HashSet::new(),
+        sprint_counted: HashMap::new(),
         deploys_looking: HashSet::new(),
         go_live: HashMap::new(),
         accepts: HashMap::new(),
@@ -1376,6 +1390,12 @@ enum Internal {
     GrowthGathered { squad: String, gathered: Box<growth::Gathered> },
     /// A growth card's follow-up, measured off the loop.
     GrowthMeasured { squad: String, card: u32, after_days: u32, outcome: Box<equipe_protocol::growth::Outcome> },
+    /// A sprint's review or planning numbers, gathered off the loop (`sprint`).
+    SprintGathered { squad: String, gathered: Box<sprint::Gathered> },
+    /// A hypothesis judged off the loop.
+    SprintJudged { squad: String, experiment: u32, judged: Box<equipe_protocol::sprint::Judged> },
+    /// Whether a live hypothesis' events arrive, looked at off the loop.
+    SprintChecked { squad: String, experiment: u32, arriving: Result<bool, String> },
     /// A squad's projects were looked at off the loop for what went live:
     /// each project's watch now, and what the look found.
     DeploysLooked { squad: String, looks: Vec<(PathBuf, crate::deploys::Watch, crate::deploys::Looked)>, declared: Vec<(String, bool)> },
@@ -1662,6 +1682,12 @@ struct Runtime {
     growth_running: HashSet<String>,
     growth_tried: HashMap<String, u64>,
     growth_measuring: HashSet<(String, u32, u32)>,
+    /// Squads whose sprint review or planning gathers now, the hypotheses
+    /// being checked or judged, and when each squad's sprint spend was last
+    /// counted (`sprint`).
+    sprint_gathering: HashSet<String>,
+    sprint_busy: HashSet<(String, u32)>,
+    sprint_counted: HashMap<String, u64>,
     /// Squads whose projects are being looked at for what went live (`deploys`).
     deploys_looking: HashSet<String>,
     /// How each squad's projects go live after their landings, by project
@@ -1891,6 +1917,7 @@ impl Wake {
             Wake::Request(Some(Request::DesktopTool(..))) => Borrowed("desktop tool"),
             Wake::Request(Some(Request::Busy(_))) => Borrowed("busy"),
             Wake::Request(Some(Request::Growth(..))) => Borrowed("a growth request"),
+            Wake::Request(Some(Request::Sprint(..))) => Borrowed("a sprint request"),
             Wake::Request(Some(Request::Status(..))) => Borrowed("a squad's status"),
             Wake::Request(Some(Request::PersonWindow(..))) => Borrowed("person's browser window"),
             Wake::Request(Some(Request::SignIn(..))) => Borrowed("person's sign-in"),
@@ -1962,6 +1989,9 @@ impl Wake {
             Wake::Internal(Internal::SignalRead { .. }) => Borrowed("a signal's reading"),
             Wake::Internal(Internal::GrowthGathered { .. }) => Borrowed("a growth run's numbers"),
             Wake::Internal(Internal::GrowthMeasured { .. }) => Borrowed("a growth card's follow-up"),
+            Wake::Internal(Internal::SprintGathered { .. }) => Borrowed("a sprint's numbers"),
+            Wake::Internal(Internal::SprintJudged { .. }) => Borrowed("a hypothesis judged"),
+            Wake::Internal(Internal::SprintChecked { .. }) => Borrowed("a hypothesis' events looked for"),
             Wake::Internal(Internal::DeploysLooked { .. }) => Borrowed("a look at what went live"),
             Wake::Internal(Internal::GoLiveRead { .. }) => Borrowed("how a project goes live"),
             Wake::Internal(Internal::GoLiveDue { .. }) => Borrowed("a project's deploy coming due"),
@@ -2110,6 +2140,9 @@ impl Runtime {
                 Some(Request::Tool(call, reply)) => self.tool(call, reply).await,
                 Some(Request::Growth(method, params, reply)) => {
                     let _ = reply.send(self.growth_request(&method, params));
+                }
+                Some(Request::Sprint(method, params, reply)) => {
+                    let _ = reply.send(self.sprint_request(&method, params));
                 }
                 Some(Request::PersonWindow(url, reply)) => {
                     let _ = reply.send(self.start_sign_in(&url, true).opened);
@@ -2274,6 +2307,9 @@ impl Runtime {
                 Internal::SignalRead { squad, key, reading } => self.signal_read(&squad, &key, reading).await,
                 Internal::GrowthGathered { squad, gathered } => Box::pin(self.growth_gathered(&squad, *gathered)).await,
                 Internal::GrowthMeasured { squad, card, after_days, outcome } => self.growth_measured(&squad, card, after_days, *outcome),
+                Internal::SprintGathered { squad, gathered } => Box::pin(self.sprint_gathered(&squad, *gathered)).await,
+                Internal::SprintJudged { squad, experiment, judged } => self.sprint_judged(&squad, experiment, *judged),
+                Internal::SprintChecked { squad, experiment, arriving } => self.sprint_checked(&squad, experiment, arriving),
                 Internal::DeploysLooked { squad, looks, declared } => self.deploys_looked(&squad, looks, declared),
                 Internal::GoLiveRead { squad, project, found, channel_known } => self.go_live_read(&squad, project, found, channel_known),
                 Internal::GoLiveDue { squad, project } => self.go_live_due(&squad, project),
@@ -2442,6 +2478,8 @@ impl Runtime {
             self.run_due_signals();
             pulse.step("minute tick: growth");
             self.growth_tick();
+            pulse.step("minute tick: sprints");
+            Box::pin(self.sprint_tick()).await;
         }
         pulse.step("minute tick: deploys");
         self.deploys_tick();
@@ -4322,6 +4360,16 @@ runbooks and reports live there, and work across the projects or on running them
             crate::daemon_log!("equipe: {squad}: routine {} ({}) handed to the PM", routine.id, routine.title);
             let about = self.hq(squad).map(|hq| board::project_name(&hq));
             let retro = self.journal(squad).and_then(|j| j.retro_routine()) == Some(id);
+            // The sprint loop's review is the retro while it runs: not two in a week.
+            if retro && self.sprint_on(squad).is_ok() {
+                crate::daemon_log!("equipe: {squad}: the weekly retro is the sprint review's while the sprint loop runs");
+                if let Some(r) = all.iter_mut().find(|r| r.id == id) {
+                    r.last_run = Some(now);
+                    r.next_run = Some(routines::next_run(r.when, now, &routines::Local));
+                }
+                self.keep_routines(squad, all);
+                return true;
+            }
             let mut text = if retro { self.retro_message(squad, &routine, now) } else { routines::message(&routine) };
             if retro {
                 self.retros.insert(pm, now);
@@ -5392,6 +5440,8 @@ runbooks and reports live there, and work across the projects or on running them
         let designing = self.design_note(id);
         // Its cards still open: a message that settles one has it withdrawn, not answered for the person.
         let cards = self.open_cards_note(id);
+        // The squad's sprint, at its desk: the PM plans and reviews by it.
+        let sprint = self.sessions.get(&id).filter(|s| s.is_pm() && s.work.is_none()).and_then(|s| s.squad.clone()).and_then(|squad| self.sprint_context(&squad));
         let Some(session) = self.sessions.get_mut(&id) else {
             return;
         };
@@ -5425,6 +5475,7 @@ runbooks and reports live there, and work across the projects or on running them
             parts.push(turn_context::Part::told("overview", overview.map(|o| format!("Where each project stands now:\n{o}"))).still("Where each project stands: as told earlier in this conversation, unchanged."));
         }
         parts.push(turn_context::Part::told("cards", cards).gone("None of your decision cards is open now."));
+        parts.push(turn_context::Part::told("sprint", sprint));
         parts.push(turn_context::Part::told("design", designing));
         parts.push(turn_context::Part::told("stops", stops.map(|s| turn_context::inner(&s))).gone("No stop is in force now: the person lifted them."));
         parts.push(turn_context::Part::told("requests", requests.map(|r| turn_context::inner(&r))).gone("None of the person's requests you were told of is open now."));
@@ -9444,6 +9495,19 @@ there, end your turn, and carry on when they say they're done."
             }
             return;
         }
+        // A sprint proposed: its small items may start at once, as the person's autonomy setting says.
+        if call.name == crate::sprint::PLAN {
+            let result = match self.caller_id(&call) {
+                Some(id) => Box::pin(self.sprint_plan(&squad, &call.member, id, &call.arguments)).await,
+                None => Err("You're not on the squad.".into()),
+            };
+            self.dispatch(&squad).await;
+            let _ = reply.send(match result {
+                Ok(text) => ToolResult { text, is_error: false, image: None },
+                Err(text) => ToolResult { text, is_error: true, image: None },
+            });
+            return;
+        }
         // A design session proposed, or started at once: it may send the designer its kickoff.
         if call.name == crate::design::session::PROPOSE {
             let result = match self.caller_id(&call) {
@@ -11261,6 +11325,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
             crate::growth::PROPOSE => self.propose_growth(&squad, &member, id, &args),
+            crate::sprint::DEFINE => self.define_experiment(&squad, &member, id, &args),
             crate::withdraw::WITHDRAW_CARD => self.withdraw_card(&squad, &member, id, &args, is_pm, false),
             // From before `withdraw_card`: a conversation started then still has it.
             board::WITHDRAW_DECISION => self.withdraw_card(&squad, &member, id, &args, is_pm, true),

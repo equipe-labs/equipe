@@ -1605,5 +1605,17 @@
   "growth.not_started": "沒有開始成長檢查：{why}",
   "growth.none": "{squad} 還沒有成長卡片。",
   "growth.summary": "{squad} · 上次檢查 {when} · 最近 7 天 token {spent}/{cap}",
-  "growth.never": "從未"
+  "growth.never": "從未",
+  "sprint.ended": "{squad} 進行中的衝刺現在開始評審：PM 會寫回顧並提議下一個。",
+  "sprint.not_ended": "沒有開始：{why}",
+  "sprint.saved": "已儲存。",
+  "sprint.loop_on": "{squad} · 衝刺已開啟 · 每週第 {weekday} 天 {hour}:00 評審 · {days} 天 · 預算 {budget} 個 token",
+  "sprint.loop_off": "{squad} · 衝刺已關閉：{why}",
+  "sprint.north_star": "北極星指標：{name}",
+  "sprint.this": "本次衝刺",
+  "sprint.status": "{total} 個工單中完成 {done} 個 · 已用 {spent} / {budget} 個 token · 評審 {review}",
+  "sprint.next": "下一個衝刺（提議）",
+  "sprint.waits": "等你在卡片上回答。",
+  "sprint.learned": "我們學到了什麼",
+  "sprint.none": "{squad} 還沒有衝刺。"
 }

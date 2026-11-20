@@ -1628,5 +1628,17 @@
   "growth.not_started": "No se inició ninguna revisión de crecimiento: {why}",
   "growth.none": "Todavía no hay tarjetas de crecimiento para {squad}.",
   "growth.summary": "{squad} · última revisión {when} · {spent} de {cap} tokens en los últimos 7 días",
-  "growth.never": "nunca"
+  "growth.never": "nunca",
+  "sprint.ended": "El sprint en curso de {squad} se revisa ahora: el PM escribe su retro y propone el siguiente.",
+  "sprint.not_ended": "No se inició nada: {why}",
+  "sprint.saved": "Guardado.",
+  "sprint.loop_on": "{squad} · sprints activados · revisión el día {weekday} a las {hour}:00 · {days} días · presupuesto {budget} tokens",
+  "sprint.loop_off": "{squad} · sprints desactivados: {why}",
+  "sprint.north_star": "Estrella polar: {name}",
+  "sprint.this": "Este sprint",
+  "sprint.status": "{done} de {total} tickets hechos · {spent} de {budget} tokens · revisión {review}",
+  "sprint.next": "Próximo sprint (propuesto)",
+  "sprint.waits": "Esperando tu respuesta en su tarjeta.",
+  "sprint.learned": "Lo que aprendimos",
+  "sprint.none": "Todavía no hay sprints en {squad}."
 }

@@ -266,7 +266,7 @@ fn property(name: &str) -> Result<String, String> {
 }
 
 /// A string as HogQL quotes it.
-fn quote(s: &str) -> String {
+pub(crate) fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 
@@ -303,7 +303,7 @@ pub fn exclusion(config: &Config) -> Result<String, String> {
 // ---- What a run reads ----
 
 /// Days `from..=to` (day numbers) as a `timestamp` range.
-fn range(from: i64, to: i64) -> String {
+pub(crate) fn range(from: i64, to: i64) -> String {
     format!("timestamp >= toDateTime('{} 00:00:00') AND timestamp < toDateTime('{} 00:00:00')", day_string(from), day_string(to + 1))
 }
 
@@ -532,7 +532,7 @@ pub fn may_spend(store: &Store, cap: u64, estimate: u64, now: u64) -> Result<(),
 }
 
 /// Two titles about the same thing: most of their words shared.
-fn alike(a: &str, b: &str) -> bool {
+pub(crate) fn alike(a: &str, b: &str) -> bool {
     let words = |s: &str| s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() > 2).map(str::to_owned).collect::<std::collections::BTreeSet<_>>();
     let (a, b) = (words(a), words(b));
     if a.is_empty() || b.is_empty() {
@@ -565,7 +565,7 @@ pub fn personal(text: &str) -> Option<&'static str> {
     None
 }
 
-fn size_of(v: Option<&Value>) -> Option<Size> {
+pub(crate) fn size_of(v: Option<&Value>) -> Option<Size> {
     match v?.as_str()?.trim().to_ascii_uppercase().as_str() {
         "S" | "SMALL" => Some(Size::S),
         "M" | "MEDIUM" => Some(Size::M),
@@ -574,7 +574,7 @@ fn size_of(v: Option<&Value>) -> Option<Size> {
     }
 }
 
-fn risk_of(v: Option<&Value>) -> Option<Risk> {
+pub(crate) fn risk_of(v: Option<&Value>) -> Option<Risk> {
     match v?.as_str()?.trim().to_ascii_lowercase().as_str() {
         "low" => Some(Risk::Low),
         "medium" => Some(Risk::Medium),
@@ -693,7 +693,7 @@ pub fn cards(args: &Value, store: &Store, config: &Config, projects: &[String], 
     Ok(out)
 }
 
-fn number(v: f64) -> String {
+pub(crate) fn number(v: f64) -> String {
     if v.fract() == 0.0 { format!("{v:.0}") } else { format!("{v:.1}") }
 }
 

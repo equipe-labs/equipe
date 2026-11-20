@@ -38,7 +38,7 @@ impl Runtime {
     }
 
     /// The squad's projects' declarations as one, and what couldn't be read.
-    fn growth_config(&mut self, squad: &str) -> (Config, Vec<String>, bool) {
+    pub(super) fn growth_config(&mut self, squad: &str) -> (Config, Vec<String>, bool) {
         let mut gaps = Vec::new();
         let mut found = Vec::new();
         for project in self.projects(squad) {
@@ -54,7 +54,7 @@ impl Runtime {
 
     /// The squad's PostHog connection a run reads: the one its declaration
     /// names, or its only one.
-    fn growth_connection(&self, squad: &str, config: &Config) -> Result<Option<String>, String> {
+    pub(super) fn growth_connection(&self, squad: &str, config: &Config) -> Result<Option<String>, String> {
         let all: Vec<String> = crate::metrics::connections(&self.config.home).into_iter().filter(|c| c.squad == squad && c.kind == SourceKind::Posthog).map(|c| c.id).collect();
         match (&config.connection, all.as_slice()) {
             (Some(named), _) if all.contains(named) => Ok(Some(named.clone())),
@@ -282,7 +282,8 @@ come as their next message. Don't make tickets for them: equipe makes the accept
         for squad in squads {
             let last = rules::load(&self.growth_dir(&squad)).last_run;
             let tried = self.growth_tried.get(&squad).is_some_and(|at| at + RETRY > now);
-            if !tried && rules::weekly_due(last, now, &routines::Local) && self.growth_enabled(&squad) {
+            // While the sprint loop runs, its review reads the numbers: no weekly run beside it.
+            if !tried && rules::weekly_due(last, now, &routines::Local) && self.growth_enabled(&squad) && self.sprint_on(&squad).is_err() {
                 self.growth_tried.insert(squad.clone(), now);
                 let started = self.growth_run(&squad, "weekly");
                 if let Some(why) = started.why {
@@ -295,7 +296,7 @@ come as their next message. Don't make tickets for them: equipe makes the accept
 
     /// Whether the loop runs weekly for `squad`: it has a PostHog connection,
     /// or a project declares what matters.
-    fn growth_enabled(&mut self, squad: &str) -> bool {
+    pub(super) fn growth_enabled(&mut self, squad: &str) -> bool {
         crate::metrics::connections(&self.config.home).iter().any(|c| c.squad == squad && c.kind == SourceKind::Posthog) || self.growth_config(squad).2
     }
 
@@ -444,7 +445,7 @@ come as their next message. Don't make tickets for them: equipe makes the accept
 
     /// The squad's signals that failed in the last week: the share of their
     /// readings that passed.
-    fn growth_signals(&mut self, squad: &str, now: u64) -> Vec<Evidence> {
+    pub(super) fn growth_signals(&mut self, squad: &str, now: u64) -> Vec<Evidence> {
         let states = self.journal(squad).map(Journal::signal_states).unwrap_or_default();
         let signals = self.journal(squad).map(Journal::signals).unwrap_or_default();
         let (from, to) = (crate::metrics::day_of(&routines::Local, now.saturating_sub(rules::WEEK)), crate::metrics::day_of(&routines::Local, now));
@@ -473,7 +474,7 @@ come as their next message. Don't make tickets for them: equipe makes the accept
 
     /// The project checks equipe ran on accepted work in the last week: the
     /// share that passed, when any ran.
-    fn growth_checks(&mut self, squad: &str, now: u64) -> Vec<Evidence> {
+    pub(super) fn growth_checks(&mut self, squad: &str, now: u64) -> Vec<Evidence> {
         let since = now.saturating_sub(rules::WEEK);
         let events = self.journal(squad).and_then(|j| j.ticket_events_since(since).ok()).unwrap_or_default();
         let passed = events.iter().filter(|(_, e)| e.kind == "checks passed").count();
@@ -502,7 +503,7 @@ come as their next message. Don't make tickets for them: equipe makes the accept
 /// A run's numbers, off the loop: each ask this period and the one before
 /// through the squad's PostHog connection, equipe's kept daily metrics, and
 /// the project's health checks.
-async fn gather(home: &Path, squad: &str, connection: Option<&str>, asks: &[rules::Ask], health: &[rules::Health], client: &reqwest::Client, now: u64) -> Gathered {
+pub(super) async fn gather(home: &Path, squad: &str, connection: Option<&str>, asks: &[rules::Ask], health: &[rules::Health], client: &reqwest::Client, now: u64) -> Gathered {
     let mut out = Gathered::default();
     let today = crate::metrics::day_of(&routines::Local, now);
     let (period, before) = rules::periods(today);

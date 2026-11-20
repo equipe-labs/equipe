@@ -326,8 +326,12 @@ min it is taken and comes to you as the answer; if they pick otherwise, change c
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: Some(answers.clone()) });
         // A design session the PM proposed: started, the tuner opened, or held back.
         self.design_proposal_settled(squad, &set, Some(&answers)).await;
-        // Growth cards: tickets for the accepted ones, the rest remembered; the PM told what came of each.
-        let message = Box::pin(self.growth_settled(squad, &set, Some(&answers))).await.unwrap_or(message);
+        // A sprint's card: its picked items started; the PM told what came of it.
+        let message = match Box::pin(self.sprint_settled(squad, &set, Some(&answers))).await {
+            Some(told) => told,
+            // Growth cards: tickets for the accepted ones, the rest remembered; the PM told what came of each.
+            None => Box::pin(self.growth_settled(squad, &set, Some(&answers))).await.unwrap_or(message),
+        };
         // Its ticket waited for this answer: it goes back to its member with the answers.
         if self.resume_asked(squad, &set, &message).await {
             return;
@@ -363,7 +367,10 @@ min it is taken and comes to you as the answer; if they pick otherwise, change c
         self.secret_card_settled(squad, &set, None);
         self.publish(Event::QuestionsClosed { squad: squad.to_owned(), id, answers: None });
         self.design_proposal_settled(squad, &set, None).await;
-        let message = Box::pin(self.growth_settled(squad, &set, None)).await.unwrap_or_else(|| decide::dismissed_message(&set));
+        let message = match Box::pin(self.sprint_settled(squad, &set, None)).await {
+            Some(told) => told,
+            None => Box::pin(self.growth_settled(squad, &set, None)).await.unwrap_or_else(|| decide::dismissed_message(&set)),
+        };
         if self.resume_asked(squad, &set, &message).await {
             return;
         }

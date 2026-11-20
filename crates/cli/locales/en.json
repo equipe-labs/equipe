@@ -1628,5 +1628,17 @@
   "growth.not_started": "No growth run started: {why}",
   "growth.none": "No growth cards for {squad} yet.",
   "growth.summary": "{squad} · last run {when} · {spent} of {cap} tokens in the last 7 days",
-  "growth.never": "never"
+  "growth.never": "never",
+  "sprint.ended": "The sprint under way in {squad} is being reviewed now: the PM writes its retro and proposes the next.",
+  "sprint.not_ended": "Nothing started: {why}",
+  "sprint.saved": "Saved.",
+  "sprint.loop_on": "{squad} · sprints on · reviewed on weekday {weekday} at {hour}:00 · {days} days · budget {budget} tokens",
+  "sprint.loop_off": "{squad} · sprints off: {why}",
+  "sprint.north_star": "North star: {name}",
+  "sprint.this": "This sprint",
+  "sprint.status": "{done} of {total} tickets done · {spent} of {budget} tokens · review {review}",
+  "sprint.next": "Next sprint (proposed)",
+  "sprint.waits": "Waiting on your answer on its card.",
+  "sprint.learned": "What we learned",
+  "sprint.none": "No sprint in {squad} yet."
 }
