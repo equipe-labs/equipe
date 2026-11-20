@@ -6440,9 +6440,21 @@ async fn an_open_per_change_design_qa_no_longer_holds_its_change_after_an_upgrad
     let (handle, mut events) = runtime::start(config(&claude, &home, false));
     add(&handle, &mut events, 1, member(&site, "pm")).await;
     add(&handle, &mut events, 3, member(&site, "designer")).await;
-    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.design_qa.is_none())).await;
-    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 2, .. })), "no designer turn on it");
+    // The release can happen while the members are still being added, its
+    // event taken by `add`: read the board instead of waiting for the event.
     let journal = Journal::for_squad(&home, "acme").unwrap();
+    let mut released = false;
+    for _ in 0..450 {
+        if journal.ticket(1).unwrap().is_some_and(|t| t.design_qa.is_none()) {
+            released = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(released, "the change is no longer held by its design QA");
+    while let Ok(event) = events.try_recv() {
+        assert!(!matches!(event, Event::WorkStarted { ticket: 2, .. }), "no designer turn on it");
+    }
     assert_eq!(journal.ticket(2).unwrap().unwrap().status, TicketStatus::Done);
     let run = journal.design_qa_run(2).unwrap();
     assert_eq!((run.route.as_deref(), run.verdict.as_deref(), run.batch), (Some("batch"), Some("batched"), None), "into the daily review");
