@@ -62,6 +62,7 @@ pub mod migrations;
 pub mod flow;
 pub mod machine_load;
 pub mod machine_creds;
+pub mod native_sign_in;
 pub mod preview_hosts;
 pub mod live_preview;
 pub mod pacing;

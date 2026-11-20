@@ -1206,6 +1206,16 @@ impl Journal {
         self.set_meta("secret_asks", json)
     }
 
+    /// How the person was asked for each `ask_secret` key that was saved
+    /// (`{KEY: {label, why}}`, as JSON) — never a value.
+    pub fn secret_labels(&self) -> Option<String> {
+        self.meta("secret_labels")
+    }
+
+    pub fn set_secret_labels(&self, json: &str) -> Result<()> {
+        self.set_meta("secret_labels", json)
+    }
+
     /// The facts of the keys, tokens and passwords this squad's members kept
     /// (`crate::squad_secrets`), as JSON — never a value, those live in the
     /// secret store.

@@ -3,6 +3,9 @@
 //! `cli_sign_in` for AWS is refused — naming that profile, no card — and goes
 //! through once the member names the permission it lacks (`why_not_machine`).
 //! And a sign-in on a per-deploy preview address is never put to the person.
+//! The same goes for AWS's console in the browser, and for Slack's sign-in where
+//! desktop control and the Slack app are there; and one member's sign-in waiting
+//! on the person is told to the next member who asks for the same site.
 
 #![cfg(unix)]
 
@@ -97,7 +100,11 @@ async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool)
 }
 
 async fn call(handle: &Handle, name: &str, args: serde_json::Value) -> equipe_core::protocol::rpc::ToolResult {
-    handle.tool(ToolCall { run: None, squad: "acme".into(), member: "backend".into(), name: name.into(), arguments: args }).await
+    call_as(handle, "backend", name, args).await
+}
+
+async fn call_as(handle: &Handle, member: &str, name: &str, args: serde_json::Value) -> equipe_core::protocol::rpc::ToolResult {
+    handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: name.into(), arguments: args }).await
 }
 
 #[tokio::test]
@@ -116,6 +123,9 @@ async fn a_machine_credential_comes_before_a_sign_in_card() {
     let project = scratch("proj").join("infra");
     std::fs::create_dir_all(&project).unwrap();
     squads::create(&home, "acme", &project).unwrap();
+    // Desktop control on for the backend member, and the Slack app installed for the person.
+    equipe_core::journal::Journal::for_squad(&home, "acme").unwrap().set_desktop("backend", true).unwrap();
+    std::fs::create_dir_all(home.join("person/Applications/Slack.app")).unwrap();
     let (handle, mut events) = runtime::start(config(&claude, &home));
     for (id, role) in [(1, "pm"), (2, "backend")] {
         let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: project.clone(), role: Some(role.into()), squad: Some("acme".into()) };
@@ -153,5 +163,34 @@ async fn a_machine_credential_comes_before_a_sign_in_card() {
     assert!(preview.is_error && preview.text.contains("per-deploy") && preview.text.contains("localhost"), "{preview:?}");
     let handed = call(&handle, "show_my_browser", json!({ "url": "https://deploy-preview-7--shop.netlify.app", "why": "Sign in with the company account" })).await;
     assert!(handed.is_error && handed.text.contains("per-deploy"), "{handed:?}");
+
+    // AWS's console in the browser, while profiles that work without the person exist: refused, no hand-over.
+    for url in ["https://signin.aws.amazon.com/signin", "https://ap-northeast-2.signin.aws.amazon.com/oauth?client_id=x"] {
+        let console = call(&handle, "show_my_browser", json!({ "url": url, "why": "Sign in to the AWS console" })).await;
+        assert!(console.is_error, "{url}: {console:?}");
+        assert!(console.text.contains("AWS_PROFILE=example-read") && console.text.contains("`show_my_browser`") && console.text.contains("why_not_machine"), "{console:?}");
+        assert!(!console.text.contains("fake-helper") && !console.text.contains("cli_sign_in"), "{console:?}");
+    }
+    let card = call(&handle, "sign_in", json!({ "site": "signin.aws.amazon.com", "why": "Read the console" })).await;
+    assert!(card.is_error && card.text.contains("AWS_PROFILE=example-read") && card.text.contains("`sign_in`"), "{card:?}");
+    assert!(handle.snapshot("acme").await.approvals.is_empty(), "no card");
+
+    // Slack's sign-in in the browser, with the desktop on and the app installed: sent to the app.
+    let slack = call(&handle, "show_my_browser", json!({ "url": "https://app.slack.com/client/T0/C0", "why": "Sign in to Slack" })).await;
+    assert!(slack.is_error && slack.text.contains("Slack app") && slack.text.contains("desktop tools"), "{slack:?}");
+    // Not for a member whose desktop is off, nor another host.
+    let off = call_as(&handle, "pm", "show_my_browser", json!({ "url": "https://app.slack.com/client/T0/C0", "why": "Sign in to Slack" })).await;
+    assert!(!off.text.contains("desktop tools"), "{off:?}");
+    // The mapping is data: a line in the file changes it.
+    std::fs::write(home.join(equipe_core::native_sign_in::EXTRA_FILE), "slack.com =\n").unwrap();
+    let freed = call(&handle, "show_my_browser", json!({ "url": "https://app.slack.com/client/T0/C0", "why": "Sign in to Slack" })).await;
+    assert!(!freed.text.contains("desktop tools"), "{freed:?}");
+    std::fs::remove_file(home.join(equipe_core::native_sign_in::EXTRA_FILE)).unwrap();
+
+    // One member's sign-in waiting on the person is told to the next member, before it asks.
+    let first = call(&handle, "show_my_browser", json!({ "url": "https://accounts.google.com/v3/signin/identifier", "why": "Sign in to Google" })).await;
+    assert!(!first.text.contains("waiting on the person"), "{first:?}");
+    let second = call_as(&handle, "pm", "show_my_browser", json!({ "url": "https://mail.google.com/", "why": "Sign in to Google" })).await;
+    assert!(second.text.contains("waiting on the person") && second.text.contains("backend"), "{second:?}");
     handle.shutdown().await;
 }
