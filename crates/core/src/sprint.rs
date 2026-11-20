@@ -1285,6 +1285,11 @@ pub fn tried(experiments: &[Experiment]) -> Vec<String> {
     judged.into_iter().take(TRIED_SHOWN).map(experiment_line).collect()
 }
 
+/// How many of a sprint's tickets are done on `board`.
+pub fn done(sprint: &Sprint, board: &[Ticket]) -> u32 {
+    sprint.tickets.iter().filter(|t| board.iter().any(|tk| tk.id == **t && tk.status == TicketStatus::Done)).count() as u32
+}
+
 /// A ticket of the sprint in a line: done, cancelled, or where it is.
 pub fn ticket_line(t: &Ticket) -> String {
     match t.status {
