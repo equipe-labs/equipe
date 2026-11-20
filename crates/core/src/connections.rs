@@ -299,7 +299,8 @@ You never see the value and it never passes through the conversation. When they 
 on: use it with `secret_use` or `secret_write`; never ask for a key in chat. Every request carries `steps` (numbered on the card) \
 and the exact page as `create_url`: a card without them is refused. equipe never creates or rotates a key at the provider for you, \
 and never touches billing. A website sign-in (a person's account, not a key) is `sign_in`, not this. For a service in equipe's \
-catalog (anthropic, github, vercel, posthog) `create_url` is filled in when left out; for any other, give its key page (https).",
+catalog (anthropic, github, vercel, posthog) `create_url` is filled in when left out; for any other, give its key page (https). Before asking, call `secret_list`: a key the squad already holds \
+(or already asked for) that covers the same thing is used, not asked for again; a request that repeats one is refused with the name to use.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -312,6 +313,7 @@ catalog (anthropic, github, vercel, posthog) `create_url` is filled in when left
                 "no_page": no_page_schema(),
                 "scopes_hint": { "type": "string", "description": "What to create there, in a short line in the person's language: \"read-only / usage scope\"." },
                 "projects": { "type": "array", "items": { "type": "string" }, "description": "The squad's projects whose work may use it, by name. Left out: the project of your ticket." },
+                "different": { "type": "boolean", "description": "Only after a request was refused as a duplicate of a key the squad already holds, and this one really is a different credential: ask anyway." },
             },
             "required": ["name", "service", "kind", "why", "steps"],
         },

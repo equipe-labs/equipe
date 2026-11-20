@@ -794,7 +794,8 @@ accepts it.",
     let tools = if ctx.board_tools {
         format!(
             "{tools} When a command or a config needs a password, key or token — a NAS login, an API key — ask for it \
-with `ask_secret`, never in words, and never print one. Keys and passwords you obtain go into equipe with `secret_save`; never paste \
+with `ask_secret`, never in words, and never print one. First call `secret_list`: a key the squad already holds for the same thing is \
+used (`$NAME`), never asked for again under another name. Keys and passwords you obtain go into equipe with `secret_save`; never paste \
 them into code, tickets, memory or chat. When the person must sign in to a command-line tool on this machine — AWS, GitHub, Google Cloud, \
 Azure — use a machine credential if one exists (a GitHub App token, an access key already set up); otherwise call `cli_sign_in`, which \
 shows them one card with the sign-in page and code, instead of asking them to open a terminal. For work on Google Cloud, GitHub or \

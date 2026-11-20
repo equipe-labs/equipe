@@ -392,3 +392,63 @@ async fn a_provider_login_saved_from_the_card_can_turn_on_sign_in_with_and_anoth
     }
     handle.shutdown().await;
 }
+
+/// The same secret asked twice under different key names (a real run: the PM's
+/// `ADMIN_PASSWORD`, then a member's `SOOM_ADMIN_PASSWORD`) is answered with the
+/// key to use, while the first card is open and after it was saved.
+#[tokio::test]
+async fn a_member_is_told_to_use_the_key_the_squad_holds_instead_of_asking_again() {
+    // SAFETY: set once, before the runtime starts, and only by this test binary.
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let project = scratch("dup").join("dup");
+    std::fs::create_dir_all(&project).unwrap();
+    let home = scratch("home");
+    squads::create(&home, "acme", &project).unwrap();
+    let (handle, mut events) = runtime::start(config(&idle_claude(), &home));
+    for (id, role) in [(1, "pm"), (2, "frontend")] {
+        let spec = SessionSpec { engine: None, model: None, access: Access::ReadOnly, cwd: project.clone(), role: Some(role.into()), squad: Some("acme".into()) };
+        handle.send(Command::Start { session: id, spec });
+        until(&mut events, |e| matches!(e, Event::SessionStarted { session, .. } if *session == id)).await;
+    }
+    let tool = |member: &str, name: &str, args: serde_json::Value| handle.tool(ToolCall { run: None, squad: "acme".into(), member: member.into(), name: name.into(), arguments: args });
+    let ask = |member: &str, key: &str, label: &str, extra: serde_json::Value| {
+        let mut args = json!({ "why": "예약 사이트 관리 화면", "no_page": true, "steps": ["관리자에게 물어보세요"], "fields": [{ "key": key, "label": label, "secret": true }] });
+        for (k, v) in extra.as_object().cloned().unwrap_or_default() {
+            args[k] = v;
+        }
+        tool(member, "ask_secret", args)
+    };
+
+    let first = ask("pm", "ADMIN_PASSWORD", "관리 화면 비밀번호", json!({})).await;
+    assert!(!first.is_error, "{first:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::SecretAsked { .. })).await;
+    let Some(Event::SecretAsked { ask: card, .. }) = seen.last().cloned() else { panic!() };
+
+    // While the card is open: a member's second ask is turned back, and no second card appears.
+    let open = ask("frontend", "SOOM_ADMIN_PASSWORD", "관리자 비밀번호", json!({})).await;
+    assert!(open.is_error && open.text.contains("$ADMIN_PASSWORD") && open.text.contains("waiting for the person"), "{open:?}");
+    assert_eq!(handle.snapshot("acme").await.secret_asks.len(), 1);
+    // The same label under any key is the same thing too.
+    let label = ask("frontend", "BOOKING_ROOT_PW", "관리 화면 비밀번호", json!({})).await;
+    assert!(label.is_error && label.text.contains("$ADMIN_PASSWORD"), "{label:?}");
+    // A different thing is asked as before.
+    let other = ask("frontend", "STRIPE_SECRET", "결제 키", json!({})).await;
+    assert!(!other.is_error, "{other:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::SecretAsked { .. })).await;
+    let Some(Event::SecretAsked { ask: stripe, .. }) = seen.last().cloned() else { panic!() };
+    handle.send(Command::DismissSecret { squad: "acme".into(), id: stripe.id });
+    until(&mut events, |e| matches!(e, Event::SecretClosed { saved: false, .. })).await;
+
+    // Saved: the member is still turned back, and `secret_list` shows what the key is for.
+    handle.send(Command::SaveSecret { squad: "acme".into(), id: card.id, values: vec![SecretValue("pw-admin-1".into())] });
+    until(&mut events, |e| matches!(e, Event::SecretClosed { saved: true, .. })).await;
+    let saved = ask("frontend", "SOOM_ADMIN_PASSWORD", "관리자 비밀번호", json!({})).await;
+    assert!(saved.is_error && saved.text.contains("already kept") && saved.text.contains("관리 화면 비밀번호"), "{saved:?}");
+    assert!(!saved.text.contains("pw-admin-1"));
+    let listed = tool("frontend", "secret_list", json!({})).await;
+    assert!(!listed.is_error && listed.text.contains("$ADMIN_PASSWORD") && listed.text.contains("관리 화면 비밀번호") && !listed.text.contains("pw-admin-1"), "{listed:?}");
+    // A really different credential: said so, asked.
+    let forced = ask("frontend", "SOOM_ADMIN_PASSWORD", "관리자 비밀번호", json!({ "different": true })).await;
+    assert!(!forced.is_error, "{forced:?}");
+    handle.shutdown().await;
+}
