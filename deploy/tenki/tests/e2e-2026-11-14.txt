@@ -1,0 +1,87 @@
+== 1. a sandbox from s7dizv/equipe-host-test@sha256:acca3c61480f8adfd192020af2ba5cc3d98dc7bba3348ad5df9553b80afb2c25
+sandbox A: 01a1dbb2-20f0-768e-b191-935295dd1e55
+equipe 0.103.117 image {'equipe': '0.103.117', 'deploy_revision': 'uncommitted+dirty', 'built_at': '2026-11-14T20:10:39Z', 'arch': 'x86_64'}
+PASS equipe, desktop and backup timer are active
+ssh exited with status 1
+PASS VNC listens on loopback only
+PASS the Screen panel's VNC address and password are in place (0600)
+Google Chrome 157.0.8103.78 
+restic 0.16.4 compiled with go1.22.2 on linux/amd64
+3.45.1 2024-01-30 16
+== 2. seed, back up hot, back up quiesced
+seeded 3 tickets in e2e
+equipe-ops: initialising the backup repository
+equipe-ops: copied 2 databases while the daemon runs
+equipe-ops: backup 3d3868f55eb36dc62823f5d4cec25b5c517c9954c66f35d5d509f13849887865 (manual) done
+PASS hot backup 3d3868f55eb36dc62823f5d4cec25b5c517c9954c66f35d5d509f13849887865 (daemon running)
+PASS daemon kept running through the hot backup
+seeded 1 tickets in e2e
+PASS 4 tickets on A
+equipe-ops: maintenance on: the daemon is stopped and can't be started until 'equipe-ops maintenance off'
+equipe-ops: maintenance off: equipe 0.103.117, daemon running
+equipe-ops: backup 0db5e6fd638b683d001355dfa60de912136d82559048eec713ca776756da3017 (quiesced) done
+PASS quiesced backup 0db5e6fd638b683d001355dfa60de912136d82559048eec713ca776756da3017
+PASS daemon back after the quiesced backup
+ssh exited with status 1
+PASS no sign-in file in the backup
+== 3. wipe, restore, verify
+equipe-ops: maintenance on: the daemon is stopped and can't be started until 'equipe-ops maintenance off'
+equipe-ops: restoring latest
+restoring <Snapshot 0db5e6fd of [/home/tenki/.equipe /home/tenki/repos/e2e /home/tenki/.claude /home/tenki/.codex /home/tenki/.local/state/equipe-ops/staging] at 2026-11-14 20:15:05.269586832 +0000 UTC by tenki@e2e> to /
+Summary: Restored 237 files/dirs (3.078 MiB) in 0:00
+equipe-ops: maintenance off: equipe 0.103.117, daemon running
+PASS all 4 tickets back after a restore
+PASS verify: databases sound, projects are repositories
+PASS equipe binary back in place after maintenance
+== 4. migrate to a bigger sandbox (stream)
+
+  from        e2e-1114201406-a (01a1dbb2-20f0-768e-b191-935295dd1e55): 1 GB of equipe data
+  to          a new sandbox from s7dizv/equipe-host-test@sha256:acca3c61480f8adfd192020af2ba5cc3d98dc7bba3348ad5df9553b80afb2c25
+              2 vCPU, 4 GB memory, 20 GB disk, sticky
+              about $0.167/hour while it runs (the old one keeps billing until finalize)
+  via         stream
+  name        the new sandbox takes the name "e2e-1114201406"; the old one becomes "e2e-1114201406-retired-<time>"
+  downtime    from stopping the old daemon to the new one answering: the copy time
+              (roughly 1-3 min per GB over a stream)
+
+==> creating the new sandbox
+==> new sandbox 01a1dbb3-711d-7d90-9255-0b5779fc1023; waiting for equipe on it
+equipe-ops: maintenance on: the daemon is stopped and can't be started until 'equipe-ops maintenance off'
+==> stopping equipe on the old sandbox (downtime starts)
+equipe-ops: maintenance on: the daemon is stopped and can't be started until 'equipe-ops maintenance off'
+==> copying the data, stream: old sandbox -> here -> new sandbox
+equipe-ops: streaming: /home/tenki/.equipe /home/tenki/repos/e2e /home/tenki/.claude /home/tenki/.codex
+==> checking the new sandbox against the old one's manifest
+==> starting equipe on the new sandbox
+equipe-ops: maintenance off: equipe 0.103.117, daemon running
+==> switching names: e2e-1114201406 -> the new sandbox
+==> done in 19 s of downtime. New: 01a1dbb3-711d-7d90-9255-0b5779fc1023 (e2e-1114201406). Old: 01a1dbb2-20f0-768e-b191-935295dd1e55, kept in maintenance.
+
+  Next:
+    - sign in again on the new sandbox where needed (sign-ins are never copied):
+        tenki sandbox ssh --session e2e-1114201406      then: claude   (/login)
+    - each machine whose equipe app attaches to this host: run
+        tenki sandbox ssh --session e2e-1114201406 -- -T true
+      once, so its SSH alias sbx-e2e-1114201406 points at the new sandbox.
+    - when you're satisfied:   /Users/abel/Abel/equipe/.claude/worktrees/equipe-tenki-demo-9b3d7e/deploy/tenki/tests/../ops/migrate.sh finalize --run 20261114T201532Z-01a1dbb2-20f0-768e-b191-935295dd1e55 --terminate-retired
+    - to go back instead:      /Users/abel/Abel/equipe/.claude/worktrees/equipe-tenki-demo-9b3d7e/deploy/tenki/tests/../ops/migrate.sh rollback --run 20261114T201532Z-01a1dbb2-20f0-768e-b191-935295dd1e55
+
+PASS the name e2e-1114201406 now points at the new sandbox 01a1dbb3-711d-7d90-9255-0b5779fc1023
+PASS all 4 tickets on the new sandbox
+PASS daemon and desktop running on B
+PASS sign-ins stayed behind; settings came along
+      20G
+PASS the old sandbox waits in maintenance (rollback possible)
+== 5. finalize
+machine     e2e-1114201406-new-20261114t201532z  (instance 01a1dbb3-711d-7d90-9255-0b5779fc1023)
+equipe      0.103.117  (image 0.103.117, built 2026-11-14T20:10:39Z)
+state       in service
+services    equipe active, equipe-desktop active, equipe-backup active
+disk        3.5 GB of 19.6 GB used (18.1%), 15.2 GB free
+backup      NOT CONFIGURED (no ~/.config/equipe-ops/backup.env)
+squad       e2e: 4 tickets
+==> ending the old sandbox 01a1dbb2-20f0-768e-b191-935295dd1e55
+✓ Terminated: 01a1dbb2-20f0-768e-b191-935295dd1e55
+PASS end to end
+terminated 01a1dbb3-711d-7d90-9255-0b5779fc1023
+exit 0

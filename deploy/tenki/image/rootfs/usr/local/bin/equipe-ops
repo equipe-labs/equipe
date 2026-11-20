@@ -1,0 +1,423 @@
+#!/usr/bin/env bash
+# equipe-ops: run an equipe host on a Tenki sandbox — status, maintenance,
+# backup, restore, verify, and the two ends of a sandbox-to-sandbox move.
+#
+#   equipe-ops status [--json]
+#   equipe-ops maintenance on|off|status
+#   equipe-ops backup [--quiesce] [--keep-maintenance] [--tag T] [--init] [--scheduled]
+#   equipe-ops snapshots
+#   equipe-ops restore <snapshot-id|latest> [--discard-existing]
+#   equipe-ops verify [--manifest FILE]
+#   equipe-ops manifest
+#   equipe-ops export-stream            (maintenance on)  data roots as a zstd tar on stdout
+#   equipe-ops import-stream            (maintenance on)  the same, from stdin, then verify
+#   equipe-ops desktop-init             (the desktop service runs this)
+#
+# Runs as the sandbox user (tenki). Backup credentials come only from
+# ~/.config/equipe-ops/backup.env, which Tenki writes from workspace secrets
+# when the sandbox is created (ops/backup.env.example); nothing here prints them.
+set -euo pipefail
+
+VERSION=1
+LIB=${EQUIPE_OPS_LIB:-/usr/local/lib/equipe-ops}
+export EQUIPE_OPS_ETC=${EQUIPE_OPS_ETC:-/etc/equipe-ops}
+export EQUIPE_OPS_STATE=${EQUIPE_OPS_STATE:-$HOME/.local/state/equipe-ops}
+export EQUIPE_HOME=${EQUIPE_HOME:-$HOME/.equipe}
+STATE=$EQUIPE_OPS_STATE
+BIN=$HOME/.local/bin/equipe
+HELD=$STATE/held-equipe
+# On an older layout ~/.local/bin/equipe is a link; processes show its target.
+REAL_BIN=$(readlink -f "$BIN" 2>/dev/null || echo "$BIN")
+BACKUP_ENV=${EQUIPE_OPS_BACKUP_ENV:-$HOME/.config/equipe-ops/backup.env}
+STAGING=$STATE/staging
+export XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+export PATH=$HOME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+say() { printf 'equipe-ops: %s\n' "$*" >&2; }
+die() { printf 'equipe-ops: error: %s\n' "$*" >&2; exit 1; }
+lib() { python3 "$LIB/opslib.py" "$@"; }
+now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+in_maintenance() { [ -f "$STATE/maintenance.json" ]; }
+
+[ "$(id -u)" -ne 0 ] || die "run equipe-ops as the sandbox user, not root"
+mkdir -p "$STATE"
+chmod 0700 "$STATE"
+
+# The user's systemd manager (which runs the daemon, the desktop and the
+# backup timer) comes up some seconds after a sandbox boots; wait for it, and
+# start it if lingering didn't.
+ensure_user_manager() {
+  local bus=$XDG_RUNTIME_DIR/bus i
+  for i in $(seq 1 60); do
+    [ -S "$bus" ] && systemctl --user is-system-running >/dev/null 2>&1 && return 0
+    [ -S "$bus" ] && [ "$(systemctl --user is-system-running 2>/dev/null)" = degraded ] && return 0
+    [ "$i" = 10 ] && sudo -n systemctl start "user@$(id -u).service" 2>/dev/null || true
+    sleep 1
+  done
+  die "the user's systemd manager isn't running ($bus missing): sudo systemctl start user@$(id -u).service"
+}
+case "${1:-}" in desktop-init | version | --version | "") ;; *) ensure_user_manager ;; esac
+
+# --- maintenance -------------------------------------------------------------
+# While it is on, nothing can start the daemon: equipe's desktop app starts one
+# through `equipe attach --stdio` whenever it reconnects, so the binary itself
+# is held aside and `~/.local/bin/equipe` answers that the machine is busy.
+
+stub() {
+  cat <<'EOF'
+#!/bin/sh
+# Placed by `equipe-ops maintenance on`; `equipe-ops maintenance off` puts equipe back.
+echo "equipe is in maintenance on this machine (backup, restore or a move); try again in a few minutes." >&2
+exit 75
+EOF
+}
+
+equipe_pids() {
+  local pid exe
+  for pid in $(pgrep -u "$(id -u)" 2>/dev/null || true); do
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+    case "${exe% (deleted)}" in "$BIN" | "$HELD" | "$REAL_BIN") echo "$pid" ;; esac
+  done
+}
+
+stop_everything() {
+  systemctl --user stop equipe.service 2>/dev/null || true
+  local pids
+  pids=$(equipe_pids)
+  [ -z "$pids" ] || { say "stopping equipe processes: $(echo $pids)"; kill -TERM $pids 2>/dev/null || true; }
+  for _ in $(seq 1 30); do [ -z "$(equipe_pids)" ] && break; sleep 1; done
+  pids=$(equipe_pids)
+  [ -z "$pids" ] || { say "equipe processes still up after 30 s, killing: $(echo $pids)"; kill -KILL $pids 2>/dev/null || true; sleep 1; }
+  # Members' tools the daemon started (engines, builds, browsers) that still
+  # hold files under the data roots.
+  local held
+  held=$(lib holders | python3 -c 'import sys,json; print(" ".join(str(p["pid"]) for p in json.load(sys.stdin)))')
+  if [ -n "$held" ]; then
+    say "stopping processes that hold squad files: $held"
+    kill -TERM $held 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      held=$(lib holders | python3 -c 'import sys,json; print(" ".join(str(p["pid"]) for p in json.load(sys.stdin)))')
+      [ -z "$held" ] && break
+      sleep 1
+    done
+    [ -z "$held" ] || { kill -KILL $held 2>/dev/null || true; sleep 1; }
+  fi
+  held=$(lib holders)
+  [ "$held" = "[]" ] || die "these still hold squad files: $held"
+  sync
+}
+
+maintenance_on() {
+  if in_maintenance; then
+    say "already in maintenance since $(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["since"])' "$STATE/maintenance.json")"
+  else
+    if [ -f "$BIN" ] && ! grep -q 'equipe-ops maintenance on' "$BIN" 2>/dev/null; then
+      mv -f "$BIN" "$HELD"
+    fi
+    [ -f "$HELD" ] || die "no equipe binary at $BIN to hold aside"
+    stub >"$BIN.tmp" && chmod 0755 "$BIN.tmp" && mv -f "$BIN.tmp" "$BIN"
+    printf '{"since": "%s", "by": "%s"}\n' "$(now)" "${EQUIPE_OPS_REASON:-manual}" >"$STATE/maintenance.json"
+  fi
+  stop_everything
+  say "maintenance on: the daemon is stopped and can't be started until 'equipe-ops maintenance off'"
+}
+
+maintenance_off() {
+  if [ -f "$HELD" ]; then
+    mv -f "$HELD" "$BIN"
+  elif grep -q 'equipe-ops maintenance on' "$BIN" 2>/dev/null; then
+    die "the real equipe binary is missing ($HELD); reinstall equipe before leaving maintenance"
+  fi
+  rm -f "$STATE/maintenance.json"
+  desktop_init_screen || true
+  systemctl --user daemon-reload 2>/dev/null || true
+  systemctl --user start equipe.service
+  for _ in $(seq 1 30); do
+    if "$BIN" daemon status >/dev/null 2>&1; then
+      say "maintenance off: $("$BIN" --version), daemon running"
+      return 0
+    fi
+    sleep 1
+  done
+  "$BIN" daemon status >&2 || true
+  die "the daemon did not come up within 30 s (journalctl --user -u equipe.service; ~/.equipe/daemon.log)"
+}
+
+# --- backup configuration ---------------------------------------------------
+# backup.env holds KEY=VALUE lines (Tenki renders it from secrets). Read, not
+# sourced: a password may hold any character.
+load_backup_env() {
+  [ -f "$BACKUP_ENV" ] || die "no backup target: $BACKUP_ENV is missing (see deploy/tenki/README.md, 'Backups')"
+  local key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '' | \#*) continue ;; esac
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      RESTIC_REPOSITORY | RESTIC_PASSWORD | RESTIC_PASSWORD_FILE | AWS_ACCESS_KEY_ID | AWS_SECRET_ACCESS_KEY | \
+        AWS_SESSION_TOKEN | AWS_DEFAULT_REGION | AWS_ENDPOINT_URL | B2_ACCOUNT_ID | B2_ACCOUNT_KEY | \
+        GOOGLE_PROJECT_ID | GOOGLE_APPLICATION_CREDENTIALS | EQUIPE_OPS_HOST | RESTIC_COMPRESSION) export "$key=$value" ;;
+      *) say "ignoring unknown key in backup.env: $key" ;;
+    esac
+  done <"$BACKUP_ENV"
+  [ -n "${RESTIC_REPOSITORY:-}" ] || die "backup.env has no RESTIC_REPOSITORY"
+  [ -n "${RESTIC_PASSWORD:-}${RESTIC_PASSWORD_FILE:-}" ] || die "backup.env has no RESTIC_PASSWORD"
+  case "${RESTIC_PASSWORD:-}${AWS_SECRET_ACCESS_KEY:-}" in
+    *secrets://*) die "backup.env still holds a secrets:// placeholder: the workspace secret it names doesn't exist" ;;
+  esac
+  export RESTIC_COMPRESSION=${RESTIC_COMPRESSION:-auto}
+  export RESTIC_CACHE_DIR=$HOME/.cache/restic
+  HOST_TAG=${EQUIPE_OPS_HOST:-equipe}
+}
+
+write_last() { # ok kind snapshot started message
+  python3 - "$@" >"$STATE/last-backup.json.tmp" <<'PY'
+import json, sys, datetime
+ok, kind, snap, started, msg = sys.argv[1:6]
+print(json.dumps({"ok": ok == "1", "kind": kind, "snapshot": snap or None, "at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+                  "started": started, "message": msg or None}))
+PY
+  mv -f "$STATE/last-backup.json.tmp" "$STATE/last-backup.json"
+}
+
+cmd_backup() {
+  local quiesce=0 keep=0 init=0 scheduled=0 tags=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --quiesce) quiesce=1 ;;
+      --keep-maintenance) keep=1 ;;
+      --init) init=1 ;;
+      --scheduled) scheduled=1 ;;
+      --tag) tags+=(--tag "$2"); shift ;;
+      *) die "backup: unknown option $1" ;;
+    esac
+    shift
+  done
+  load_backup_env
+  exec 9>"$STATE/backup.lock"
+  flock -n 9 || die "another backup is running"
+
+  local kind started was_on=0
+  started=$(now)
+  kind=$([ "$scheduled" = 1 ] && echo scheduled || echo manual)
+  in_maintenance && was_on=1
+  if ! restic cat config >/dev/null 2>&1; then
+    [ "$init" = 1 ] || { write_last 0 "$kind" "" "$started" "repository not initialised"; die "the backup repository is not initialised (or unreachable): run 'equipe-ops backup --init' once"; }
+    say "initialising the backup repository"
+    restic init >/dev/null
+  fi
+
+  if [ "$quiesce" = 1 ] && [ "$was_on" = 0 ]; then
+    EQUIPE_OPS_REASON=backup maintenance_on
+  fi
+
+  rm -rf "$STAGING"
+  mkdir -p "$STAGING"
+  local -a excl=()
+  while IFS= read -r p; do excl+=(--exclude "$p"); done < <(lib excludes restic)
+  if in_maintenance; then
+    kind=$([ "$scheduled" = 1 ] && echo scheduled || echo quiesced)
+  else
+    # Live: consistent copies of the databases, and the live files left out.
+    local n
+    n=$(lib snapshot-dbs "$STAGING/db")
+    say "copied $n databases while the daemon runs"
+    local home
+    home=$(readlink -f "$EQUIPE_HOME")
+    excl+=(--exclude "$home/**/*.db" --exclude "$home/**/*.db-wal" --exclude "$home/**/*.db-shm" --exclude "$home/**/*.db-journal")
+  fi
+  lib manifest >"$STAGING/manifest.json"
+  mapfile -t roots < <(lib roots)
+
+  local out snap rc=0
+  out=$(restic backup --json --host "$HOST_TAG" --tag equipe --tag "$kind" "${tags[@]}" \
+    --exclude-caches "${excl[@]}" "${roots[@]}" "$STAGING" 2>"$STATE/restic.err") || rc=$?
+  snap=$(printf '%s\n' "$out" | python3 -c 'import sys,json
+s=""
+for l in sys.stdin:
+    try: d=json.loads(l)
+    except ValueError: continue
+    if d.get("message_type")=="summary": s=d.get("snapshot_id","")
+print(s)')
+  if [ "$quiesce" = 1 ] && [ "$was_on" = 0 ] && [ "$keep" = 0 ]; then
+    maintenance_off
+  fi
+  # restic exits 3 when some files couldn't be read but a snapshot was made.
+  if [ -z "$snap" ] || { [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; }; then
+    write_last 0 "$kind" "" "$started" "$(tail -3 "$STATE/restic.err" | tr '\n' ' ')"
+    tail -20 "$STATE/restic.err" >&2
+    die "backup failed (restic exit $rc)"
+  fi
+  [ "$rc" -eq 0 ] || say "warning: some files could not be read (see $STATE/restic.err); snapshot $snap was still made"
+  write_last 1 "$kind" "$snap" "$started" ""
+  say "backup $snap ($kind) done"
+  echo "$snap"
+
+  if [ "$scheduled" = 1 ]; then
+    housekeeping
+  fi
+}
+
+# Daily: forget old snapshots by policy and prune; weekly: check 1% of the data.
+housekeeping() {
+  local stamp
+  stamp=$STATE/last-prune
+  if [ ! -f "$stamp" ] || [ -n "$(find "$stamp" -mmin +1380)" ]; then
+    say "forgetting old snapshots and pruning"
+    restic forget --host "$HOST_TAG" --tag equipe --keep-hourly 24 --keep-daily 14 --keep-weekly 8 --keep-monthly 12 --prune >/dev/null 2>>"$STATE/restic.err" &&
+      touch "$stamp" || say "warning: prune failed (see $STATE/restic.err)"
+  fi
+  stamp=$STATE/last-check
+  if [ ! -f "$stamp" ] || [ -n "$(find "$stamp" -mtime +6)" ]; then
+    say "checking the repository (1% of the data)"
+    restic check --read-data-subset=1% >/dev/null 2>>"$STATE/restic.err" && touch "$stamp" ||
+      { say "warning: repository check FAILED (see $STATE/restic.err)"; return 1; }
+  fi
+}
+
+cmd_snapshots() {
+  load_backup_env
+  restic snapshots --host "$HOST_TAG" --tag equipe
+}
+
+cmd_restore() {
+  local snap=${1:-} discard=0
+  [ -n "$snap" ] || die "restore: which snapshot? (an id, or 'latest')"
+  [ "${2:-}" = "--discard-existing" ] && discard=1
+  in_maintenance || die "restore needs 'equipe-ops maintenance on' first"
+  load_backup_env
+  set_aside_existing "$discard"
+  # restic (0.16) can't replace a file it can't write, and git keeps its
+  # objects read-only: give the owner write access to what is about to be
+  # replaced.
+  local p
+  while IFS= read -r p; do
+    [ -e "$p" ] && find "$p" -xdev -type f ! -perm -u+w -exec chmod u+w {} + 2>/dev/null || true
+  done < <(restic snapshots --json --host "$HOST_TAG" "$snap" | python3 -c 'import sys,json; [print(p) for s in json.load(sys.stdin)[-1:] for p in s["paths"]]')
+  say "restoring $snap"
+  restic restore "$snap" --host "$HOST_TAG" --target / >&2
+  finish_restore
+}
+
+# A machine that already holds squad files keeps them, moved aside, unless told
+# to discard them.
+set_aside_existing() {
+  local discard=$1 home aside
+  home=$(readlink -f "$EQUIPE_HOME")
+  if [ -d "$home/squads" ] && [ -n "$(ls -A "$home/squads" 2>/dev/null)" ]; then
+    if [ "$discard" = 1 ]; then
+      say "discarding the squads already here ($home)"
+    else
+      # Moved, not copied: no second copy of the data on a disk that may be full.
+      aside=$STATE/before-restore-$(date -u +%Y%m%dT%H%M%SZ)
+      [ "$(stat -c %d "$home")" = "$(stat -c %d "$STATE")" ] ||
+        die "squads are already here ($home), on another disk than $STATE: move them away yourself, or pass --discard-existing"
+      say "keeping what is already here in $aside"
+      mkdir -p "$aside"
+      mv "$home" "$aside/"
+      mkdir -p "$home"
+    fi
+  fi
+  # A fresh image's empty home must not stand where a link is restored.
+  if [ -d "$EQUIPE_HOME" ] && [ ! -L "$EQUIPE_HOME" ]; then
+    rm -rf "${EQUIPE_HOME:?}"/squads "${EQUIPE_HOME:?}"/*.sock 2>/dev/null || true
+  fi
+}
+
+finish_restore() {
+  local manifest=$STAGING/manifest.json home
+  [ -f "$manifest" ] || die "the restored data has no manifest ($manifest): not an equipe-ops backup"
+  local link
+  link=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("equipe_link") or "")' "$manifest")
+  home=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["equipe_home"])' "$manifest")
+  if [ -n "$link" ] && [ ! -L "$link" ]; then
+    # The backup's home was a link (an older volume layout): put it back.
+    if [ -d "$link" ]; then rmdir "$link" 2>/dev/null || mv "$link" "$STATE/replaced-home-$(date -u +%s)"; fi
+    ln -s "$home" "$link"
+  fi
+  if [ -d "$STAGING/db" ]; then
+    say "putting the backup's database copies in place"
+    (cd "$STAGING/db" && find . -name '*.db' -type f) | while read -r rel; do
+      rel=${rel#./}
+      rm -f "$home/$rel-wal" "$home/$rel-shm" "$home/$rel-journal"
+      mkdir -p "$(dirname "$home/$rel")"
+      cp -f "$STAGING/db/$rel" "$home/$rel"
+    done
+  fi
+  desktop_init_screen || true
+  lib verify "$manifest"
+}
+
+cmd_export_stream() {
+  in_maintenance || die "export-stream needs 'equipe-ops maintenance on' first"
+  rm -rf "$STAGING"
+  mkdir -p "$STAGING"
+  lib manifest >"$STAGING/manifest.json"
+  mapfile -t roots < <(lib roots)
+  local -a excl=() rel=()
+  while IFS= read -r p; do excl+=("--exclude=$p"); done < <(lib excludes tar)
+  for r in "${roots[@]}" "$STAGING"; do rel+=("${r#/}"); done
+  say "streaming: ${roots[*]}"
+  tar -C / --create --file - --numeric-owner --sparse --warning=no-file-changed "${excl[@]}" "${rel[@]}" |
+    zstd -q -3 -T0 |
+    tee >(sha256sum | cut -d' ' -f1 >"$STATE/export.sha256")
+  wait
+}
+
+cmd_import_stream() {
+  in_maintenance || die "import-stream needs 'equipe-ops maintenance on' first"
+  set_aside_existing 0
+  tee >(sha256sum | cut -d' ' -f1 >"$STATE/import.sha256") | zstd -q -d | tar -C / --extract --file - --same-permissions --numeric-owner
+  wait
+  finish_restore
+}
+
+# --- desktop ----------------------------------------------------------------
+# The VNC password is made on the machine, once, and never leaves it. equipe's
+# Screen panel reads the same file through `equipe screen --stdio`.
+desktop_init_screen() {
+  local home
+  [ -f "$HOME/.vnc/passwd" ] || return 0
+  home=$(readlink -f "$EQUIPE_HOME")
+  [ -d "$home" ] || return 0
+  install -d -m 0700 "$home/screen"
+  [ -f "$home/screen/vnc" ] || echo "127.0.0.1:$((5900 + ${EQUIPE_DESKTOP_DISPLAY:-1}))" >"$home/screen/vnc"
+  install -m 0600 "$HOME/.vnc/passwd" "$home/screen/passwd"
+}
+
+cmd_desktop_init() {
+  install -d -m 0700 "$HOME/.vnc"
+  if [ ! -s "$HOME/.vnc/passwd" ]; then
+    # VNC passwords are 8 characters at most.
+    head -c 64 /dev/urandom | tr -dc 'A-Za-z0-9' | head -c 8 | vncpasswd -f >"$HOME/.vnc/passwd.tmp"
+    chmod 0600 "$HOME/.vnc/passwd.tmp"
+    mv -f "$HOME/.vnc/passwd.tmp" "$HOME/.vnc/passwd"
+  fi
+  desktop_init_screen
+}
+
+cmd_status() {
+  if [ "${1:-}" = "--json" ]; then lib status; else lib status-text; fi
+}
+
+case "${1:-}" in
+  status) shift; cmd_status "$@" ;;
+  maintenance)
+    case "${2:-status}" in
+      on) maintenance_on ;;
+      off) maintenance_off ;;
+      status) if in_maintenance; then cat "$STATE/maintenance.json"; else echo "in service"; fi ;;
+      *) die "maintenance on|off|status" ;;
+    esac ;;
+  backup) shift; cmd_backup "$@" ;;
+  snapshots) cmd_snapshots ;;
+  restore) shift; cmd_restore "$@" ;;
+  verify) shift; if [ "${1:-}" = "--manifest" ]; then lib verify "$2"; else lib verify; fi ;;
+  manifest) lib manifest ;;
+  roots) lib roots ;;
+  export-stream) cmd_export_stream ;;
+  import-stream) cmd_import_stream ;;
+  desktop-init) cmd_desktop_init ;;
+  version | --version) echo "equipe-ops $VERSION" ;;
+  *) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+esac

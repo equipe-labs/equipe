@@ -112,6 +112,9 @@ jobs:
         with:
           persist-credentials: false
       - run: shellcheck -s sh install.sh paste-setup.sh
+      # The Tenki host tooling (deploy/tenki): shell scripts and the Python helpers.
+      - run: shellcheck -S warning deploy/tenki/image/provision.sh deploy/tenki/image/rootfs/usr/local/bin/equipe-ops deploy/tenki/image/rootfs/usr/local/lib/equipe-ops/desktop-session deploy/tenki/ops/migrate.sh deploy/tenki/tests/e2e.sh
+      - run: python3 -m py_compile deploy/tenki/image/rootfs/usr/local/lib/equipe-ops/opslib.py deploy/tenki/template/render.py deploy/tenki/tests/seed.py
       # Every action pinned to a full commit SHA: a tag can be moved under us.
       - name: Actions are pinned
         run: |
