@@ -880,6 +880,21 @@ async fn serve_client(
                     });
                 });
             }
+            // The sprint loop (docs/SPRINTS.md): ending a sprint and its settings are the person's own clients'.
+            (Some(method), Some(id)) if method.starts_with("sprint.") => {
+                if method != equipe_protocol::sprint::GET && !origin.person_may() {
+                    let _ = out_tx.send(Message::failure(id, -32000, "the sprint loop's settings and ending a sprint are the person's"));
+                    continue;
+                }
+                let (core, out, method) = (core.clone(), out_tx.clone(), method.to_owned());
+                let params = message.params.clone().unwrap_or(serde_json::Value::Null);
+                tokio::spawn(async move {
+                    let _ = out.send(match core.sprint(&method, params).await {
+                        Ok(result) => Message::response(id, result),
+                        Err((code, why)) => Message::failure(id, code, why),
+                    });
+                });
+            }
             (Some(method), Some(id)) if method.starts_with("metrics.") => {
                 let (metrics, out, method) = (metrics.clone(), out_tx.clone(), method.to_owned());
                 let params = message.params.clone().unwrap_or(serde_json::Value::Null);
@@ -1434,6 +1449,12 @@ pub async fn metrics_hogql(socket: &Path, p: &equipe_protocol::metrics::HogqlPar
 /// A `growth.*` request of the daemon at `socket` (docs/GROWTH.md); `None`
 /// when none answers.
 pub async fn growth(socket: &Path, method: &str, p: &equipe_protocol::growth::GrowthParams) -> io::Result<Option<serde_json::Value>> {
+    ask_once(socket, method, p).await
+}
+
+/// A `sprint.*` request of the daemon at `socket` (docs/SPRINTS.md); `None`
+/// when none answers.
+pub async fn sprint<P: serde::Serialize>(socket: &Path, method: &str, p: &P) -> io::Result<Option<serde_json::Value>> {
     ask_once(socket, method, p).await
 }
 
