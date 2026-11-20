@@ -104,6 +104,7 @@ mod relaunch;
 use relaunch::DaemonUpdate;
 mod metrics;
 mod growth;
+mod sprint;
 mod status;
 mod status_line;
 mod models;
@@ -345,6 +346,8 @@ pub struct Shell {
     pub metrics: metrics::Metrics,
     /// The growth loop's cards, as the daemon last said (`growth.list`), shown in Progress.
     pub growth: Option<equipe_core::protocol::growth::Growth>,
+    /// The sprint loop, as the daemon last said (`sprint.get`), leading Progress.
+    pub sprint: Option<equipe_core::protocol::sprint::SprintView>,
     pub metrics_ui: views::metrics::Inputs,
     /// Status' state: what the daemon said of how the squad's work goes (`status.rs`).
     pub status: status::StatusUi,
@@ -590,6 +593,7 @@ impl Shell {
             updated_card: None,
             metrics: metrics::Metrics::new(),
             growth: None,
+            sprint: None,
             metrics_ui: Default::default(),
             status: Default::default(),
             design_taste: Default::default(),
@@ -1298,6 +1302,14 @@ impl Shell {
                         // A sign-in the person asked for in equipe's own browser: the Logins page's line, and the panel.
                         if let daemon::Update::Event(Event::BrowserSignIn { site, state, window: window_asked }) = &update {
                             this.sign_in_event(site, *state, *window_asked, window, cx);
+                            changed = true;
+                            continue;
+                        }
+                        // The sprint loop changed: Progress reads it again.
+                        if let daemon::Update::Event(Event::SprintChanged { squad }) = &update {
+                            if *squad == this.model.squad && this.screen == Screen::Progress {
+                                this.sprint_load(cx);
+                            }
                             changed = true;
                             continue;
                         }
