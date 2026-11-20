@@ -14,6 +14,9 @@ Code: `crates/core/src/growth.rs` (the rules, tested alone),
 `crates/core/src/runtime/growth.rs` (gathering, cards, follow-ups),
 `crates/protocol/src/growth.rs` (what screens read).
 
+While a squad's [sprint loop](SPRINTS.md) runs, the sprint review reads these
+numbers and the weekly run doesn't start; cards already open carry on.
+
 ## A run
 
 Once a week — Mondays from 09:00, the daemon machine's local time — for a
