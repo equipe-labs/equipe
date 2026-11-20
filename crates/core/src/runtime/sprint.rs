@@ -870,7 +870,7 @@ events go in with its change.",
         let (weekday, hour) = self.sprint_slot(squad, &store);
         let board = self.tickets(squad);
         let current = store.current().cloned();
-        let current_done = current.as_ref().map_or(0, |c| c.tickets.iter().filter(|t| board.iter().any(|tk| tk.id == **t && tk.status == TicketStatus::Done)).count() as u32);
+        let current_done = current.as_ref().map_or(0, |c| rules::done(c, &board));
         let last = store.last_closed().cloned();
         let proposed = store.proposed().cloned();
         let shown: Vec<u32> = [&current, &last, &proposed].iter().filter_map(|s| s.as_ref()).flat_map(|s| s.items.clone()).collect();
@@ -912,7 +912,7 @@ events go in with its change.",
         }
         let store = self.sprint_store(squad);
         let board = self.tickets(squad);
-        let done = store.current().map_or(0, |c| c.tickets.iter().filter(|t| board.iter().any(|tk| tk.id == **t && tk.status == TicketStatus::Done)).count() as u32);
+        let done = store.current().map_or(0, |c| rules::done(c, &board));
         rules::context(&store, done, now_secs())
     }
 }
