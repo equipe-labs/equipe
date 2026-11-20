@@ -36,7 +36,8 @@ impl Runtime {
                         ModelChoice { id: mp::model_ref(&e.id, m), name: (shown != m).then(|| shown.to_owned()), ..ModelChoice::default() }
                     })
                     .collect();
-                ProviderStatus { id: e.id, preset: e.preset, name: e.name, base_url: e.base_url, key: e.key, removable: e.removable, models, test: listed.test }
+                let default_model = mp::default_model(&e.id, &listed.models).map(|m| mp::model_ref(&e.id, &m));
+                ProviderStatus { engine: Some(e.kind.engine()), default_model, id: e.id, preset: e.preset, name: e.name, base_url: e.base_url, key: e.key, removable: e.removable, models, test: listed.test }
             })
             .collect()
     }
@@ -44,7 +45,8 @@ impl Runtime {
     pub(super) fn publish_providers(&mut self) {
         let providers = self.provider_statuses();
         let codex = codex_app::find(&self.config.codex_binary).is_some();
-        self.publish(Event::Providers { providers, codex });
+        let claude = equipe_providers::tools_path::find(&self.config.claude_binary).is_some();
+        self.publish(Event::Providers { providers, codex, claude, presets: mp::preset_list() });
     }
 
     /// A screen asks: the providers as they stand, and each one with a key
@@ -67,7 +69,7 @@ impl Runtime {
         let Some(entry) = mp::entries(&self.config.home, env).into_iter().find(|e| e.id == id) else {
             return;
         };
-        let cfg = match mp::config(&self.config.home, &id, env) {
+        let cfg = match mp::access(&self.config.home, &id, env) {
             Ok(cfg) => cfg,
             Err(err) => return self.provider_listed(id, Err(err)),
         };
@@ -79,7 +81,7 @@ impl Runtime {
         self.publish(Event::ProviderTested { id: id.clone(), test: ProviderTest::Testing });
         let internal = self.internal.clone();
         tokio::spawn(async move {
-            let result = match tokio::time::timeout(SERVER_WAIT, mp::list(&cfg, &entry.id)).await {
+            let result = match tokio::time::timeout(SERVER_WAIT, mp::list_access(&cfg, &entry.id)).await {
                 Ok(result) => result,
                 Err(_) => Err(crate::nemotron::ReviewError::Timeout),
             };
@@ -160,6 +162,15 @@ impl Runtime {
             Some((id, _)) => mp::config(&self.config.home, id, env).map(Some).map_err(|_| say!(self, "error.provider_not_connected", provider = self.provider_name(id))),
             None => Ok(self.config.nemotron.clone()),
         }
+    }
+
+    /// The Anthropic-compatible provider a member's `model` runs on, for
+    /// Claude Code's turn: its endpoint and key ([`mp::AnthropicConfig`]) and
+    /// the model's own id. `None` for any model that isn't one of those; an
+    /// error, in words, when the provider it names isn't connected.
+    pub(super) fn claude_provider(&self, model: Option<&str>) -> Option<Result<(mp::AnthropicConfig, String), String>> {
+        let (id, bare) = model.and_then(mp::split_ref).filter(|(id, _)| mp::kind_of_id(id) == mp::Kind::Anthropic)?;
+        Some(mp::anthropic_config(&self.config.home, id, env).map(|cfg| (cfg, bare.to_owned())).map_err(|_| say!(self, "error.provider_not_connected", provider = self.provider_name(id))))
     }
 
     /// A model named for a provider, as a member's notice says it: the

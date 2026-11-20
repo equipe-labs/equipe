@@ -1587,10 +1587,17 @@ fn choices(shell: &Shell, pop: Pop) -> (f32, Vec<(String, String, bool, Act)>) {
             let connected: Vec<&str> = shell.engines.providers.iter().flatten().map(|p| p.id.as_str()).collect();
             let rows = equipe_core::model_providers::PRESETS
                 .iter()
-                .filter(|p| p.id == equipe_core::model_providers::OTHER || !connected.contains(&p.id))
+                .filter(|p| p.base_url.is_empty() || !connected.contains(&p.id))
                 .map(|p| {
-                    let name = if p.id == equipe_core::model_providers::OTHER { t!("engines.provider_other").to_owned() } else { p.name.to_owned() };
-                    let hint = if p.local { t!("engines.provider_local").to_owned() } else { String::new() };
+                    let name = super::engines::shown_name(p);
+                    // Where its members run: Claude Code's brand is the same in every language.
+                    let hint = if p.local {
+                        t!("engines.provider_local").to_owned()
+                    } else if p.kind == equipe_core::model_providers::Kind::Anthropic {
+                        "Claude Code".to_owned()
+                    } else {
+                        String::new()
+                    };
                     (name, hint, false, Act::AddProvider(p.id))
                 })
                 .collect();
@@ -1862,9 +1869,9 @@ impl Shell {
             Act::Dictation(lang) => self.set_dictation(lang, window, cx),
             Act::Squad(name) => self.select_squad(&name, window, cx),
             Act::Model(session, model) => {
-                // A provider's model on Claude Code: it moves at its next ticket, and shows then.
-                let moves = equipe_core::model_providers::split_ref(&model).is_some();
-                if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session).filter(|m| !moves || m.engine == Some(Engine::Codex)) {
+                // A provider's model on the other engine: it moves at its next ticket, and shows then.
+                let target = equipe_core::model_providers::engine_of_ref(&model);
+                if let Some(m) = self.model.members.iter_mut().find(|m| m.session == session).filter(|m| target.is_none_or(|to| m.engine == Some(to))) {
                     m.model = Some(model.clone());
                     m.asked = None;
                 }

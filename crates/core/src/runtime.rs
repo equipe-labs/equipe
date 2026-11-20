@@ -3223,15 +3223,18 @@ impl Runtime {
             }
             Command::SetModel { session, model } => {
                 let model = model.trim().to_owned();
-                // A provider's model runs on Codex's agent: a member on Claude Code moves there.
-                if crate::model_providers::split_ref(&model).is_some()
-                    && let Some(s) = self.sessions.get(&session).filter(|s| s.engine != Engine::Codex)
+                // A provider's model runs on its API's engine (Codex's agent for an
+                // OpenAI-compatible one, Claude Code for an Anthropic-compatible one):
+                // a member on the other engine moves there.
+                if let Some(target) = crate::model_providers::engine_of_ref(&model)
+                    && let Some(s) = self.sessions.get(&session).filter(|s| s.engine != target)
                 {
                     match (s.squad.clone(), s.name().map(str::to_owned)) {
                         (Some(squad), Some(name)) => self.move_to_model(&squad, name, session, model).await,
                         _ => {
                             let provider = self.on_provider(&model).map(|(_, p)| p).unwrap_or_default();
-                            self.error(Some(session), say!(self, "error.provider_model_codex", provider = provider), None);
+                            let message = if target == Engine::Claude { say!(self, "error.provider_model_claude", provider = provider) } else { say!(self, "error.provider_model_codex", provider = provider) };
+                            self.error(Some(session), message, None);
                         }
                     }
                     return;
@@ -4759,7 +4762,14 @@ runbooks and reports live there, and work across the projects or on running them
         let role_open = match (&squad, role, &spec.model, spec.engine) {
             (Some(squad), Some(role), None, None) => self
                 .journal(squad)
-                .and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.model.as_deref().and_then(crate::model_providers::split_ref).is_some())),
+                .and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.model.as_deref().is_some_and(|m| crate::model_providers::split_ref(m).is_some() && crate::nemotron::is_agent_model(m)))),
+            _ => None,
+        };
+        // A role set to an Anthropic-compatible provider's model runs on Claude Code on it.
+        let role_claude = match (&squad, role, &spec.model, spec.engine) {
+            (Some(squad), Some(role), None, None) if role_open.is_none() => self
+                .journal(squad)
+                .and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.model.as_deref().and_then(crate::model_providers::engine_of_ref) == Some(Engine::Claude))),
             _ => None,
         };
         // NVIDIA's models on Nebius Token Factory, and every provider's, run on Codex's agent (`nemotron`).
@@ -4772,6 +4782,7 @@ runbooks and reports live there, and work across the projects or on running them
             }
             Some(engine) => engine,
             None if on_nebius => Engine::Codex,
+            None if role_claude.is_some() || spec.model.as_deref().and_then(crate::model_providers::engine_of_ref) == Some(Engine::Claude) => Engine::Claude,
             None => {
                 let preference = match (role, edits) {
                     (Some(_), Some(true)) => [Engine::Claude, Engine::Codex],
@@ -4813,6 +4824,7 @@ runbooks and reports live there, and work across the projects or on running them
         // What the person set for the role on this engine, if anything.
         let role_default = match (&squad, role) {
             _ if role_open.is_some() && engine == Engine::Codex => role_open,
+            _ if role_claude.is_some() && engine == Engine::Claude => role_claude,
             (Some(squad), Some(role)) => self.journal(squad).and_then(|j| j.role_models().into_iter().find(|d| d.role == role.id && d.engine == engine)),
             _ => None,
         };
@@ -4885,6 +4897,16 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                 }
                 codex_cred = Some(cred);
+            }
+            // A model on an Anthropic-compatible provider needs Claude Code itself,
+            // not the person's Claude sign-in: its key is the provider's.
+            Engine::Claude if model.as_deref().and_then(crate::model_providers::engine_of_ref) == Some(Engine::Claude) => {
+                if let Some(Err(message)) = self.claude_provider(model.as_deref()) {
+                    return fail(self, message, None);
+                }
+                if equipe_providers::tools_path::find(&self.config.claude_binary).is_none() {
+                    return fail(self, say!(self, "error.claude_missing"), Some("see https://code.claude.com/docs/en/setup"));
+                }
             }
             Engine::Claude => {
                 match claude_code::auth_status(&self.config.claude_binary).await {
@@ -6583,7 +6605,19 @@ runbooks and reports live there, and work across the projects or on running them
             }
             Engine::Claude => {
                 let binary = self.config.claude_binary.clone();
-                let model = session.model.clone();
+                let lang = self.config.lang;
+                let mut model = session.model.clone();
+                // A model on an Anthropic-compatible provider: Claude Code runs on it
+                // with the provider's endpoint and key, for this turn's process only.
+                let on_provider = match self.claude_provider(model.as_deref()) {
+                    Some(Ok((cfg, bare))) => {
+                        env.extend(cfg.claude_env(&bare));
+                        model = Some(bare);
+                        Some(cfg.name().to_owned())
+                    }
+                    Some(Err(message)) => return self.error(Some(id), message, None),
+                    None => None,
+                };
                 let effort = effort_of(session);
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
@@ -6718,8 +6752,12 @@ runbooks and reports live there, and work across the projects or on running them
                     // The engine is gone: nothing is bound to it any more.
                     drop(bound);
                     let claude_session = outcome.as_ref().ok().and_then(|turn| turn.session_id.clone());
-                    let result = outcome.map(|turn| turn.result).map_err(claude_failure);
-                    let lost = matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Claude));
+                    // On a provider's endpoint a refused key is the provider's, not the person's Claude sign-in.
+                    let result = outcome.map(|turn| turn.result).map_err(|err| match &on_provider {
+                        Some(provider) => provider_claude_failure(err, provider, lang),
+                        None => claude_failure(err),
+                    });
+                    let lost = on_provider.is_none() && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Claude));
                     let reply = finish_turn(&emit, id, result, streamed);
                     // After the error is told: the screens hear what it was, then why.
                     if lost {
@@ -13481,6 +13519,18 @@ fn claude_failure(err: equipe_providers::Error) -> (String, Option<&'static str>
         None
     };
     (message, next)
+}
+
+/// A Claude Code turn's failure on an Anthropic-compatible provider's
+/// endpoint: a refused key is said as the provider's, and nothing points the
+/// person at Claude's own sign-in, which the turn never used.
+fn provider_claude_failure(err: equipe_providers::Error, provider: &str, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
+    let lower = err.to_string().to_ascii_lowercase();
+    let refused = ["401", "403", "unauthorized", "invalid x-api-key", "invalid api key", "authentication_error", "failed to authenticate"].iter().any(|w| lower.contains(w));
+    if refused {
+        return (crate::i18n::core(lang).fill("error.provider_unauthorized", &[("provider", provider.to_owned())]), None);
+    }
+    (claude_failure(err).0, None)
 }
 
 /// Whether an engine's error says it can't run the model asked for (Claude

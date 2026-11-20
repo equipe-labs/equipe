@@ -3642,6 +3642,7 @@
   "engines.provider_add_desc": "OpenRouter, Groq, Mistral, un Ollama local… ou toute API compatible OpenAI",
   "engines.provider_add_failed": "Le fournisseur n'a pas pu être ajouté",
   "engines.provider_other": "Autre (compatible OpenAI)",
+  "engines.provider_other_anthropic": "Autre (compatible Anthropic)",
   "engines.provider_local": "sur cet ordinateur",
   "engines.provider_url_label": "Adresse de l'API",
   "engines.provider_url_placeholder": "https://example.com/v1",

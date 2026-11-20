@@ -79,12 +79,12 @@ fn provider(preset: &str, key: ProviderKey, models: &[&str]) -> ProviderStatus {
     let info = equipe_core::model_providers::preset(preset).expect("a preset");
     let models: Vec<ModelChoice> = models.iter().map(|m| ModelChoice { id: equipe_core::model_providers::model_ref(preset, m), ..ModelChoice::default() }).collect();
     let test = if models.is_empty() { ProviderTest::Untested } else { ProviderTest::Ok { count: models.len() } };
-    ProviderStatus { id: preset.into(), preset: preset.into(), name: info.name.into(), base_url: info.base_url.into(), key, removable: true, models, test }
+    ProviderStatus { id: preset.into(), preset: preset.into(), name: info.name.into(), base_url: info.base_url.into(), key, removable: true, models, test, engine: Some(equipe_core::model_providers::preset(preset).map_or(Engine::Codex, |p| p.kind.engine())), default_model: None }
 }
 
 fn tell_providers(events: &broadcast::Sender<Event>) {
     let providers = providers().lock().unwrap().clone();
-    let _ = events.send(Event::Providers { providers, codex: true });
+    let _ = events.send(Event::Providers { providers, codex: true, claude: true, presets: equipe_core::model_providers::preset_list() });
 }
 
 fn signing_in() -> &'static std::sync::Mutex<Option<tokio::task::JoinHandle<()>>> {

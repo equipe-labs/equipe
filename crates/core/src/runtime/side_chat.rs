@@ -184,7 +184,17 @@ impl Runtime {
             env.push((guard::MEMBER_ENV.to_owned(), name.to_owned()));
             env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(session.engine).to_owned()));
         }
-        let model = session.model.clone();
+        let mut model = session.model.clone();
+        // On an Anthropic-compatible provider's endpoint, with its key for this process only.
+        let mut on_provider = None;
+        if session.engine == Engine::Claude
+            && let Some(found) = self.claude_provider(model.as_deref())
+        {
+            let (cfg, bare) = found?;
+            env.extend(cfg.claude_env(&bare));
+            model = Some(bare);
+            on_provider = Some(cfg.name().to_owned());
+        }
         let effort = effort_of(session);
         let internal = self.internal.clone();
         let lang = self.config.lang;
@@ -262,7 +272,10 @@ impl Runtime {
                         outcome = claude_code::run_turn(&binary, &cwd, claude_code::TurnRequest { prompt: &fresh, resume: None, ..request }, None, &mut on).await;
                     }
                     let thread = outcome.as_ref().ok().and_then(|turn| turn.session_id.clone());
-                    let result = outcome.map(|turn| turn.result).map_err(claude_failure);
+                    let result = outcome.map(|turn| turn.result).map_err(|err| match &on_provider {
+                        Some(provider) => provider_claude_failure(err, provider, lang),
+                        None => claude_failure(err),
+                    });
                     let reply = finish_turn(&emit, side, result, said.load(Relaxed));
                     let _ = internal.send(Internal::SideDone(SideDone { side, prompt: asked, reply, thread }));
                 })

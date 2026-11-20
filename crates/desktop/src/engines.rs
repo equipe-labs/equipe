@@ -569,7 +569,7 @@ impl Engines {
                 self.turn += 1;
                 Effect { changed: true, ..Effect::default() }
             }
-            Event::Providers { providers, codex } => {
+            Event::Providers { providers, codex, .. } => {
                 self.providers = Some(providers.clone());
                 self.providers_codex = *codex;
                 self.turn += 1;
@@ -1258,7 +1258,7 @@ mod tests {
         let mut e = Engines::default();
         assert!(e.providers.is_none(), "nothing said yet");
         let groq = ProviderStatus { id: "groq".into(), preset: "groq".into(), name: "Groq".into(), key: ProviderKey::Saved, removable: true, ..Default::default() };
-        assert!(e.on_event(&Event::Providers { providers: vec![groq.clone()], codex: true }).changed);
+        assert!(e.on_event(&Event::Providers { providers: vec![groq.clone()], codex: true, claude: false, presets: vec![] }).changed);
         assert!(e.providers_codex && e.provider("groq").is_some());
         e.on_event(&Event::ProviderTested { id: "groq".into(), test: ProviderTest::Testing });
         assert_eq!(e.provider("groq").map(|p| &p.test), Some(&ProviderTest::Testing));

@@ -144,7 +144,7 @@ async fn a_provider_added_from_a_screen_is_kept_listed_and_removed_and_its_key_n
 
     handle.send(Command::AddProvider { preset: "other".into(), base_url: Some(base.clone()), key: Some(SecretValue(KEY.into())) });
     let added = until(&mut events, |e| matches!(e, Event::Providers { providers, .. } if !providers.is_empty())).await;
-    let Some(Event::Providers { providers: list, codex: true }) = added.last() else { panic!("{added:#?}") };
+    let Some(Event::Providers { providers: list, codex: true, .. }) = added.last() else { panic!("{added:#?}") };
     let id = list[0].id.clone();
     assert!(id.starts_with("other-127-0-0-1-"), "{id}");
     assert_eq!((list[0].key, list[0].removable, list[0].base_url.as_str()), (ProviderKey::Saved, true, base.as_str()));
@@ -257,6 +257,76 @@ async fn a_member_set_to_a_providers_model_runs_on_it_through_codexs_agent_with_
     // The provider is asked for the model by its own id.
     let start = lines(&log).into_iter().rfind(|m| m["method"] == "thread/start" || m["method"] == "turn/start").unwrap();
     assert_eq!(start["params"]["model"], "qwen/qwen3-coder", "{start}");
+}
+
+/// A stand-in `claude` that is signed out, and records the environment and
+/// command line each turn runs with (the keys it sees, never printed).
+fn recording_claude(log: &Path) -> PathBuf {
+    let bin = scratch("bin").join("claude");
+    let script = format!(
+        r#"#!/bin/sh
+if [ "$1" = "auth" ]; then echo '{{"loggedIn":false}}'; exit 0; fi
+{{
+  echo "ARGS $*"
+  env | grep -E '^(ANTHROPIC_|CLAUDE_CODE_SUBAGENT_MODEL)' | sed 's/^/ENV /'
+}} >> '{}'
+cat <<DONE
+{{"type":"system","subtype":"init","model":"m","session_id":"sess-1"}}
+{{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{{"input_tokens":1,"output_tokens":1}}}}
+DONE
+"#,
+        log.display()
+    );
+    write_script(&bin, &script);
+    bin
+}
+
+#[tokio::test]
+async fn an_anthropic_compatible_providers_member_runs_on_claude_code_with_its_endpoint_and_key_and_no_claude_sign_in() {
+    let (codex, _, _) = fake_codex("FAKE_CODEX_SIGNED_OUT=1");
+    let home = scratch("home");
+    let log = scratch("claude-log").join("turns.log");
+    let (base, seen) = server(200, r#"{"data":[{"id":"glm-4.6"},{"id":"glm-4.5-air"}],"has_more":false}"#).await;
+    let root = base.trim_end_matches("/v1").to_owned();
+    let id = equipe_core::model_providers::add(&home, "anthropic-other", Some(&root), Some(KEY)).unwrap();
+    assert!(id.starts_with("anthropic-other-127-0-0-1-"), "{id}");
+    let model = equipe_core::model_providers::model_ref(&id, "glm-4.6");
+    let mut cfg = config(&codex, &home);
+    cfg.claude_binary = recording_claude(&log).to_string_lossy().into_owned();
+    let (handle, mut events) = runtime::start(cfg);
+
+    // A screen sees it: Claude Code's engine, its models, a default, and the presets to offer.
+    handle.send(Command::Providers);
+    let tested = until(&mut events, |e| matches!(e, Event::ProviderTested { test: ProviderTest::Ok { .. }, .. })).await;
+    let listed = until(&mut events, |e| matches!(e, Event::Providers { providers, .. } if providers.iter().any(|p| !p.models.is_empty()))).await;
+    let Some(Event::Providers { providers: list, claude, presets, .. }) = listed.last() else { panic!("{listed:#?}") };
+    assert!(*claude, "the stand-in claude is there");
+    assert_eq!((list[0].engine, list[0].default_model.as_deref()), (Some(Engine::Claude), Some(format!("@{id}/glm-4.6").as_str())));
+    assert!(presets.iter().any(|p| p.id == "anthropic" && p.engine == Some(Engine::Claude)) && presets.iter().any(|p| p.id == "openrouter" && p.engine == Some(Engine::Codex)));
+    assert!(!shown(&tested).contains(KEY) && !shown(&listed).contains(KEY));
+    let request = seen.lock().unwrap()[0].to_ascii_lowercase();
+    assert!(request.starts_with("get /v1/models?limit=1000 ") && request.contains(&format!("x-api-key: {}", KEY.to_ascii_lowercase())) && request.contains("anthropic-version: "), "{request}");
+
+    let spec = SessionSpec { engine: None, model: Some(model.clone()), access: Access::ReadOnly, cwd: scratch("cwd"), role: None, squad: None };
+    handle.send(Command::Start { session: 1, spec });
+    let started = until(&mut events, |e| matches!(e, Event::SessionStarted { .. } | Event::Error { .. })).await;
+    let Some(Event::SessionStarted { engine: Engine::Claude, .. }) = started.last() else { panic!("{started:#?}") };
+    handle.send(Command::Submit { session: 1, text: "hello".into(), about: None });
+    let ran = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
+    assert!(matches!(ran.last(), Some(Event::TurnEnded { outcome: TurnOutcome::Completed, .. })), "{ran:#?}");
+    let recorded = std::fs::read_to_string(&log).unwrap();
+    let args = recorded.lines().find(|l| l.starts_with("ARGS ")).unwrap();
+    assert!(args.contains("--model glm-4.6") && !args.contains('@') && !args.contains(KEY), "by its own id, key never on the command line: {args}");
+    for want in [
+        format!("ENV ANTHROPIC_BASE_URL={root}"),
+        format!("ENV ANTHROPIC_API_KEY={KEY}"),
+        format!("ENV ANTHROPIC_AUTH_TOKEN={KEY}"),
+        "ENV ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.6".to_owned(),
+        "ENV ANTHROPIC_SMALL_FAST_MODEL=glm-4.6".to_owned(),
+    ] {
+        assert!(recorded.lines().any(|l| l == want), "{want} in {}", recorded.replace(KEY, "[key]"));
+    }
+    assert!(!shown(&ran).contains(KEY));
 }
 
 #[tokio::test]
