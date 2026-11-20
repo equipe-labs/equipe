@@ -1,9 +1,18 @@
-//! Model providers the person connects — OpenRouter, Groq, Mistral, a local
-//! Ollama… — for members to run on, beside Claude Code and Codex: each an
-//! OpenAI-compatible API, its key kept on the daemon's machine as the Nebius
-//! key is (`keys/<id>` under equipe's home, readable by the person alone),
-//! and its members run on Codex's agent in plain mode, as Nebius's do
-//! ([`crate::nemotron`], `codex_app::provider_args`).
+//! Model providers the person connects — OpenRouter, Groq, Mistral, OpenAI's
+//! or Anthropic's own API with a key, a local Ollama… — for members to run
+//! on, beside Claude Code and Codex on their own plans. Each speaks one API
+//! ([`Kind`]), which decides the engine its members run on:
+//!
+//! - OpenAI-compatible (Chat Completions, or OpenAI's Responses): Codex's
+//!   agent in plain mode, as Nebius's members do ([`crate::nemotron`],
+//!   `codex_app::provider_args`);
+//! - Anthropic-compatible (`ANTHROPIC_BASE_URL`: Anthropic's API, OpenRouter's
+//!   Anthropic skin, DeepSeek, Z.ai, Moonshot, any gateway): Claude Code, with
+//!   the endpoint and key in that turn's process environment only
+//!   ([`AnthropicConfig::claude_env`]) — no Claude plan sign-in involved.
+//!
+//! Every key is kept on the daemon's machine as the Nebius key is
+//! (`keys/<id>` under equipe's home, readable by the person alone).
 //!
 //! - [`PRESETS`]: the providers equipe knows, with their API's root as their
 //!   own documentation gives it; and `other`, any OpenAI-compatible server.
@@ -23,7 +32,7 @@
 
 use std::path::{Path, PathBuf};
 
-use equipe_protocol::{ProviderKey, ProviderProblem};
+use equipe_protocol::{Engine, ProviderKey, ProviderProblem};
 use equipe_providers::relay::Wire;
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +57,34 @@ pub struct Preset {
     pub key_page: Option<&'static str>,
     /// Whether it runs on the person's machine.
     pub local: bool,
+    /// Which API it speaks, and so which engine runs its members.
+    pub kind: Kind,
+    /// Model ids it is best known for, most wanted first: a model that
+    /// starts with one of these is the default when the list has it.
+    pub prefer: &'static [&'static str],
+    /// Models to offer when it has no list of its own to ask.
+    pub curated: &'static [&'static str],
+}
+
+/// The API a provider speaks: it decides the engine its members run on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// OpenAI-compatible Chat Completions: Codex's agent, as Nemotron's.
+    Chat,
+    /// OpenAI's Responses API: Codex's agent.
+    Responses,
+    /// Anthropic's Messages API (`ANTHROPIC_BASE_URL`): Claude Code.
+    Anthropic,
+}
+
+impl Kind {
+    /// The engine a provider's members run on.
+    pub fn engine(self) -> Engine {
+        match self {
+            Kind::Chat | Kind::Responses => Engine::Codex,
+            Kind::Anthropic => Engine::Claude,
+        }
+    }
 }
 
 /// The id of any other OpenAI-compatible server.
@@ -58,28 +95,80 @@ pub const CUSTOM: &str = nemotron::CUSTOM_PROVIDER;
 pub const NEBIUS: &str = "nebius";
 /// Google Gemini's id: its models asked for by bare ids.
 pub const GEMINI: &str = "gemini";
+/// Anthropic's own API (an API key), for Claude Code.
+pub const ANTHROPIC: &str = "anthropic";
+/// The id of any other Anthropic-compatible server.
+pub const ANTHROPIC_OTHER: &str = "anthropic-other";
 
 /// The providers a screen offers, in its order. Each base URL is the one
 /// the provider's own documentation gives for its OpenAI-compatible API;
 /// all are asked in Chat Completions, which every one documents.
-pub const PRESETS: [Preset; 12] = [
-    Preset { id: "openrouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1", needs_key: true, env_var: Some("OPENROUTER_API_KEY"), key_page: Some("https://openrouter.ai/keys"), local: false },
-    Preset { id: NEBIUS, name: nemotron::PROVIDER_NAME, base_url: nemotron::DEFAULT_BASE_URL, needs_key: true, env_var: Some("NEBIUS_API_KEY"), key_page: Some("https://tokenfactory.nebius.com"), local: false },
-    Preset { id: "together", name: "Together AI", base_url: "https://api.together.ai/v1", needs_key: true, env_var: Some("TOGETHER_API_KEY"), key_page: Some("https://api.together.ai/settings/api-keys"), local: false },
-    Preset { id: "fireworks", name: "Fireworks AI", base_url: "https://api.fireworks.ai/inference/v1", needs_key: true, env_var: Some("FIREWORKS_API_KEY"), key_page: Some("https://app.fireworks.ai/settings/users/api-keys"), local: false },
-    Preset { id: "groq", name: "Groq", base_url: "https://api.groq.com/openai/v1", needs_key: true, env_var: Some("GROQ_API_KEY"), key_page: Some("https://console.groq.com/keys"), local: false },
-    Preset { id: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com", needs_key: true, env_var: Some("DEEPSEEK_API_KEY"), key_page: Some("https://platform.deepseek.com/api_keys"), local: false },
-    Preset { id: "mistral", name: "Mistral AI", base_url: "https://api.mistral.ai/v1", needs_key: true, env_var: Some("MISTRAL_API_KEY"), key_page: Some("https://console.mistral.ai/api-keys"), local: false },
-    Preset { id: "xai", name: "xAI", base_url: "https://api.x.ai/v1", needs_key: true, env_var: Some("XAI_API_KEY"), key_page: Some("https://console.x.ai"), local: false },
-    Preset { id: "gemini", name: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai/", needs_key: true, env_var: Some("GEMINI_API_KEY"), key_page: Some("https://aistudio.google.com/apikey"), local: false },
-    Preset { id: "ollama", name: "Ollama", base_url: "http://localhost:11434/v1", needs_key: false, env_var: None, key_page: None, local: true },
-    Preset { id: "lmstudio", name: "LM Studio", base_url: "http://localhost:1234/v1", needs_key: false, env_var: None, key_page: None, local: true },
-    Preset { id: OTHER, name: "Other (OpenAI-compatible)", base_url: "", needs_key: true, env_var: None, key_page: None, local: false },
+pub const PRESETS: [Preset; 19] = [
+    Preset { id: "openrouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1", needs_key: true, env_var: Some("OPENROUTER_API_KEY"), key_page: Some("https://openrouter.ai/keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: NEBIUS, name: nemotron::PROVIDER_NAME, base_url: nemotron::DEFAULT_BASE_URL, needs_key: true, env_var: Some("NEBIUS_API_KEY"), key_page: Some("https://tokenfactory.nebius.com"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "together", name: "Together AI", base_url: "https://api.together.ai/v1", needs_key: true, env_var: Some("TOGETHER_API_KEY"), key_page: Some("https://api.together.ai/settings/api-keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "fireworks", name: "Fireworks AI", base_url: "https://api.fireworks.ai/inference/v1", needs_key: true, env_var: Some("FIREWORKS_API_KEY"), key_page: Some("https://app.fireworks.ai/settings/users/api-keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "groq", name: "Groq", base_url: "https://api.groq.com/openai/v1", needs_key: true, env_var: Some("GROQ_API_KEY"), key_page: Some("https://console.groq.com/keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com", needs_key: true, env_var: Some("DEEPSEEK_API_KEY"), key_page: Some("https://platform.deepseek.com/api_keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "mistral", name: "Mistral AI", base_url: "https://api.mistral.ai/v1", needs_key: true, env_var: Some("MISTRAL_API_KEY"), key_page: Some("https://console.mistral.ai/api-keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "xai", name: "xAI", base_url: "https://api.x.ai/v1", needs_key: true, env_var: Some("XAI_API_KEY"), key_page: Some("https://console.x.ai"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "gemini", name: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai/", needs_key: true, env_var: Some("GEMINI_API_KEY"), key_page: Some("https://aistudio.google.com/apikey"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "ollama", name: "Ollama", base_url: "http://localhost:11434/v1", needs_key: false, env_var: None, key_page: None, local: true, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "lmstudio", name: "LM Studio", base_url: "http://localhost:1234/v1", needs_key: false, env_var: None, key_page: None, local: true, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "openai", name: "OpenAI (API key)", base_url: "https://api.openai.com/v1", needs_key: true, env_var: None, key_page: Some("https://platform.openai.com/api-keys"), local: false, kind: Kind::Responses, prefer: &["gpt-5-codex", "gpt-5"], curated: &["gpt-5-codex", "gpt-5", "gpt-5-mini"] },
+    Preset { id: OTHER, name: "Other (OpenAI-compatible)", base_url: "", needs_key: true, env_var: None, key_page: None, local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    // Anthropic-compatible endpoints: Claude Code runs on them (`ANTHROPIC_BASE_URL`).
+    // The Anthropic preset reads no variable: `ANTHROPIC_API_KEY` in the
+    // daemon's environment is the person's own Claude sign-in, which equipe
+    // doesn't pick up as a provider.
+    Preset { id: ANTHROPIC, name: "Anthropic (API key)", base_url: "https://api.anthropic.com", needs_key: true, env_var: None, key_page: Some("https://console.anthropic.com/settings/keys"), local: false, kind: Kind::Anthropic, prefer: &["claude-sonnet", "claude-opus"], curated: &[] },
+    Preset { id: "openrouter-anthropic", name: "OpenRouter (Claude Code)", base_url: "https://openrouter.ai/api", needs_key: true, env_var: Some("OPENROUTER_API_KEY"), key_page: Some("https://openrouter.ai/keys"), local: false, kind: Kind::Anthropic, prefer: &["anthropic/claude-sonnet", "anthropic/claude-opus"], curated: &[] },
+    Preset { id: "deepseek-anthropic", name: "DeepSeek (Claude Code)", base_url: "https://api.deepseek.com/anthropic", needs_key: true, env_var: None, key_page: Some("https://platform.deepseek.com/api_keys"), local: false, kind: Kind::Anthropic, prefer: &["deepseek-chat"], curated: &["deepseek-chat", "deepseek-reasoner"] },
+    Preset { id: "zai-anthropic", name: "Z.ai GLM (Claude Code)", base_url: "https://api.z.ai/api/anthropic", needs_key: true, env_var: None, key_page: Some("https://z.ai/manage-apikey/apikey-list"), local: false, kind: Kind::Anthropic, prefer: &["glm-4.6"], curated: &["glm-4.6", "glm-4.5-air"] },
+    Preset { id: "moonshot-anthropic", name: "Moonshot Kimi (Claude Code)", base_url: "https://api.moonshot.ai/anthropic", needs_key: true, env_var: None, key_page: Some("https://platform.moonshot.ai/console/api-keys"), local: false, kind: Kind::Anthropic, prefer: &["kimi-k2"], curated: &["kimi-k2-turbo-preview", "kimi-k2-0905-preview"] },
+    Preset { id: ANTHROPIC_OTHER, name: "Other (Anthropic-compatible)", base_url: "", needs_key: true, env_var: None, key_page: None, local: false, kind: Kind::Anthropic, prefer: &[], curated: &[] },
 ];
 
 /// The preset `id`.
 pub fn preset(id: &str) -> Option<&'static Preset> {
     PRESETS.iter().find(|p| p.id == id)
+}
+
+/// The preset a provider id comes from: its own, or the longest one the id
+/// is made from (`other-llm-example-com` is `other`'s, `anthropic-other-x`
+/// is `anthropic-other`'s). `None` for the environment's server.
+pub fn preset_of_id(id: &str) -> Option<&'static Preset> {
+    PRESETS.iter().filter(|p| id == p.id || id.strip_prefix(p.id).is_some_and(|rest| rest.starts_with('-'))).max_by_key(|p| p.id.len())
+}
+
+/// Which API provider `id` speaks. The environment's server and Nebius
+/// speak chat, as before.
+pub fn kind_of_id(id: &str) -> Kind {
+    preset_of_id(id).map_or(Kind::Chat, |p| p.kind)
+}
+
+/// The engine whose agent runs members on `model` when it is a provider's
+/// (`@<id>/<model>`): Codex for an OpenAI-compatible one, Claude Code for an
+/// Anthropic-compatible one. `None` for any other model.
+pub fn engine_of_ref(model: &str) -> Option<Engine> {
+    split_ref(model).map(|(id, _)| kind_of_id(id).engine())
+}
+
+/// The providers a screen can offer to connect, as it is told them
+/// ([`equipe_protocol::Event::Providers`]).
+pub fn preset_list() -> Vec<equipe_protocol::ProviderPreset> {
+    PRESETS
+        .iter()
+        .map(|p| equipe_protocol::ProviderPreset {
+            id: p.id.to_owned(),
+            name: p.name.to_owned(),
+            base_url: p.base_url.to_owned(),
+            needs_key: p.needs_key,
+            key_page: p.key_page.map(str::to_owned),
+            local: p.local,
+            engine: Some(p.kind.engine()),
+        })
+        .collect()
 }
 
 /// A provider connected on this machine.
@@ -93,6 +182,8 @@ pub struct Entry {
     pub key: ProviderKey,
     /// Whether a screen can remove it: not the environment's.
     pub removable: bool,
+    /// The API it speaks: the engine its members run on.
+    pub kind: Kind,
 }
 
 /// What `providers.json` keeps of a provider: never its key.
@@ -118,7 +209,9 @@ pub fn list_path(home: &Path) -> PathBuf {
 
 /// Where a provider's key is kept: `keys/<id>`, Nebius's where it always was.
 pub fn key_path(home: &Path, id: &str) -> PathBuf {
-    home.join("keys").join(id)
+    // An id from a screen is a file name in `keys/`, never a path out of it.
+    let safe = !id.is_empty() && id != "." && id != ".." && !id.contains(['/', '\\', '\0']);
+    home.join("keys").join(if safe { id } else { "invalid" })
 }
 
 /// The saved key of provider `id`, if there is one.
@@ -206,7 +299,7 @@ pub fn entries(home: &Path, var: impl Fn(&str) -> Option<String>) -> Vec<Entry> 
     if let Some(base_url) = set("EQUIPE_MODEL_BASE_URL") {
         let name = reqwest::Url::parse(&base_url).ok().and_then(|u| u.host_str().map(str::to_owned)).unwrap_or_else(|| base_url.clone());
         let key = if set("EQUIPE_MODEL_API_KEY").is_some() { ProviderKey::Environment } else if is_loopback(&base_url) { ProviderKey::NotNeeded } else { ProviderKey::None };
-        out.push(Entry { id: CUSTOM.to_owned(), preset: CUSTOM.to_owned(), name, base_url, key, removable: false });
+        out.push(Entry { id: CUSTOM.to_owned(), preset: CUSTOM.to_owned(), name, base_url, key, removable: false, kind: Kind::Chat });
     }
     let mut kept = read(home).providers;
     kept.retain(|k| preset(&k.preset).is_some() && k.id != CUSTOM);
@@ -217,9 +310,9 @@ pub fn entries(home: &Path, var: impl Fn(&str) -> Option<String>) -> Vec<Entry> 
     for k in kept {
         let Some(preset) = preset(&k.preset) else { continue };
         let base_url = k.base_url.clone().filter(|b| !b.trim().is_empty()).unwrap_or_else(|| preset.base_url.to_owned());
-        let name = if preset.id == OTHER { host(&base_url) } else { preset.name.to_owned() };
+        let name = if preset.base_url.is_empty() { host(&base_url) } else { preset.name.to_owned() };
         let key = key_source(home, &k, &var);
-        out.push(Entry { id: k.id, preset: preset.id.to_owned(), name, base_url, key, removable: true });
+        out.push(Entry { id: k.id, preset: preset.id.to_owned(), name, base_url, key, removable: true, kind: preset.kind });
     }
     out
 }
@@ -272,11 +365,11 @@ impl AddError {
     }
 }
 
-/// The id `other`'s server at `base_url` gets: `other-<host>`, made unique.
-fn other_id(base_url: &str, taken: &[Kept]) -> String {
+/// The id a server of preset `preset` at `base_url` gets: `other-<host>`, made unique.
+fn other_id(preset: &str, base_url: &str, taken: &[Kept]) -> String {
     let slug: String = host(base_url).to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
     let slug = slug.trim_matches('-').chars().take(40).collect::<String>();
-    let base = if slug.is_empty() { OTHER.to_owned() } else { format!("{OTHER}-{slug}") };
+    let base = if slug.is_empty() { preset.to_owned() } else { format!("{preset}-{slug}") };
     let mut id = base.clone();
     let mut n = 2;
     while taken.iter().any(|k| k.id == id && k.base_url.as_deref() != Some(base_url)) {
@@ -305,8 +398,8 @@ pub fn check(preset_id: &str, base_url: Option<&str>, key: Option<&str>) -> Resu
 fn checked(preset_id: &str, base_url: Option<&str>, key: Option<&str>) -> Result<(&'static Preset, String), AddError> {
     let preset = preset(preset_id).ok_or(AddError::Unknown)?;
     let given = base_url.map(str::trim).filter(|b| !b.is_empty());
-    let base = match (preset.id, given) {
-        (OTHER, None) => return Err(AddError::BadUrl),
+    let base = match (preset.base_url.is_empty(), given) {
+        (true, None) => return Err(AddError::BadUrl),
         (_, Some(url)) => url.to_owned(),
         (_, None) => preset.base_url.to_owned(),
     };
@@ -333,7 +426,7 @@ pub fn add(home: &Path, preset_id: &str, base_url: Option<&str>, key: Option<&st
     let given = base_url.map(str::trim).filter(|b| !b.is_empty());
     let key = key.map(str::trim).filter(|k| !k.is_empty());
     let mut file = read(home);
-    let id = if preset.id == OTHER { other_id(&base, &file.providers) } else { preset.id.to_owned() };
+    let id = if preset.base_url.is_empty() { other_id(preset.id, &base, &file.providers) } else { preset.id.to_owned() };
     if needs_key(preset, &base) && key.is_none() && saved_key(home, &id).is_none() {
         return Err(AddError::NoKey);
     }
@@ -393,7 +486,7 @@ pub fn config(home: &Path, id: &str, var: impl Fn(&str) -> Option<String>) -> Re
         }
         _ => {}
     }
-    let entry = entries(home, &var).into_iter().find(|e| e.id == id).ok_or(ReviewError::MissingKey)?;
+    let entry = entries(home, &var).into_iter().find(|e| e.id == id && e.kind != Kind::Anthropic).ok_or(ReviewError::MissingKey)?;
     let preset = preset(&entry.preset);
     let key = match entry.key {
         ProviderKey::Environment => preset.and_then(|p| p.env_var).and_then(set),
@@ -403,7 +496,139 @@ pub fn config(home: &Path, id: &str, var: impl Fn(&str) -> Option<String>) -> Re
         ProviderKey::None => None,
     }
     .ok_or(ReviewError::MissingKey)?;
-    Ok(nemotron::Config::connected(key, &key_var(id, preset), &codex_id(id), &entry.name, &entry.base_url, Wire::Chat))
+    let wire = if entry.kind == Kind::Responses { Wire::Responses } else { Wire::Chat };
+    Ok(nemotron::Config::connected(key, &key_var(id, preset), &codex_id(id), &entry.name, &entry.base_url, wire))
+}
+
+// ── Anthropic-compatible providers: Claude Code's endpoint ──
+
+/// An Anthropic-compatible provider as Claude Code's turns and the listing
+/// of its models ask for it: its key, and where it is.
+#[derive(Clone)]
+pub struct AnthropicConfig {
+    /// Its key and root, asked as the other providers' are ([`nemotron::Config`]'s client, retries and redaction).
+    cfg: nemotron::Config,
+    /// Whether it takes the key as a bearer (a gateway) as well as `x-api-key`:
+    /// every one but Anthropic's own API.
+    bearer: bool,
+    /// Whether it is Anthropic's own API, which knows Claude's own aliases and small model.
+    own: bool,
+}
+
+impl std::fmt::Debug for AnthropicConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnthropicConfig").field("cfg", &self.cfg).field("bearer", &self.bearer).finish()
+    }
+}
+
+impl AnthropicConfig {
+    /// The provider's name, as it is shown.
+    pub fn name(&self) -> &str {
+        &self.cfg.provider_name
+    }
+
+    /// Its API's root: what `ANTHROPIC_BASE_URL` is.
+    pub fn base_url(&self) -> &str {
+        self.cfg.base_url.trim_end_matches('/')
+    }
+
+    /// The environment of a Claude Code turn on `model` (its own id), for the
+    /// turn's process only — never a command line, never a file:
+    /// `ANTHROPIC_BASE_URL` and the key as `ANTHROPIC_API_KEY`, and as
+    /// `ANTHROPIC_AUTH_TOKEN` for a gateway. Both are always set for a
+    /// provider, so an Anthropic key or token of the person's own in the
+    /// daemon's environment is never what a third party is sent. On a
+    /// provider that isn't Anthropic's the model also stands in for Claude
+    /// Code's three families and its small model (`haiku`, for titles and
+    /// summaries), which that provider would not know.
+    pub fn claude_env(&self, model: &str) -> Vec<(String, String)> {
+        let key = self.cfg.codex_env().1;
+        let mut env = vec![("ANTHROPIC_BASE_URL".to_owned(), self.base_url().to_owned()), ("ANTHROPIC_API_KEY".to_owned(), key.clone())];
+        if self.bearer {
+            env.push(("ANTHROPIC_AUTH_TOKEN".to_owned(), key));
+        }
+        if !self.own {
+            for var in ["ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] {
+                env.push((var.to_owned(), model.to_owned()));
+            }
+        }
+        env
+    }
+}
+
+/// Provider `id` (Anthropic-compatible) as Claude Code's turns and its
+/// listing ask it, `var` reading the environment: its key from there first
+/// (a preset's own variable), else saved. Anything else is
+/// [`ReviewError::MissingKey`]: it isn't one.
+pub fn anthropic_config(home: &Path, id: &str, var: impl Fn(&str) -> Option<String>) -> Result<AnthropicConfig, ReviewError> {
+    let set = |name: &str| var(name).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+    let entry = entries(home, &var).into_iter().find(|e| e.id == id && e.kind == Kind::Anthropic).ok_or(ReviewError::MissingKey)?;
+    let preset = preset(&entry.preset);
+    let key = match entry.key {
+        ProviderKey::Environment => preset.and_then(|p| p.env_var).and_then(set),
+        ProviderKey::Saved => saved_key(home, id),
+        ProviderKey::NotNeeded => saved_key(home, id).or_else(|| Some("local".to_owned())),
+        ProviderKey::None => None,
+    }
+    .ok_or(ReviewError::MissingKey)?;
+    let own = reqwest::Url::parse(&entry.base_url).ok().and_then(|u| u.host_str().map(str::to_owned)).is_some_and(|h| h == "api.anthropic.com");
+    let cfg = nemotron::Config::connected(key, "ANTHROPIC_API_KEY", id, &entry.name, &entry.base_url, Wire::Chat);
+    Ok(AnthropicConfig { cfg, bearer: !own, own })
+}
+
+/// Provider `id`'s models, best first, as its `GET /v1/models` lists them;
+/// when it has none to ask (a 404, a server that isn't there) the preset's
+/// curated ones. A refused key is told, never papered over.
+pub async fn list_anthropic(cfg: &AnthropicConfig, id: &str) -> Result<Vec<String>, ReviewError> {
+    let curated = || preset_of_id(id).map(|p| p.curated.iter().map(|m| (*m).to_owned()).collect::<Vec<_>>()).unwrap_or_default();
+    match nemotron::anthropic_models(&cfg.cfg, cfg.bearer).await {
+        Ok(listed) => {
+            let listed = chat_models(&listed);
+            if listed.is_empty() { Err(ReviewError::NoModel) } else { Ok(listed) }
+        }
+        Err(err @ (ReviewError::Unauthorized | ReviewError::MissingKey)) => Err(err),
+        Err(_) if !curated().is_empty() => Ok(curated()),
+        Err(err) => Err(err),
+    }
+}
+
+/// A connected provider, as its listing and its members' turns ask it.
+#[derive(Debug, Clone)]
+pub enum Access {
+    /// OpenAI-compatible: Codex's agent.
+    Codex(nemotron::Config),
+    /// Anthropic-compatible: Claude Code.
+    Claude(AnthropicConfig),
+}
+
+/// Provider `id` as [`Access`], by the API it speaks.
+pub fn access(home: &Path, id: &str, var: impl Fn(&str) -> Option<String>) -> Result<Access, ReviewError> {
+    if kind_of_id(id) == Kind::Anthropic {
+        anthropic_config(home, id, var).map(Access::Claude)
+    } else {
+        config(home, id, var).map(Access::Codex)
+    }
+}
+
+/// Provider `id`'s models, whichever API it speaks ([`list`], [`list_anthropic`]).
+pub async fn list_access(access: &Access, id: &str) -> Result<Vec<String>, ReviewError> {
+    match access {
+        Access::Codex(cfg) => list(cfg, id).await,
+        Access::Claude(cfg) => list_anthropic(cfg, id).await,
+    }
+}
+
+/// The model a member starts on at provider `id`, of its `listed` ids: the
+/// first the preset prefers (the newest by id among those of its name), else
+/// the first listed. `None` when nothing is listed.
+pub fn default_model(id: &str, listed: &[String]) -> Option<String> {
+    let preset = preset_of_id(id)?;
+    for want in preset.prefer {
+        if let Some(best) = listed.iter().filter(|m| m.to_ascii_lowercase().starts_with(want)).max() {
+            return Some(best.clone());
+        }
+    }
+    listed.first().cloned()
 }
 
 // ── a member's model on a provider ──
@@ -560,7 +785,7 @@ mod tests {
     #[test]
     fn every_preset_has_its_documented_root_and_says_whether_it_needs_a_key() {
         let ids: Vec<&str> = PRESETS.iter().map(|p| p.id).collect();
-        for wanted in ["openrouter", "nebius", "together", "fireworks", "groq", "deepseek", "mistral", "xai", "gemini", "ollama", "lmstudio", "other"] {
+        for wanted in ["openrouter", "nebius", "together", "fireworks", "groq", "deepseek", "mistral", "xai", "gemini", "ollama", "lmstudio", "other", "openai", "anthropic", "openrouter-anthropic", "anthropic-other"] {
             assert!(ids.contains(&wanted), "{wanted}");
         }
         let mut seen = ids.clone();
@@ -569,8 +794,8 @@ mod tests {
         assert_eq!(seen.len(), ids.len(), "ids are unique");
         for p in PRESETS {
             assert!(!p.id.contains('/') && !p.id.starts_with('@'), "{}", p.id);
-            if p.id == OTHER {
-                assert!(p.base_url.is_empty());
+            if p.base_url.is_empty() {
+                assert!(p.id == OTHER || p.id == ANTHROPIC_OTHER, "{}", p.id);
                 continue;
             }
             let url = reqwest::Url::parse(p.base_url).unwrap();
@@ -625,7 +850,7 @@ mod tests {
         let list = std::fs::read_to_string(list_path(&home)).unwrap();
         assert!(!list.contains("secret"), "the list keeps no key: {list}");
         let all = entries(&home, none);
-        assert_eq!(all, vec![Entry { id: "openrouter".into(), preset: "openrouter".into(), name: "OpenRouter".into(), base_url: "https://openrouter.ai/api/v1".into(), key: ProviderKey::Saved, removable: true }]);
+        assert_eq!(all, vec![Entry { id: "openrouter".into(), preset: "openrouter".into(), name: "OpenRouter".into(), base_url: "https://openrouter.ai/api/v1".into(), key: ProviderKey::Saved, removable: true, kind: Kind::Chat }]);
         // Its environment variable wins over the saved key.
         assert_eq!(entries(&home, vars(&[("OPENROUTER_API_KEY", "sk-or-env-456")]))[0].key, ProviderKey::Environment);
         let cfg = config(&home, "openrouter", vars(&[("OPENROUTER_API_KEY", "sk-or-env-456")])).unwrap();
@@ -801,6 +1026,172 @@ mod tests {
         assert!(request.to_ascii_lowercase().contains("authorization: bearer sk-local-secret-1"));
         assert!(!request.lines().next().unwrap().contains("sk-local"), "never in the URL");
         assert!(!format!("{cfg:?}").contains("sk-local"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_providers_api_decides_the_engine_its_members_run_on() {
+        assert_eq!(kind_of_id("openrouter"), Kind::Chat);
+        assert_eq!(kind_of_id("openai"), Kind::Responses);
+        assert_eq!(kind_of_id("other-llm-example-com"), Kind::Chat);
+        assert_eq!(kind_of_id("openrouter-anthropic"), Kind::Anthropic, "the longest preset it is made from");
+        assert_eq!(kind_of_id("anthropic"), Kind::Anthropic);
+        assert_eq!(kind_of_id("anthropic-other-llm-example-com"), Kind::Anthropic);
+        assert_eq!(kind_of_id(CUSTOM), Kind::Chat);
+        assert_eq!(kind_of_id("nope"), Kind::Chat);
+        assert_eq!(engine_of_ref("@openrouter/qwen/qwen3-coder"), Some(Engine::Codex));
+        assert_eq!(engine_of_ref("@openai/gpt-5"), Some(Engine::Codex));
+        assert_eq!(engine_of_ref("@anthropic/claude-sonnet-5-5"), Some(Engine::Claude));
+        assert_eq!(engine_of_ref("@openrouter-anthropic/qwen/qwen3-coder"), Some(Engine::Claude));
+        assert_eq!(engine_of_ref("claude-opus-5-5"), None);
+        assert_eq!(engine_of_ref("qwen/qwen3-coder"), None);
+        // Codex's agent takes the first kind only: an Anthropic-compatible provider's model is Claude Code's.
+        assert!(nemotron::is_agent_model("@openrouter/qwen/qwen3-coder") && nemotron::is_agent_model("@openai/gpt-5"));
+        assert!(!nemotron::is_agent_model("@anthropic/claude-sonnet-5-5") && !nemotron::is_agent_model("@openrouter-anthropic/qwen/qwen3-coder"));
+        // Where each fits: a member moves to the engine of its model's API.
+        use crate::controls::{ModelFit, model_fit};
+        assert_eq!(model_fit(Engine::Claude, "@anthropic/claude-sonnet-5-5", None), ModelFit::Fits);
+        assert_eq!(model_fit(Engine::Codex, "@anthropic/claude-sonnet-5-5", None), ModelFit::Other(Engine::Claude));
+        assert_eq!(model_fit(Engine::Codex, "@groq/llama-3.3-70b-versatile", None), ModelFit::Fits);
+        assert_eq!(model_fit(Engine::Claude, "@groq/llama-3.3-70b-versatile", None), ModelFit::Other(Engine::Codex));
+        // OpenAI's own API speaks Responses, the others chat.
+        let home = home("responses");
+        add(&home, "openai", None, Some("sk-openai-test-123")).unwrap();
+        add(&home, "groq", None, Some("sk-groq-test-1234")).unwrap();
+        assert_eq!(config(&home, "openai", none).unwrap().wire, Wire::Responses);
+        assert_eq!(config(&home, "groq", none).unwrap().wire, Wire::Chat);
+        // An Anthropic-compatible provider isn't one for Codex's agent.
+        add(&home, ANTHROPIC, None, Some("sk-ant-test-12345")).unwrap();
+        assert_eq!(config(&home, ANTHROPIC, none).unwrap_err(), ReviewError::MissingKey);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn an_anthropic_compatible_provider_keeps_its_key_apart_and_gives_claude_code_its_environment_only() {
+        let home = home("anthropic");
+        // The Anthropic preset reads no variable: the person's own Claude key in the environment is no provider.
+        let env = vars(&[("ANTHROPIC_API_KEY", "sk-ant-persons-own"), ("ANTHROPIC_AUTH_TOKEN", "persons-own-token")]);
+        assert!(entries(&home, &env).is_empty());
+        assert_eq!(add(&home, ANTHROPIC, None, None), Err(AddError::NoKey));
+        assert_eq!(add(&home, ANTHROPIC, Some("http://api.example.com"), Some("sk-ant-test-12345")), Err(AddError::Insecure));
+        assert_eq!(add(&home, ANTHROPIC_OTHER, None, Some("sk-ant-test-12345")), Err(AddError::BadUrl));
+        assert_eq!(add(&home, ANTHROPIC, None, Some("sk-ant-test-12345")).unwrap(), ANTHROPIC);
+        let list = std::fs::read_to_string(list_path(&home)).unwrap();
+        assert!(!list.contains("sk-ant"), "the list keeps no key: {list}");
+        assert_eq!(saved_key(&home, ANTHROPIC).as_deref(), Some("sk-ant-test-12345"));
+        let all = entries(&home, &env);
+        assert_eq!((all[0].kind, all[0].key, all[0].base_url.as_str()), (Kind::Anthropic, ProviderKey::Saved, "https://api.anthropic.com"));
+        // Anthropic's own API: its key as `x-api-key` only, and Claude's own families stay as they are.
+        let own = anthropic_config(&home, ANTHROPIC, &env).unwrap();
+        let own_env = own.claude_env("claude-sonnet-5-5");
+        assert_eq!(own_env, [("ANTHROPIC_BASE_URL".to_owned(), "https://api.anthropic.com".to_owned()), ("ANTHROPIC_API_KEY".to_owned(), "sk-ant-test-12345".to_owned())]);
+        // A gateway: the key as a bearer too — so the person's own token is never what it is sent —
+        // and its model for every family and the small one.
+        let key = "sk-or-v1-gateway-secret";
+        add(&home, "openrouter-anthropic", None, Some(key)).unwrap();
+        let via = anthropic_config(&home, "openrouter-anthropic", none).unwrap();
+        let env = via.claude_env("qwen/qwen3-coder");
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("ANTHROPIC_BASE_URL"), Some("https://openrouter.ai/api"));
+        assert_eq!((get("ANTHROPIC_API_KEY"), get("ANTHROPIC_AUTH_TOKEN")), (Some(key), Some(key)));
+        for var in ["ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL"] {
+            assert_eq!(get(var), Some("qwen/qwen3-coder"), "{var}");
+        }
+        // Its own variable wins over the saved key, as for the others.
+        assert_eq!(entries(&home, vars(&[("OPENROUTER_API_KEY", "sk-or-env-9999")])).iter().find(|e| e.id == "openrouter-anthropic").unwrap().key, ProviderKey::Environment);
+        assert!(!format!("{via:?}").contains(key), "never shown");
+        // Not connected, or not an Anthropic-compatible one: no config.
+        assert_eq!(anthropic_config(&home, "zai-anthropic", none).unwrap_err(), ReviewError::MissingKey);
+        assert_eq!(anthropic_config(&home, "groq", none).unwrap_err(), ReviewError::MissingKey);
+        assert!(matches!(access(&home, ANTHROPIC, none), Ok(Access::Claude(_))));
+        // Removed: its key with it.
+        assert!(remove(&home, ANTHROPIC).unwrap() && saved_key(&home, ANTHROPIC).is_none());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_key_file_is_never_outside_the_keys_folder() {
+        let home = home("traverse");
+        for id in ["../providers.json", "..", ".", "a/b", "", "a\\b"] {
+            assert_eq!(key_path(&home, id), home.join("keys").join("invalid"), "{id:?}");
+        }
+        std::fs::write(list_path(&home), r#"{"providers":[]}"#).unwrap();
+        assert!(!remove(&home, "../providers.json").unwrap());
+        assert!(list_path(&home).exists(), "a screen's id can't name another file");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_default_model_is_the_one_the_provider_is_known_for_else_the_first_listed() {
+        let ids = |list: &[&str]| list.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        let listed = ids(&["claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5", "claude-sonnet-5-5"]);
+        assert_eq!(default_model(ANTHROPIC, &listed).as_deref(), Some("claude-sonnet-5-5"));
+        let routed = ids(&["qwen/qwen3-coder", "anthropic/claude-sonnet-4", "anthropic/claude-sonnet-5.5"]);
+        assert_eq!(default_model("openrouter-anthropic", &routed).as_deref(), Some("anthropic/claude-sonnet-5.5"));
+        assert_eq!(default_model("openai", &ids(&["o3", "gpt-5", "gpt-5-codex"])).as_deref(), Some("gpt-5-codex"));
+        assert_eq!(default_model("groq", &ids(&["llama-3.3-70b-versatile", "x"])).as_deref(), Some("llama-3.3-70b-versatile"));
+        assert_eq!(default_model("groq", &[]), None);
+        assert_eq!(default_model("nope", &ids(&["x"])), None);
+        // What a screen is offered to connect, each with its engine.
+        let offered = preset_list();
+        assert_eq!(offered.len(), PRESETS.len());
+        let engine = |id: &str| offered.iter().find(|p| p.id == id).unwrap().engine;
+        assert_eq!((engine("anthropic"), engine("openai"), engine("groq"), engine("anthropic-other")), (Some(Engine::Claude), Some(Engine::Codex), Some(Engine::Codex), Some(Engine::Claude)));
+        assert!(offered.iter().find(|p| p.id == "ollama").unwrap().local && !offered.iter().find(|p| p.id == "ollama").unwrap().needs_key);
+    }
+
+    /// A stand-in server answering every request with `status` and `body`; the requests' heads are kept.
+    async fn stand_in(status: u16, body: &'static str) -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let kept = seen.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else { return };
+                let kept = kept.clone();
+                tokio::spawn(async move {
+                    let mut buf = vec![0u8; 8192];
+                    let n = socket.read(&mut buf).await.unwrap_or(0);
+                    kept.lock().unwrap().push(String::from_utf8_lossy(&buf[..n]).into_owned());
+                    let head = format!("HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", body.len());
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(body.as_bytes()).await;
+                });
+            }
+        });
+        (base, seen)
+    }
+
+    #[tokio::test]
+    async fn an_anthropic_compatible_providers_models_are_listed_with_its_key_as_a_header_and_curated_when_it_has_no_list() {
+        let home = home("alist");
+        let key = "sk-gateway-secret-1";
+        // A gateway with a list: the key as x-api-key and as a bearer, never in the URL.
+        let (base, seen) = stand_in(200, r#"{"data":[{"id":"glm-4.6"},{"id":"text-embedding-x"},{"id":"glm-4.5-air"}]}"#).await;
+        let id = add(&home, ANTHROPIC_OTHER, Some(&base), Some(key)).unwrap();
+        let cfg = anthropic_config(&home, &id, none).unwrap();
+        assert_eq!(list_anthropic(&cfg, &id).await.unwrap(), ["glm-4.6", "glm-4.5-air"]);
+        let head = seen.lock().unwrap()[0].to_ascii_lowercase();
+        assert!(head.starts_with("get /v1/models?limit=1000 "), "{head}");
+        assert!(head.contains(&format!("x-api-key: {key}")) && head.contains(&format!("authorization: bearer {key}")) && head.contains("anthropic-version: 2023-06-01"), "{head}");
+        assert!(!head.lines().next().unwrap().contains(key));
+        // One with no list (404) but curated models: those.
+        let (base, _) = stand_in(404, "{}").await;
+        let root = home.join("curated");
+        let _ = std::fs::create_dir_all(&root);
+        add(&root, "zai-anthropic", Some(&base), Some(key)).unwrap();
+        let zai = anthropic_config(&root, "zai-anthropic", none).unwrap();
+        assert_eq!(list_anthropic(&zai, "zai-anthropic").await.unwrap(), ["glm-4.6", "glm-4.5-air"]);
+        // One with neither: said plainly. A refused key is told even where models are curated.
+        let other = add(&root, ANTHROPIC_OTHER, Some(&base), Some(key)).unwrap();
+        let nameless = anthropic_config(&root, &other, none).unwrap();
+        assert!(matches!(list_anthropic(&nameless, &other).await, Err(ReviewError::Http(404, _))));
+        let (refusing, _) = stand_in(401, "{}").await;
+        add(&root, "deepseek-anthropic", Some(&refusing), Some(key)).unwrap();
+        let deepseek = anthropic_config(&root, "deepseek-anthropic", none).unwrap();
+        assert_eq!(list_anthropic(&deepseek, "deepseek-anthropic").await.unwrap_err(), ReviewError::Unauthorized);
         let _ = std::fs::remove_dir_all(&home);
     }
 }

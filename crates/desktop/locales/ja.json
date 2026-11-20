@@ -3563,6 +3563,7 @@
   "engines.provider_add_desc": "OpenRouter、Groq、Mistral、このコンピューターの Ollama…OpenAI 互換の API なら何でも",
   "engines.provider_add_failed": "プロバイダーを追加できませんでした",
   "engines.provider_other": "その他 (OpenAI 互換)",
+  "engines.provider_other_anthropic": "その他 (Anthropic 互換)",
   "engines.provider_local": "このコンピューター上",
   "engines.provider_url_label": "API アドレス",
   "engines.provider_url_placeholder": "https://example.com/v1",

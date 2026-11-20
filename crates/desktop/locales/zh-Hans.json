@@ -3563,6 +3563,7 @@
   "engines.provider_add_desc": "OpenRouter、Groq、Mistral、本机的 Ollama……或任何兼容 OpenAI 的 API",
   "engines.provider_add_failed": "无法添加提供商",
   "engines.provider_other": "其他（兼容 OpenAI）",
+  "engines.provider_other_anthropic": "其他（兼容 Anthropic）",
   "engines.provider_local": "在这台电脑上",
   "engines.provider_url_label": "API 地址",
   "engines.provider_url_placeholder": "https://example.com/v1",

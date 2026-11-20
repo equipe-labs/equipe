@@ -2086,6 +2086,40 @@ pub struct ProviderStatus {
     pub models: Vec<ModelChoice>,
     #[serde(default)]
     pub test: ProviderTest,
+    /// The engine its members run on: Codex's agent for an OpenAI-compatible
+    /// provider, Claude Code for an Anthropic-compatible one. `None` from a
+    /// daemon that only knew the first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<Engine>,
+    /// The model a member starts on there when none is chosen, by its
+    /// `@<id>/<model>` id; `None` until its models are listed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+}
+
+/// A provider a screen can offer to connect ([`Event::Providers`]): what its
+/// form asks for. Connect it with [`Command::AddProvider`] by `id`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderPreset {
+    /// The id `AddProvider`'s `preset` takes.
+    pub id: String,
+    /// Its own name, the same in every language.
+    pub name: String,
+    /// Its API's root; empty when the person gives it (`other`).
+    #[serde(default)]
+    pub base_url: String,
+    /// Whether the form asks for a key (a server on the person's machine needs none).
+    #[serde(default)]
+    pub needs_key: bool,
+    /// Where the person makes a key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_page: Option<String>,
+    /// Whether it runs on the daemon's machine.
+    #[serde(default)]
+    pub local: bool,
+    /// The engine its members run on; `None` from a daemon that only knew Codex's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<Engine>,
 }
 
 /// A model an engine offers ([`Event::Models`]): its id, the name its tool
@@ -3346,11 +3380,18 @@ pub enum Event {
     /// [`Event::Engines`], and when its key is saved or forgotten.
     Nebius { status: NebiusStatus },
     /// The model providers connected on the daemon's machine
-    /// ([`Command::Providers`]), and whether the Codex CLI their members run on is there.
+    /// ([`Command::Providers`]), whether the Codex CLI the OpenAI-compatible
+    /// ones' members run on is there (`codex`), and Claude Code, which the
+    /// Anthropic-compatible ones' run on (`claude`), and the providers a
+    /// screen can offer to connect (`presets`).
     Providers {
         providers: Vec<ProviderStatus>,
         #[serde(default)]
         codex: bool,
+        #[serde(default)]
+        claude: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        presets: Vec<ProviderPreset>,
     },
     /// A provider's models were listed — or couldn't be ([`Command::TestProvider`]).
     ProviderTested { id: String, test: ProviderTest },
@@ -5431,14 +5472,17 @@ mod tests {
         assert!(!format!("{add:?}").contains("hunter2"));
         let local: Command = serde_json::from_value(json!({ "type": "add_provider", "preset": "other", "base_url": "http://localhost:8000/v1" })).unwrap();
         assert_eq!(local, Command::AddProvider { preset: "other".into(), base_url: Some("http://localhost:8000/v1".into()), key: None });
-        let status = ProviderStatus { id: "groq".into(), preset: "groq".into(), name: "Groq".into(), base_url: "https://api.groq.com/openai/v1".into(), key: ProviderKey::Saved, removable: true, models: vec![ModelChoice { id: "@groq/qwen/qwen3-32b".into(), ..Default::default() }], test: ProviderTest::Ok { count: 1 } };
-        let event = Event::Providers { providers: vec![status.clone()], codex: true };
+        let status = ProviderStatus { id: "groq".into(), preset: "groq".into(), name: "Groq".into(), base_url: "https://api.groq.com/openai/v1".into(), key: ProviderKey::Saved, removable: true, models: vec![ModelChoice { id: "@groq/qwen/qwen3-32b".into(), ..Default::default() }], test: ProviderTest::Ok { count: 1 }, engine: Some(Engine::Codex), default_model: Some("@groq/qwen/qwen3-32b".into()) };
+        let event = Event::Providers { providers: vec![status.clone()], codex: true, claude: true, presets: vec![ProviderPreset { id: "anthropic".into(), name: "Anthropic (API key)".into(), needs_key: true, engine: Some(Engine::Claude), ..Default::default() }] };
         let text = serde_json::to_string(&event).unwrap();
         assert!(text.contains(r#""state":"ok""#) && text.contains(r#""key":"saved""#), "{text}");
         assert_eq!(serde_json::from_str::<Event>(&text).unwrap(), event);
         // An older screen's minimum: what a newer daemon adds is optional.
         let bare: ProviderStatus = serde_json::from_value(json!({ "id": "x", "preset": "other", "name": "x", "base_url": "http://localhost:1/v1", "key": "not_needed" })).unwrap();
-        assert_eq!((bare.test, bare.removable, bare.models.len()), (ProviderTest::Untested, false, 0));
+        assert_eq!((bare.test, bare.removable, bare.models.len(), bare.engine, bare.default_model), (ProviderTest::Untested, false, 0, None, None));
+        // An older daemon's list has neither Claude Code's presence nor presets.
+        let old: Event = serde_json::from_value(json!({ "type": "providers", "providers": [], "codex": true })).unwrap();
+        assert_eq!(old, Event::Providers { providers: vec![], codex: true, claude: false, presets: vec![] });
         assert!(event.for_everyone() && event.squad().is_none());
         assert_eq!(serde_json::to_value(Command::Providers).unwrap(), json!({ "type": "providers" }));
         // Why it failed goes as a problem a screen words in its own language.

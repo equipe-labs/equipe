@@ -108,6 +108,39 @@ hundreds of thousands of input tokens on a long task. Watch your provider's usag
 trying it, set a spending limit there, and stop a member with Esc. equipe shows each turn's
 tokens as Codex reports them.
 
+## Any model on the market: connect a provider
+
+Settings → AI platforms (and the `providers`, `add_provider`, `test_provider`,
+`remove_provider` protocol commands behind it) connect any provider with a key. Each speaks
+one API, and that decides the engine its members run on:
+
+| Provider (preset id) | API | Members run on | Key |
+| --- | --- | --- | --- |
+| Your Claude plan | - | Claude Code | `claude auth login` (Settings → Sign in) |
+| Your ChatGPT plan | - | Codex | `codex login`, or `codex login --device-auth` for a headless machine |
+| `openai` | OpenAI Responses | Codex's agent | an OpenAI API key |
+| `openrouter`, `together`, `fireworks`, `groq`, `deepseek`, `mistral`, `xai`, `gemini`, `nebius`, `other` | OpenAI Chat Completions | Codex's agent | the provider's key (`other`: also its URL) |
+| `ollama`, `lmstudio` | OpenAI Chat Completions | Codex's agent | none (a server on the daemon's machine) |
+| `anthropic` | Anthropic Messages | Claude Code | an Anthropic API key |
+| `openrouter-anthropic`, `deepseek-anthropic`, `zai-anthropic`, `moonshot-anthropic`, `anthropic-other` | Anthropic Messages (`ANTHROPIC_BASE_URL`) | Claude Code | the provider's key (`anthropic-other`: also its URL) |
+
+A member's model on a provider reads `@<provider>/<model>` (`@openrouter/qwen/qwen3-coder`,
+`@anthropic/claude-sonnet-5-5`). Set it per member (`/model`, or the member's model menu) or per
+role (Settings → AI platforms → Roles): a member on the other engine moves to the one the model's
+API belongs to at its next boundary, under the same name. Models come from the provider's own
+list (`GET /models`, or `/v1/models` for an Anthropic-compatible one) with curated fallbacks for
+Anthropic-compatible providers that have none; each connected provider also reports a default
+model.
+
+For an Anthropic-compatible provider Claude Code is started with `ANTHROPIC_BASE_URL` and the
+key as `ANTHROPIC_API_KEY` (and `ANTHROPIC_AUTH_TOKEN` for a gateway) in that turn's process
+environment only, so a key of your own in the daemon's environment is never what a third party
+is sent; on a provider that isn't Anthropic's the model also stands in for Claude Code's
+families and its small model. No Claude plan sign-in is needed for these members, only the
+`claude` tool. Keys are kept in `~/.equipe/keys/<provider>` (readable only by you), never in
+`providers.json`, the logs or any event a screen receives. Not covered: Amazon Bedrock and Google
+Vertex (they sign in with cloud credentials, not an API key).
+
 ## Nemotron review on Nebius Token Factory
 
 **What.** When a member hands in a code ticket, an **NVIDIA Nemotron** model on
