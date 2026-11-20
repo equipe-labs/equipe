@@ -32,6 +32,44 @@ impl Runtime {
         })
     }
 
+    /// A member asking to sign in at a site in the browser (`show_my_browser`,
+    /// or a `sign_in` card on `site` when `card`) where something better
+    /// exists: AWS's console while the machine has a credential that works
+    /// without the person (unless `why_not_machine` names the permission it
+    /// lacks), or an app the desktop tools sign in to instead of the automated
+    /// browser (Slack, [`crate::native_sign_in`]) while desktop control is on
+    /// for the member and the app is installed. `Some(text)`: refused, the
+    /// person not asked.
+    pub(super) fn sign_in_elsewhere(&mut self, call: &ToolCall, url: Option<&str>, why: &str, card: bool) -> Option<String> {
+        let page = self.browser_key(self.caller_id(call)?).and_then(|(squad, key)| self.lane_page(&format!("{squad}/{key}")));
+        let at = url.map(str::to_owned).or_else(|| page.map(|p| p.url)).unwrap_or_default();
+        let site = vault::site_of(&at);
+        if site.is_empty() {
+            return None;
+        }
+        let signing_in = card || crate::logins::cause_of_handoff(why, Some(&at), None, true).is_shared_step();
+        if mc::aws_sign_in_host(&site) && (signing_in || !site.contains("console.")) {
+            let why_not = call.arguments["why_not_machine"].as_str();
+            let tool = if card { crate::board::SIGN_IN } else { crate::board::SHOW_BROWSER };
+            let inventory = self.machine_inventory();
+            if let Err(text) = mc::browser_guard(&inventory, why_not, tool) {
+                crate::daemon_log!("equipe: {}: {}'s sign-in to {site} in the browser was refused: a machine credential already works", call.squad, call.member);
+                return Some(text);
+            }
+        }
+        if signing_in {
+            let map = crate::native_sign_in::mapping(&crate::native_sign_in::read_extra(&self.config.home));
+            if let Some(app) = crate::native_sign_in::app_for(&site, &map) {
+                let dirs = crate::native_sign_in::app_dirs(self.person_home().as_deref(), self.config.person_home.is_none());
+                if crate::native_sign_in::installed(&app, &dirs) && self.desktop_allowed(call).is_ok() {
+                    crate::daemon_log!("equipe: {}: {}'s sign-in to {site} in the browser was refused: the {app} app does it", call.squad, call.member);
+                    return Some(crate::native_sign_in::refusal(&site, &app));
+                }
+            }
+        }
+        None
+    }
+
     /// A call that would put the person in front of a per-deploy preview: why not.
     pub(super) fn per_deploy_refusal(&self, call: &ToolCall) -> Option<String> {
         let texts = crate::preview_hosts::texts_of(&call.name, &call.arguments);
