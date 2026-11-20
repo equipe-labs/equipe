@@ -527,8 +527,28 @@ pub fn briefing(inv: &Inventory) -> Option<String> {
     Some(format!(
         "Credentials already on this machine (names only, checked by equipe): {line}. Use a non-interactive one first — \
 `AWS_PROFILE=<name>` for AWS, a read one for read-only checks — and don't ask the person to sign in while one works: \
-`cli_sign_in` refuses then."
+`cli_sign_in` and AWS's console sign-in in the browser refuse then."
     ))
+}
+
+/// Whether `host` is an AWS console sign-in address: the sign-in pages
+/// (`signin.aws.amazon.com`, `<region>.signin.aws.amazon.com`), the console they
+/// lead to, and an IAM Identity Center portal (`<name>.awsapps.com`).
+pub fn aws_sign_in_host(host: &str) -> bool {
+    let host = crate::vault::site_of(host);
+    let under = |root: &str| host == root || host.ends_with(&format!(".{root}"));
+    under("signin.aws.amazon.com") || under("console.aws.amazon.com") || under("awsapps.com") || under("signin.amazonaws.cn") || under("console.amazonaws.cn")
+}
+
+/// Whether a sign-in to AWS in the browser (the console, a portal) may go to the
+/// person: refused while a profile that works without them exists, naming it,
+/// unless `why_not_machine` names the permission those lack. `tool` is the tool
+/// the refusal tells the member to call again.
+pub fn browser_guard(inv: &Inventory, why_not_machine: Option<&str>, tool: &str) -> Result<(), String> {
+    guard(Kind::Aws, inv, why_not_machine).map_err(|text| {
+        text.replace("`cli_sign_in`", &format!("`{tool}`"))
+            .replace("No card was shown.", "The person was not asked, and nothing was handed over: the console sign-in in the browser is the last resort, not the first.")
+    })
 }
 
 /// Whether `cli_sign_in` may put a card up for `kind`: refused while a

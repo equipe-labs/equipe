@@ -356,6 +356,30 @@ pub fn serves(kept: &str, asked: &str) -> bool {
     !kept.is_empty() && (kept == asked || asked.ends_with(&format!(".{kept}")) || kept.ends_with(&format!(".{asked}")))
 }
 
+/// Hosts under which every label is somebody else's site (a public suffix
+/// that a registrable-domain guess can't see): `alice.github.io` and
+/// `bob.github.io` are not one site.
+const SHARED_SUFFIXES: [&str; 14] = [
+    "github.io", "vercel.app", "netlify.app", "pages.dev", "workers.dev", "herokuapp.com", "appspot.com", "web.app", "firebaseapp.com", "azurewebsites.net",
+    "cloudfront.net", "amazonaws.com", "onrender.com", "fly.dev",
+];
+
+/// Whether two hosts are one organisation's: [`serves`], or sibling hosts of
+/// one registrable domain — a sign-in page and the site it lands on
+/// (`accounts.google.com` → `mail.google.com`, `signin.aws.amazon.com` →
+/// `console.aws.amazon.com`). Never across a shared hosting suffix.
+pub fn same_org(a: &str, b: &str) -> bool {
+    if serves(a, b) {
+        return true;
+    }
+    let (a, b) = (site_of(a), site_of(b));
+    if a.is_empty() || b.is_empty() || SHARED_SUFFIXES.iter().any(|s| a == *s || a.ends_with(&format!(".{s}")) || b == *s || b.ends_with(&format!(".{s}"))) {
+        return false;
+    }
+    let (ra, rb) = (crate::autopilot::codes::registrable(&a), crate::autopilot::codes::registrable(&b));
+    ra.contains('.') && ra == rb
+}
+
 /// Where a login may be used without asking, as kept: a squad's name, or
 /// [`EVERY_SQUAD`]. An entry from before squad-wide approvals,
 /// `squad/member`, is its squad.
@@ -1112,6 +1136,14 @@ pub fn fill_answer(text: &str) -> Option<Filled> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn hosts_of_one_organisation_are_told_from_those_of_another() {
+        assert!(same_org("accounts.google.com", "mail.google.com") && same_org("signin.aws.amazon.com", "console.aws.amazon.com"));
+        assert!(same_org("github.com", "https://www.github.com/x") && same_org("example.co.uk", "login.example.co.uk") && same_org("a.example.co.uk", "b.example.co.uk"));
+        assert!(!same_org("google.com", "evil.com") && !same_org("example.co.uk", "other.co.uk") && !same_org("", "google.com") && !same_org("com", "net"));
+        assert!(!same_org("alice.github.io", "bob.github.io") && !same_org("a.vercel.app", "b.vercel.app") && !same_org("x.amazonaws.com", "y.amazonaws.com"));
+    }
+
 
     fn home() -> PathBuf {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
