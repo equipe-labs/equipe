@@ -341,9 +341,18 @@ pub(crate) fn problem_words(why: &str, problem: Option<&ProviderProblem>, provid
 /// A preset's name as a screen shows it.
 fn preset_name(preset: &str) -> String {
     match equipe_core::model_providers::preset(preset) {
-        Some(p) if p.id == equipe_core::model_providers::OTHER => t!("engines.provider_other").to_owned(),
-        Some(p) => p.name.to_owned(),
+        Some(p) => shown_name(p),
         None => preset.to_owned(),
+    }
+}
+
+/// A preset's name in this screen's language: its own, the same everywhere,
+/// except the two that are any server the person names.
+pub(crate) fn shown_name(preset: &equipe_core::model_providers::Preset) -> String {
+    match preset.id {
+        equipe_core::model_providers::OTHER => t!("engines.provider_other").to_owned(),
+        equipe_core::model_providers::ANTHROPIC_OTHER => t!("engines.provider_other_anthropic").to_owned(),
+        _ => preset.name.to_owned(),
     }
 }
 
@@ -370,7 +379,7 @@ fn providers(shell: &Shell, cx: &mut Context<Shell>) -> Section {
     }
 
     // Their agent: the Codex CLI, free and with no sign-in.
-    if list.as_ref().is_some_and(|l| !l.is_empty()) && !shell.engines.providers_codex {
+    if list.as_ref().is_some_and(|l| l.iter().any(|p| p.engine != Some(Engine::Claude))) && !shell.engines.providers_codex {
         let control: AnyElement = match shell.engines.installing(Engine::Codex) {
             Some(engines::Install::Running) => h_flex().gap_2().items_center().child(crate::motion::spinner(14., p.text2)).child(value(p, t!("engines.installing"))).into_any_element(),
             _ => ui::button(p, "providers-codex-install-button", Kind::Secondary, t!("engines.install"))
@@ -459,8 +468,9 @@ fn provider_form(shell: &Shell, preset: &'static str, words: &str, connected: bo
     let p = shell.palette;
     let ui = &shell.settings;
     let Some(info) = equipe_core::model_providers::preset(preset) else { return Line::new("", "") };
-    let other = info.id == equipe_core::model_providers::OTHER;
-    let name = if other { t!("engines.provider_other").to_owned() } else { info.name.to_owned() };
+    // Any server: its address is asked for.
+    let other = info.base_url.is_empty();
+    let name = shown_name(info);
     let field = |input: &Entity<gpui_kit::component::input::InputState>| {
         div()
             .flex_1()
@@ -726,7 +736,7 @@ impl Shell {
         self.settings.adding = Some(preset);
         self.settings.provider_problem = None;
         self.engines.add_failed = None;
-        let name = if info.id == equipe_core::model_providers::OTHER { t!("engines.provider_other").to_owned() } else { info.name.to_owned() };
+        let name = shown_name(info);
         let placeholder = if info.needs_key { t!("engines.provider_key_placeholder", provider = name) } else { t!("engines.provider_key_optional").to_owned() };
         self.settings.nebius_key.update(cx, |i, cx| {
             i.set_value(String::new(), window, cx);
@@ -743,9 +753,9 @@ impl Shell {
         let key = self.settings.nebius_key.read(cx).value().trim().to_owned();
         let url = self.settings.provider_url.read(cx).value().trim().to_owned();
         // Its own address unless it is another server, or a local one somewhere else.
-        let base_url = (info.id == equipe_core::model_providers::OTHER || (info.local && url != info.base_url)).then_some(url).filter(|u| !u.is_empty());
+        let base_url = (info.base_url.is_empty() || (info.local && url != info.base_url)).then_some(url).filter(|u| !u.is_empty());
         let key = (!key.is_empty()).then_some(key);
-        let name = if info.id == equipe_core::model_providers::OTHER { base_url.clone().unwrap_or_default() } else { info.name.to_owned() };
+        let name = if info.base_url.is_empty() { base_url.clone().unwrap_or_default() } else { info.name.to_owned() };
         if let Err(err) = equipe_core::model_providers::check(preset, base_url.as_deref(), key.as_deref()) {
             self.settings.provider_problem = Some(err.why(crate::i18n::lang(), &name));
             return cx.notify();

@@ -3564,6 +3564,7 @@
   "engines.provider_add_desc": "OpenRouter, Groq, Mistral, 이 컴퓨터의 Ollama… OpenAI 호환 API라면 무엇이든",
   "engines.provider_add_failed": "제공자를 추가하지 못했어요",
   "engines.provider_other": "기타 (OpenAI 호환)",
+  "engines.provider_other_anthropic": "기타 (Anthropic 호환)",
   "engines.provider_local": "이 컴퓨터에서",
   "engines.provider_url_label": "API 주소",
   "engines.provider_url_placeholder": "https://example.com/v1",

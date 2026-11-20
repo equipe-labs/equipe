@@ -4337,6 +4337,47 @@ async fn a_role_set_to_a_providers_model_starts_its_new_members_on_it_on_codexs_
 }
 
 #[tokio::test]
+async fn a_role_set_to_an_anthropic_compatible_providers_model_starts_its_new_members_on_claude_code_on_it() {
+    let cwd = scratch("role-anthropic");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    // A server on this machine speaking Anthropic's API.
+    let id = equipe_core::model_providers::add(&home, "anthropic-other", Some("http://127.0.0.1:9"), None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "glm-4.6");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    // Set where the screen shows the role on Codex: the member runs on Claude Code all the same.
+    handle.send(Command::SetRoleModel { squad: "acme".into(), default: RoleModel { role: "qa".into(), engine: Engine::Codex, model: Some(model.clone()), effort: None } });
+    until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.len() == 1)).await;
+    let started = |id: u64| move |e: &Event| matches!(e, Event::SessionStarted { session, .. } | Event::Error { session: Some(session), .. } if *session == id);
+    handle.send(Command::Start { session: 1, spec: member(&cwd, "qa") });
+    let seen = until(&mut events, started(1)).await;
+    let Some(Event::SessionStarted { engine: Engine::Claude, model: Some(on), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(on, &model);
+}
+
+#[tokio::test]
+async fn a_codex_member_set_to_an_anthropic_compatible_providers_model_moves_to_claude_code_on_it() {
+    let cwd = scratch("move-anthropic");
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&cwd]);
+    let id = equipe_core::model_providers::add(&home, "anthropic-other", Some("http://127.0.0.1:9"), None).unwrap();
+    let model = equipe_core::model_providers::model_ref(&id, "glm-4.6");
+    let codex = Path::new(env!("CARGO_MANIFEST_DIR")).join("../providers/tests/fake-codex/codex");
+    let (handle, mut events) = runtime::start(Config { codex_binary: codex.to_string_lossy().into_owned(), ..with_tools(&claude, &home) });
+    let mut spec = member(&cwd, "frontend");
+    spec.engine = Some(Engine::Codex);
+    handle.send(Command::Start { session: 1, spec });
+    until(&mut events, |e| matches!(e, Event::SessionStarted { session: 1, .. } | Event::Error { .. })).await;
+    handle.send(Command::SetModel { session: 1, model: model.clone() });
+    let seen = until(&mut events, |e| matches!(e, Event::SessionStarted { engine: Engine::Claude, .. } | Event::Error { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::Notice { session: 1, text, .. } if text.contains("glm-4.6") && text.contains("Claude Code") && text.contains("next ticket"))), "{seen:#?}");
+    assert!(seen.iter().any(|e| matches!(e, Event::EngineProposed { proposal, .. } if proposal.moves.iter().any(|m| m.member == "frontend" && m.to == Engine::Claude && m.model.as_deref() == Some(model.as_str())))), "{seen:#?}");
+    let Some(Event::SessionStarted { engine: Engine::Claude, model: Some(on), .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert_eq!(on, &model);
+}
+
+#[tokio::test]
 async fn a_claude_member_set_to_a_providers_model_moves_to_codexs_agent_on_it_at_its_next_ticket() {
     let cwd = scratch("move-provider");
     let (claude, _) = recording_claude(&answering("ok"));

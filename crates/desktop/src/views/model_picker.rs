@@ -210,7 +210,7 @@ impl Shell {
                 self.send_command(Command::SetModel { session, model: model.clone() });
                 let wanted = crate::models::label(&model, self.model.listed(engine));
                 // A provider's model from Claude Code: it moves at its next ticket.
-                let provider = equipe_core::model_providers::split_ref(&model).filter(|_| engine != Some(Engine::Codex)).map(|(id, _)| self.engines.provider(id).map_or_else(|| id.to_owned(), |p| p.name.clone()));
+                let provider = equipe_core::model_providers::split_ref(&model).filter(|_| equipe_core::model_providers::engine_of_ref(&model).is_some_and(|to| engine != Some(to))).map(|(id, _)| self.engines.provider(id).map_or_else(|| id.to_owned(), |p| p.name.clone()));
                 self.composer.flash = Some(match provider {
                     Some(provider) => t!("compose.provider_moving", name = name, wanted = wanted, provider = provider),
                     None => t!("compose.model_set", name = name, wanted = wanted),

@@ -946,19 +946,21 @@ impl Runtime {
         self.apply_engine_moves(squad).await;
     }
 
-    /// The person sets member `name` (on Claude Code) to a provider's
-    /// `model`: it moves to Codex's agent on it at its next boundary, as the
+    /// The person sets member `name` to a provider's `model` on the other
+    /// engine: it moves to the engine its API belongs to (Codex's agent, or
+    /// Claude Code for an Anthropic-compatible one) on it at its next boundary, as the
     /// person's own move does, told on a card that offers to undo it.
     pub(super) async fn move_to_model(&mut self, squad: &str, name: String, session: SessionId, model: String) {
         let Some(mate) = self.mates(squad).into_iter().find(|m| m.name == name) else { return };
-        let mv = Move { member: mate.name, role: mate.role, from: mate.engine, to: Engine::Codex, model: Some(model.clone()), effort: None, was_model: mate.model, done: false, now: false };
+        let to = crate::model_providers::engine_of_ref(&model).unwrap_or(Engine::Codex);
+        let mv = Move { member: mate.name, role: mate.role, from: mate.engine, to, model: Some(model.clone()), effort: None, was_model: mate.model, done: false, now: false };
         let proposal = Proposal { id: equipe_protocol::new_session_id(), why: Why::Person, engine: None, window: None, used_percent: 0, resets_at: 0, moves: vec![mv], applied: true, proposed_at: now_secs(), forecast: None };
         self.log_engines(squad, format!("the person set {name} to {model}"));
         self.engines_of(squad).proposals.push(proposal.clone());
         self.schedule(squad, &proposal);
         self.publish(Event::EngineProposed { squad: squad.to_owned(), proposal });
         let (shown, provider) = self.on_provider(&model).unwrap_or_default();
-        let text = say!(self, "notice.provider_move", model = shown, provider = provider);
+        let text = if to == Engine::Claude { say!(self, "notice.provider_move_claude", model = shown, provider = provider) } else { say!(self, "notice.provider_move", model = shown, provider = provider) };
         self.publish(Event::Notice { undo: None, session, text });
         self.apply_engine_moves(squad).await;
     }

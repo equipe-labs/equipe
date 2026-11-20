@@ -317,6 +317,21 @@ pub async fn models(cfg: &Config) -> Result<Vec<String>, ReviewError> {
     Ok(data.iter().filter_map(|m| m.get("id").and_then(Value::as_str)).map(str::to_owned).collect())
 }
 
+/// The ids of the models an Anthropic-compatible account offers
+/// (`GET <root>/v1/models`, as many as it gives at once): the key as
+/// `x-api-key`, and as a bearer too for a gateway (`bearer`).
+pub(crate) async fn anthropic_models(cfg: &Config, bearer: bool) -> Result<Vec<String>, ReviewError> {
+    let client = cfg.client()?;
+    let (body, _) = send(cfg, || {
+        let request = client.get(cfg.url("v1/models")).query(&[("limit", "1000")]).header("x-api-key", &cfg.key).header("anthropic-version", "2023-06-01");
+        if bearer { request.bearer_auth(&cfg.key) } else { request }
+    })
+    .await?;
+    let value: Value = serde_json::from_slice(&body).map_err(|_| ReviewError::BadOutput)?;
+    let data = value.get("data").and_then(Value::as_array).ok_or(ReviewError::BadOutput)?;
+    Ok(data.iter().filter_map(|m| m.get("id").and_then(Value::as_str)).map(str::to_owned).collect())
+}
+
 /// The NVIDIA Nemotron chat models among `ids`, best first: `nvidia/…`
 /// with `nemotron` in the name, not one for embeddings, rewards or safety;
 /// Super, then Ultra, then Nano, then the rest — newest-sounding first in each.
@@ -723,6 +738,11 @@ const EFFORTS: [&str; 6] = ["none", "minimal", "low", "medium", "high", "xhigh"]
 /// them). OpenAI's and Anthropic's ids have neither.
 pub fn is_agent_model(model: &str) -> bool {
     let model = model.trim();
+    // A provider's model by the engine its API belongs to: an Anthropic-compatible
+    // one runs on Claude Code, not on Codex's agent.
+    if let Some(engine) = crate::model_providers::engine_of_ref(model) {
+        return engine == equipe_protocol::Engine::Codex;
+    }
     !model.is_empty() && (model.contains('/') || model.contains(':'))
 }
 

@@ -314,14 +314,18 @@ pub enum ModelFit {
 /// models, which run on its agent.
 pub fn model_fit(engine: Engine, model: &str, codex: Option<&[String]>) -> ModelFit {
     let model = model.trim();
-    let provider = crate::model_providers::split_ref(model).is_some();
-    let claude = !provider && crate::models::family(model).is_some();
+    // A provider's model fits the engine its API belongs to.
+    let provider_engine = crate::model_providers::engine_of_ref(model);
+    let provider = provider_engine == Some(Engine::Codex);
+    let claude_provider = provider_engine == Some(Engine::Claude);
+    let claude = provider_engine.is_none() && crate::models::family(model).is_some();
     let listed = codex.is_some_and(|list| list.iter().any(|m| m == model));
     let lower = model.to_ascii_lowercase();
     // What Codex's ids look like, for when its list can't say.
     let codex_like = listed || provider || lower.starts_with("gpt-") || lower.contains("codex") || (lower.starts_with('o') && lower[1..].starts_with(|c: char| c.is_ascii_digit()));
     match engine {
-        Engine::Claude if claude => ModelFit::Fits,
+        Engine::Claude if claude || claude_provider => ModelFit::Fits,
+        Engine::Codex if claude_provider => ModelFit::Other(Engine::Claude),
         Engine::Claude if codex_like => ModelFit::Other(Engine::Codex),
         Engine::Codex if listed || provider => ModelFit::Fits,
         Engine::Codex if claude => ModelFit::Other(Engine::Claude),
