@@ -257,7 +257,25 @@ end the turn with a short line. To keep both, save yours under another name inst
     /// `secret_list`: facts only.
     pub(super) fn secret_list(&mut self, squad: &str) -> Result<String, String> {
         let all = self.journal(squad).map(ks::read).unwrap_or_default();
-        Ok(ks::list_text(&all))
+        let mut text = ks::list_text(&all);
+        // Keys the person typed into cards (`ask_secret`) and cards still open: also what the squad holds.
+        let kept: std::collections::BTreeSet<String> = all.iter().map(|s| crate::secrets::env_name(&s.name)).collect();
+        let others: Vec<String> = self
+            .held_secrets(squad)
+            .into_iter()
+            .filter(|h| !kept.contains(&h.key))
+            .map(|h| {
+                let about = [h.label.as_str(), h.why.as_str()].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" — ");
+                let about = if about.is_empty() { String::new() } else { format!(" — {about}") };
+                let state = if h.open { "asked, waiting for the person" } else { "saved from a card" };
+                format!("- ${} · {state}{about}", h.key)
+            })
+            .collect();
+        if !others.is_empty() {
+            let heading = "Environment keys of this squad (your commands get them as `$NAME`; never ask the person for one of these again):";
+            text = if all.is_empty() { format!("{heading}\n{}", others.join("\n")) } else { format!("{text}\n{heading}\n{}", others.join("\n")) };
+        }
+        Ok(text)
     }
 
     /// May `member` use `name` on `project`: the key, or the card put to the
