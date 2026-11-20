@@ -1,0 +1,13 @@
+[Unit]
+Description=equipe desktop: Xfce on a VNC display reachable only from this machine
+Documentation=file:///usr/local/share/doc/equipe-ops/README.md
+
+[Service]
+Type=simple
+ExecStartPre=/usr/local/bin/equipe-ops desktop-init
+ExecStart=/usr/local/lib/equipe-ops/desktop-session
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

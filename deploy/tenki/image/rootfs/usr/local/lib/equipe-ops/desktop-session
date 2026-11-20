@@ -1,0 +1,43 @@
+#!/bin/sh
+# The desktop the members (and the person, through equipe's Screen panel) use:
+# TigerVNC's Xvnc on display :1, listening on 127.0.0.1 only and asking for the
+# machine's own VNC password, with an Xfce session on it. Run by the
+# equipe-desktop user service; `equipe-ops desktop-init` has made the password.
+#
+# Nothing listens on a public interface: a person reaches this screen through
+# SSH only (equipe's Screen panel runs `equipe screen --stdio` over the same
+# SSH connection the app already uses).
+set -eu
+
+DISPLAY_NUM=${EQUIPE_DESKTOP_DISPLAY:-1}
+GEOMETRY=${EQUIPE_DESKTOP_GEOMETRY:-1440x900}
+PORT=$((5900 + DISPLAY_NUM))
+export DISPLAY=":$DISPLAY_NUM" XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=XFCE
+# GTK apps expose their accessibility trees; Chrome is started with
+# --force-renderer-accessibility by equipe when it drives it.
+export GTK_MODULES=gail:atk-bridge NO_AT_BRIDGE=0
+
+Xvnc "$DISPLAY" -geometry "$GEOMETRY" -depth 24 \
+  -localhost=1 -interface 127.0.0.1 -rfbport "$PORT" \
+  -SecurityTypes VncAuth -PasswordFile "$HOME/.vnc/passwd" -AlwaysShared \
+  -desktop "equipe" &
+xvnc=$!
+trap 'kill "$xvnc" 2>/dev/null || true' EXIT INT TERM
+
+i=0
+until xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; do
+  i=$((i + 1))
+  [ "$i" -le 50 ] || { echo "Xvnc did not come up on $DISPLAY" >&2; exit 1; }
+  kill -0 "$xvnc" 2>/dev/null || { echo "Xvnc exited" >&2; exit 1; }
+  sleep 0.2
+done
+
+# Services started later (the equipe daemon, its desktop helper) find the
+# session through the user manager's environment.
+systemctl --user import-environment DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP GTK_MODULES
+dbus-update-activation-environment --systemd DISPLAY XDG_SESSION_TYPE XDG_CURRENT_DESKTOP GTK_MODULES 2>/dev/null || true
+# Ask toolkits to expose their trees (AT-SPI's own switch).
+gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus \
+  --method org.freedesktop.DBus.Properties.Set org.a11y.Status IsEnabled '<true>' >/dev/null 2>&1 || true
+
+startxfce4
