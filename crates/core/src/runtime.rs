@@ -43,6 +43,7 @@ use crate::desktop;
 use crate::eta;
 use crate::guard;
 use crate::journal::{self, Journal, Requeued, SessionRecord, TicketWork};
+use crate::next_wake;
 use crate::permissions;
 use crate::roles::{self, Teammate};
 use crate::routines;
@@ -11568,7 +11569,10 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
         let put_away = self.journals.get(squad).and_then(|j| j.put_away(PUT_AWAY_SHOWN).ok()).unwrap_or_default();
         // Which closed session each open member carries on from: its moves on record.
         let hand_overs = self.hand_overs(squad);
+        watchdog::mark("snapshot: next wake");
+        let next_wake_at = self.next_wake_at(now_secs());
         Snapshot {
+            next_wake_at,
             signals,
             deploys,
             reviews,
@@ -11620,6 +11624,28 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             words_all: self.journals.get(squad).is_some_and(Journal::words_all),
             auto_put_away_off: self.journals.get(squad).is_some_and(|j| !j.auto_put_away()),
         }
+    }
+
+    /// When this machine next needs the daemon running ([`crate::next_wake`]),
+    /// across every squad on it: the machine wakes for all of them.
+    fn next_wake_at(&mut self, now: u64) -> Option<u64> {
+        let mut dues = self.parked_dues();
+        let squads: Vec<String> = self.journals.keys().cloned().collect();
+        for squad in squads {
+            dues.extend(next_wake::routines(&self.routines(&squad)));
+            let autonomy = self.autonomy_store(&squad);
+            dues.extend(next_wake::autonomy(&autonomy));
+            let on = self.sprint_on(&squad).is_ok();
+            dues.extend(next_wake::sprint(&self.sprint_store(&squad), on, next_wake::sprint_level(&autonomy)));
+            if self.pm_of(&squad).is_some()
+                && let Some((hours, active_at, woken_at)) = self.journal(&squad).map(|j| (j.idle_wake_hours(), j.active_at(), j.idle_woken_at()))
+            {
+                let tickets = self.tickets(&squad);
+                let idle = next_wake::idle(hours, crate::heartbeat::open_tickets(&tickets), crate::heartbeat::last_activity(&tickets, active_at), woken_at);
+                dues.extend(idle);
+            }
+        }
+        next_wake::wake_at(dues, now)
     }
 
     /// Bring back every squad's members, and the tickets they were on.
