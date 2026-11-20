@@ -2064,6 +2064,7 @@ impl App {
                 | Event::SquadDeleted { .. }
                 | Event::SquadNotDeleted { .. }
                 | Event::RoutinesChanged { .. }
+                | Event::SprintChanged { .. }
                 | Event::RoutineProposed { .. }
                 | Event::RoutineProposalClosed { .. }
                 | Event::IdleWakeChanged { .. }

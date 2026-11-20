@@ -44,6 +44,9 @@ pub enum Kind {
     /// Running a project's declared production deploy once its work landed
     /// on main (`.equipe/deploy.json`).
     Deploy,
+    /// Starting the small, low-risk items of a proposed sprint without the
+    /// person's tap (docs/SPRINTS.md): never marketing, never over budget.
+    Sprint,
     /// Signing in, accounts and credentials: keys, tokens, passwords, sign-ups.
     SignIn,
     /// Money: payments, plans, billing, budgets.
@@ -62,7 +65,7 @@ pub enum Kind {
 
 impl Kind {
     /// The kinds the person sets a level for.
-    pub const SET: [Kind; 5] = [Kind::Design, Kind::Merge, Kind::Internal, Kind::ProductionData, Kind::Deploy];
+    pub const SET: [Kind; 6] = [Kind::Design, Kind::Merge, Kind::Internal, Kind::ProductionData, Kind::Deploy, Kind::Sprint];
     /// The kinds that always ask, in every squad, whatever its policy.
     pub const FLOOR: [Kind; 6] = [Kind::SignIn, Kind::Money, Kind::Deletion, Kind::Outside, Kind::Security, Kind::Legal];
 
@@ -85,6 +88,7 @@ impl Kind {
             Kind::Internal => "internal",
             Kind::ProductionData => "production_data",
             Kind::Deploy => "deploy",
+            Kind::Sprint => "sprint",
             Kind::SignIn => "sign_in",
             Kind::Money => "money",
             Kind::Deletion => "deletion",
@@ -109,6 +113,7 @@ impl Kind {
             "internal" | "process" => Kind::Internal,
             "production_data" | "production" | "prod" | "data" | "live_data" => Kind::ProductionData,
             "deploy" | "deploys" | "go_live" | "production_deploy" => Kind::Deploy,
+            "sprint" | "sprints" | "sprint_items" => Kind::Sprint,
             "sign_in" | "signin" | "login" | "credentials" | "account" | "accounts" => Kind::SignIn,
             "money" | "payment" | "payments" | "billing" => Kind::Money,
             "deletion" | "delete" | "permanent_deletion" => Kind::Deletion,
@@ -223,6 +228,10 @@ pub struct Policy {
     /// unless the person keeps deploys for themselves.
     #[serde(default = "just_do")]
     pub deploy: Level,
+    /// A proposed sprint's small, low-risk items: asked unless the person
+    /// lets them start on their own.
+    #[serde(default)]
+    pub sprint: Level,
     /// Minutes a decide-and-tell choice waits for the person before the
     /// member takes its recommendation; a low-impact one doesn't wait.
     #[serde(default = "window")]
@@ -231,7 +240,7 @@ pub struct Policy {
 
 impl Default for Policy {
     fn default() -> Self {
-        Self { design: Level::Tell, merge: Level::JustDo, internal: Level::JustDo, production_data: Level::Ask, deploy: Level::JustDo, window_minutes: WINDOW_MINUTES }
+        Self { design: Level::Tell, merge: Level::JustDo, internal: Level::JustDo, production_data: Level::Ask, deploy: Level::JustDo, sprint: Level::Ask, window_minutes: WINDOW_MINUTES }
     }
 }
 
@@ -259,6 +268,7 @@ impl Policy {
             Kind::Internal => self.internal,
             Kind::ProductionData => self.production_data,
             Kind::Deploy => self.deploy,
+            Kind::Sprint => self.sprint,
             _ => Level::Ask,
         }
     }
@@ -272,6 +282,7 @@ impl Policy {
             Kind::Internal => &mut self.internal,
             Kind::ProductionData => &mut self.production_data,
             Kind::Deploy => &mut self.deploy,
+            Kind::Sprint => &mut self.sprint,
             _ if level == Level::Ask => return Ok(()),
             _ => return Err(Refused::Floor(kind)),
         };
@@ -673,7 +684,7 @@ mod tests {
     fn the_state_travels_as_json_and_an_empty_one_is_the_defaults() {
         let state = State::default();
         let json = serde_json::to_value(&state).unwrap();
-        assert_eq!(json, serde_json::json!({ "policy": { "design": "decide_and_tell", "merge": "just_do", "internal": "just_do", "production_data": "ask", "deploy": "just_do", "window_minutes": 30 } }));
+        assert_eq!(json, serde_json::json!({ "policy": { "design": "decide_and_tell", "merge": "just_do", "internal": "just_do", "production_data": "ask", "deploy": "just_do", "sprint": "ask", "window_minutes": 30 } }));
         assert_eq!(serde_json::from_value::<State>(json).unwrap(), state);
     }
 }
