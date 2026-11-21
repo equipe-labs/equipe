@@ -450,24 +450,17 @@ commit it, print it or copy it elsewhere; to hand it to a service, run the CLI y
             Command::DeleteSquadSecret { squad, name } => {
                 let mcp = self.is_mcp_key(&squad, &name);
                 let _ = crate::mcp_keys::delete(&self.config.home, &squad, &name);
-                let gone = match self.vault.lock() {
-                    Ok(mut vault) => vault.delete_squad_secret(&squad, &name),
-                    Err(_) => Err("the secret store is unreadable".to_owned()),
-                };
-                // An outside MCP server's key lives in equipe's own file: gone from there is gone.
-                let gone = if mcp { Ok(()) } else { gone };
-                match gone {
-                    Ok(()) => {
-                        ks::unwatch(&ks::watch_key(&squad, &name));
-                        for bound in self.secret_env.values_mut() {
-                            bound.retain(|(_, n)| *n != name);
-                        }
-                        if let Some(journal) = self.journal(&squad) {
-                            let _ = ks::remove(journal, &name);
-                        }
-                    }
-                    Err(why) => self.error(None, why, None),
-                }
+                // The secret store may ask the person first: off the loop.
+                let (vault, internal) = (self.vault.clone(), self.internal.clone());
+                tokio::task::spawn_blocking(move || {
+                    let gone = match vault.lock() {
+                        Ok(mut vault) => vault.delete_squad_secret(&squad, &name),
+                        Err(_) => Err("the secret store is unreadable".to_owned()),
+                    };
+                    // An outside MCP server's key lives in equipe's own file: gone from there is gone.
+                    let gone = if mcp { Ok(()) } else { gone };
+                    let _ = internal.send(Internal::SquadSecretDeleted { squad, name, gone });
+                });
             }
             Command::RevealSquadSecret { squad, name, ask } => {
                 // Never to a phone: the value is shown on the machine the person sits at.
@@ -475,14 +468,36 @@ commit it, print it or copy it elsewhere; to hand it to a service, run the CLI y
                     return;
                 }
                 let found = self.journal(&squad).map(ks::read).unwrap_or_default().iter().any(|s| s.name == name);
-                let value = if found { self.vault.lock().map_err(|_| "the secret store is unreadable".to_owned()).and_then(|v| v.squad_secret(&squad, &name, true)) } else { Err("no such key".to_owned()) };
-                match value {
-                    Ok(value) => self.publish(Event::SquadSecretRevealed { squad, name, ask, value: SecretValue(value) }),
-                    Err(why) => self.error(None, why, None),
-                }
+                // The secret store may ask the person first: off the loop.
+                let (vault, internal) = (self.vault.clone(), self.internal.clone());
+                tokio::task::spawn_blocking(move || {
+                    let value = if found { vault.lock().map_err(|_| "the secret store is unreadable".to_owned()).and_then(|v| v.squad_secret(&squad, &name, true)) } else { Err("no such key".to_owned()) };
+                    let event = match value {
+                        Ok(value) => Event::SquadSecretRevealed { squad, name, ask, value: SecretValue(value) },
+                        Err(why) => Event::Error { session: None, message: why, next: None },
+                    };
+                    let _ = internal.send(Internal::Event(Box::new(event)));
+                });
                 return;
             }
             _ => return,
+        }
+        self.publish_squad_secrets();
+    }
+
+    /// A kept key's removal came back from the secret store.
+    pub(super) fn squad_secret_deleted(&mut self, squad: String, name: String, gone: Result<(), String>) {
+        match gone {
+            Ok(()) => {
+                ks::unwatch(&ks::watch_key(&squad, &name));
+                for bound in self.secret_env.values_mut() {
+                    bound.retain(|(_, n)| *n != name);
+                }
+                if let Some(journal) = self.journal(&squad) {
+                    let _ = ks::remove(journal, &name);
+                }
+            }
+            Err(why) => self.error(None, why, None),
         }
         self.publish_squad_secrets();
     }

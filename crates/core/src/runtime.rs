@@ -800,6 +800,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         telemetry,
         screens: screens.clone(),
         remote_told: HashMap::new(),
+        vault_seen: std::sync::Mutex::new((vault.settings.clone(), vault.cli.clone())),
         vault: std::sync::Arc::new(std::sync::Mutex::new(vault)),
         logins,
         never_offer,
@@ -1276,6 +1277,8 @@ type MergeResult = Result<(String, Option<Result<(), String>>), String>;
 
 enum Internal {
     Event(Box<Event>),
+    /// A kept key's removal from the secret store, done off the loop.
+    SquadSecretDeleted { squad: String, name: String, gone: Result<(), String> },
     /// A member's desk turn's changes to the squad's folder, saved off the loop.
     DeskSaved { session: SessionId, name: String, saved: Result<Option<squad_home::Change>, String> },
     /// A turn's engine started, as this process.
@@ -1790,6 +1793,9 @@ struct Runtime {
     /// The logins kept (`vault`): touched off the loop only — the Keychain
     /// may ask the person before it answers.
     vault: std::sync::Arc<std::sync::Mutex<vault::Vault>>,
+    /// The vault's settings and command-line credentials as the loop last
+    /// saw them, for when something else holds the vault ([`Runtime::vault_view`]).
+    vault_seen: std::sync::Mutex<(crate::autopilot::Settings, Vec<crate::protocol::vault::CliLogin>)>,
     /// What the screens are told of them, as last kept.
     logins: Vec<crate::protocol::vault::Login>,
     /// Sites the person said never to offer keeping a login for, as last kept.
@@ -1942,6 +1948,7 @@ impl Wake {
             Wake::Request(Some(Request::TurnEndsDue(..))) => Borrowed("paused runs' time"),
             Wake::Request(Some(Request::Shutdown(_))) | Wake::Request(None) => Borrowed("shutdown"),
             Wake::Request(Some(Request::DesktopAuto)) => Borrowed("desktop setup"),
+            Wake::Internal(Internal::SquadSecretDeleted { .. }) => Borrowed("a key removed"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
             Wake::Internal(Internal::TurnSettled { .. }) => Borrowed("a settled turn ended"),
@@ -2221,6 +2228,7 @@ impl Runtime {
                 }
             },
             Wake::Internal(message) => match message {
+                Internal::SquadSecretDeleted { squad, name, gone } => self.squad_secret_deleted(squad, name, gone),
                 Internal::Event(event) => {
                     // The engine said something: it isn't silent, whatever it runs.
                     if let Some(id) = event.session() {

@@ -262,3 +262,44 @@ async fn a_step_of_the_core_that_never_ends_is_what_status_says() {
     assert_eq!(stall.doing, "command start");
     assert!(stall.since > 0 && stall.secs < 10, "{stall:?}");
 }
+
+/// Messages' `chat.db` is a file macOS guards: opening it can wait in
+/// `open()` on a consent prompt for as long as the person takes. Here it is a
+/// named pipe, whose `open()` waits until someone writes. The core must not be
+/// the one that waits: `Command::Autopilot` is sent by a screen as it connects.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_open_of_messages_that_waits_for_consent_holds_no_screen_up() {
+    fake_git();
+    let home = scratch("home");
+    let messages = home.join("person/Library/Messages");
+    std::fs::create_dir_all(&messages).unwrap();
+    let chat_db = messages.join("chat.db");
+    assert!(Process::new("mkfifo").arg(&chat_db).status().unwrap().success());
+    let socket = daemon(&home, &fake_claude("true")).await;
+    let (mut screen, _) = tokio::time::timeout(Duration::from_secs(5), Client::connect(&socket, "test", "acme")).await.unwrap().unwrap();
+
+    screen.send(Command::Autopilot);
+    // The card comes at once, access not known yet…
+    let mut first = None;
+    let wait = async {
+        while let Some(event) = screen.next_event().await {
+            if let Event::Autopilot { status } = event {
+                first = Some(status.sms_access);
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(3), wait).await.expect("the card came while the open waits");
+    assert_eq!(first, Some(None));
+    // …and the core keeps answering while the open still waits.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let busy = busy_within(&socket, Duration::from_secs(2)).await;
+    assert_eq!(busy.stalled, None, "{busy:?}");
+    let hello = tokio::time::timeout(Duration::from_secs(2), Client::connect(&socket, "test", "acme")).await;
+    assert!(hello.is_ok_and(|h| h.is_ok()), "a hello waits for no consent prompt");
+
+    // The person says yes (a writer opens the pipe): the card comes again, now saying so.
+    let _writer = tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(&chat_db)).await.unwrap().unwrap();
+    until(&mut screen, Duration::from_secs(10), |e| matches!(e, Event::Autopilot { status } if status.sms_access == Some(true))).await;
+}
