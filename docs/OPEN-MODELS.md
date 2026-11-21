@@ -119,10 +119,10 @@ one API, and that decides the engine its members run on:
 | Your Claude plan | - | Claude Code | `claude auth login` (Settings → Sign in) |
 | Your ChatGPT plan | - | Codex | `codex login`, or `codex login --device-auth` for a headless machine |
 | `openai` | OpenAI Responses | Codex's agent | an OpenAI API key |
-| `openrouter`, `together`, `fireworks`, `groq`, `deepseek`, `mistral`, `xai`, `gemini`, `nebius`, `other` | OpenAI Chat Completions | Codex's agent | the provider's key (`other`: also its URL) |
+| `openrouter`, `together`, `fireworks`, `groq`, `deepseek`, `qwen`, `mistral`, `xai`, `gemini`, `nebius`, `other` | OpenAI Chat Completions | Codex's agent | the provider's key (`other`: also its URL) |
 | `ollama`, `lmstudio` | OpenAI Chat Completions | Codex's agent | none (a server on the daemon's machine) |
 | `anthropic` | Anthropic Messages | Claude Code | an Anthropic API key |
-| `openrouter-anthropic`, `deepseek-anthropic`, `zai-anthropic`, `moonshot-anthropic`, `anthropic-other` | Anthropic Messages (`ANTHROPIC_BASE_URL`) | Claude Code | the provider's key (`anthropic-other`: also its URL) |
+| `openrouter-anthropic`, `deepseek-anthropic`, `qwen-anthropic`, `zai-anthropic`, `moonshot-anthropic`, `anthropic-other` | Anthropic Messages (`ANTHROPIC_BASE_URL`) | Claude Code | the provider's key (`anthropic-other`: also its URL) |
 
 A member's model on a provider reads `@<provider>/<model>` (`@openrouter/qwen/qwen3-coder`,
 `@anthropic/claude-sonnet-5-5`). Set it per member (`/model`, or the member's model menu) or per

@@ -103,13 +103,14 @@ pub const ANTHROPIC_OTHER: &str = "anthropic-other";
 /// The providers a screen offers, in its order. Each base URL is the one
 /// the provider's own documentation gives for its OpenAI-compatible API;
 /// all are asked in Chat Completions, which every one documents.
-pub const PRESETS: [Preset; 19] = [
+pub const PRESETS: [Preset; 21] = [
     Preset { id: "openrouter", name: "OpenRouter", base_url: "https://openrouter.ai/api/v1", needs_key: true, env_var: Some("OPENROUTER_API_KEY"), key_page: Some("https://openrouter.ai/keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
     Preset { id: NEBIUS, name: nemotron::PROVIDER_NAME, base_url: nemotron::DEFAULT_BASE_URL, needs_key: true, env_var: Some("NEBIUS_API_KEY"), key_page: Some("https://tokenfactory.nebius.com"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
     Preset { id: "together", name: "Together AI", base_url: "https://api.together.ai/v1", needs_key: true, env_var: Some("TOGETHER_API_KEY"), key_page: Some("https://api.together.ai/settings/api-keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
     Preset { id: "fireworks", name: "Fireworks AI", base_url: "https://api.fireworks.ai/inference/v1", needs_key: true, env_var: Some("FIREWORKS_API_KEY"), key_page: Some("https://app.fireworks.ai/settings/users/api-keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
     Preset { id: "groq", name: "Groq", base_url: "https://api.groq.com/openai/v1", needs_key: true, env_var: Some("GROQ_API_KEY"), key_page: Some("https://console.groq.com/keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
     Preset { id: "deepseek", name: "DeepSeek", base_url: "https://api.deepseek.com", needs_key: true, env_var: Some("DEEPSEEK_API_KEY"), key_page: Some("https://platform.deepseek.com/api_keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
+    Preset { id: "qwen", name: "Alibaba Qwen", base_url: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", needs_key: true, env_var: Some("DASHSCOPE_API_KEY"), key_page: Some("https://modelstudio.console.alibabacloud.com/ap-southeast-1/model/settings/api-key"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
     Preset { id: "mistral", name: "Mistral AI", base_url: "https://api.mistral.ai/v1", needs_key: true, env_var: Some("MISTRAL_API_KEY"), key_page: Some("https://console.mistral.ai/api-keys"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
     Preset { id: "xai", name: "xAI", base_url: "https://api.x.ai/v1", needs_key: true, env_var: Some("XAI_API_KEY"), key_page: Some("https://console.x.ai"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
     Preset { id: "gemini", name: "Google Gemini", base_url: "https://generativelanguage.googleapis.com/v1beta/openai/", needs_key: true, env_var: Some("GEMINI_API_KEY"), key_page: Some("https://aistudio.google.com/apikey"), local: false, kind: Kind::Chat, prefer: &[], curated: &[] },
@@ -123,7 +124,8 @@ pub const PRESETS: [Preset; 19] = [
     // doesn't pick up as a provider.
     Preset { id: ANTHROPIC, name: "Anthropic (API key)", base_url: "https://api.anthropic.com", needs_key: true, env_var: None, key_page: Some("https://console.anthropic.com/settings/keys"), local: false, kind: Kind::Anthropic, prefer: &["claude-sonnet", "claude-opus"], curated: &[] },
     Preset { id: "openrouter-anthropic", name: "OpenRouter (Claude Code)", base_url: "https://openrouter.ai/api", needs_key: true, env_var: Some("OPENROUTER_API_KEY"), key_page: Some("https://openrouter.ai/keys"), local: false, kind: Kind::Anthropic, prefer: &["anthropic/claude-sonnet", "anthropic/claude-opus"], curated: &[] },
-    Preset { id: "deepseek-anthropic", name: "DeepSeek (Claude Code)", base_url: "https://api.deepseek.com/anthropic", needs_key: true, env_var: None, key_page: Some("https://platform.deepseek.com/api_keys"), local: false, kind: Kind::Anthropic, prefer: &["deepseek-chat"], curated: &["deepseek-chat", "deepseek-reasoner"] },
+    Preset { id: "deepseek-anthropic", name: "DeepSeek (Claude Code)", base_url: "https://api.deepseek.com/anthropic", needs_key: true, env_var: None, key_page: Some("https://platform.deepseek.com/api_keys"), local: false, kind: Kind::Anthropic, prefer: &["deepseek-v4-pro", "deepseek-flash"], curated: &["deepseek-v4-pro", "deepseek-flash"] },
+    Preset { id: "qwen-anthropic", name: "Alibaba Qwen (Claude Code)", base_url: "https://dashscope-intl.aliyuncs.com/apps/anthropic", needs_key: true, env_var: None, key_page: Some("https://modelstudio.console.alibabacloud.com/ap-southeast-1/model/settings/api-key"), local: false, kind: Kind::Anthropic, prefer: &["qwen3.8-max", "qwen3.7-plus"], curated: &["qwen3.8-max", "qwen3.7-plus", "qwen3.8-flash"] },
     Preset { id: "zai-anthropic", name: "Z.ai GLM (Claude Code)", base_url: "https://api.z.ai/api/anthropic", needs_key: true, env_var: None, key_page: Some("https://z.ai/manage-apikey/apikey-list"), local: false, kind: Kind::Anthropic, prefer: &["glm-4.6"], curated: &["glm-4.6", "glm-4.5-air"] },
     Preset { id: "moonshot-anthropic", name: "Moonshot Kimi (Claude Code)", base_url: "https://api.moonshot.ai/anthropic", needs_key: true, env_var: None, key_page: Some("https://platform.moonshot.ai/console/api-keys"), local: false, kind: Kind::Anthropic, prefer: &["kimi-k2"], curated: &["kimi-k2-turbo-preview", "kimi-k2-0905-preview"] },
     Preset { id: ANTHROPIC_OTHER, name: "Other (Anthropic-compatible)", base_url: "", needs_key: true, env_var: None, key_page: None, local: false, kind: Kind::Anthropic, prefer: &[], curated: &[] },
@@ -1137,6 +1139,12 @@ mod tests {
         assert_eq!(offered.len(), PRESETS.len());
         let engine = |id: &str| offered.iter().find(|p| p.id == id).unwrap().engine;
         assert_eq!((engine("anthropic"), engine("openai"), engine("groq"), engine("anthropic-other")), (Some(Engine::Claude), Some(Engine::Codex), Some(Engine::Codex), Some(Engine::Claude)));
+        // Qwen on Alibaba's Model Studio (International): Codex over Chat Completions, or Claude Code over its Anthropic skin; DeepSeek's curated ids are its current ones.
+        assert_eq!((engine("qwen"), engine("qwen-anthropic")), (Some(Engine::Codex), Some(Engine::Claude)));
+        assert_eq!(preset("qwen").and_then(|p| p.env_var), Some("DASHSCOPE_API_KEY"));
+        assert_eq!(default_model("deepseek-anthropic", &ids(&["deepseek-flash", "deepseek-v4-pro"])).as_deref(), Some("deepseek-v4-pro"));
+        assert_eq!(engine_of_ref("@qwen/qwen3.8-max"), Some(Engine::Codex));
+        assert_eq!(engine_of_ref("@qwen-anthropic/qwen3.8-max"), Some(Engine::Claude));
         assert!(offered.iter().find(|p| p.id == "ollama").unwrap().local && !offered.iter().find(|p| p.id == "ollama").unwrap().needs_key);
     }
 
