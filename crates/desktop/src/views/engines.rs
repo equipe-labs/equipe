@@ -292,6 +292,7 @@ fn tint(preset: &str) -> u32 {
         "fireworks" => 0x6720FF,
         "groq" => 0xF55036,
         "deepseek" => 0x4D6BFE,
+        "qwen" => 0x615CED,
         "mistral" => 0xFA520F,
         "xai" => 0x1A1A1A,
         "gemini" => 0x4285F4,
@@ -364,7 +365,7 @@ fn providers(shell: &Shell, cx: &mut Context<Shell>) -> Section {
     let p = shell.palette;
     let ui = &shell.settings;
     let connected = matches!(shell.model.conn, Conn::Connected { .. });
-    let words = "model provider api key open model byok openrouter nebius together fireworks groq deepseek mistral xai grok gemini ollama lm studio openai compatible".to_owned();
+    let words = "model provider api key open model byok openrouter nebius together fireworks groq deepseek qwen alibaba mistral xai grok gemini ollama lm studio openai compatible".to_owned();
     let mut lines = vec![Line::new(t!("engines.providers_title"), t!("engines.providers_desc")).words(words.clone())];
     let list = shell.engines.providers.clone();
     match &list {
