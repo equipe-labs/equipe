@@ -263,35 +263,78 @@ async fn a_step_of_the_core_that_never_ends_is_what_status_says() {
     assert!(stall.since > 0 && stall.secs < 10, "{stall:?}");
 }
 
-/// Messages' `chat.db` is a file macOS guards: opening it can wait in
-/// `open()` on a consent prompt for as long as the person takes. Here it is a
-/// named pipe, whose `open()` waits until someone writes. The core must not be
-/// the one that waits: `Command::Autopilot` is sent by a screen as it connects.
+/// Messages' `chat.db` is a file macOS guards: opening it makes macOS ask the
+/// person ("equipe wants to access data from other apps") and waits for the
+/// answer. Here it is a named pipe, whose `open()` waits until someone writes.
+#[cfg(target_os = "macos")]
+fn messages_pipe(home: &Path) -> PathBuf {
+    let messages = home.join("person/Library/Messages");
+    std::fs::create_dir_all(&messages).unwrap();
+    let chat_db = messages.join("chat.db");
+    assert!(Process::new("mkfifo").arg(&chat_db).status().unwrap().success());
+    chat_db
+}
+
+/// Whether anyone has the pipe open for reading: a write that doesn't wait fails with ENXIO when nobody has.
+#[cfg(target_os = "macos")]
+fn pipe_is_read(chat_db: &Path) -> bool {
+    use std::os::unix::fs::OpenOptionsExt as _;
+    std::fs::OpenOptions::new().write(true).custom_flags(0x0004).open(chat_db).is_ok()
+}
+
+/// The next `Event::Autopilot` the screen hears, within `within`.
+#[cfg(target_os = "macos")]
+async fn next_card(screen: &mut Client, within: Duration) -> equipe_core::protocol::vault::AutopilotStatus {
+    let wait = async {
+        while let Some(event) = screen.next_event().await {
+            if let Event::Autopilot { status } = event {
+                return status;
+            }
+        }
+        panic!("the daemon went away");
+    };
+    tokio::time::timeout(within, wait).await.expect("a card came in time")
+}
+
+/// Nobody who left Messages off is ever shown macOS's question: the card
+/// comes, and `chat.db` isn't touched.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn messages_is_left_alone_until_the_person_turns_it_on() {
+    fake_git();
+    let home = scratch("home");
+    let chat_db = messages_pipe(&home);
+    let socket = daemon(&home, &fake_claude("true")).await;
+    let (mut screen, _) = tokio::time::timeout(Duration::from_secs(5), Client::connect(&socket, "test", "acme")).await.unwrap().unwrap();
+
+    for _ in 0..2 {
+        screen.send(Command::Autopilot);
+        let card = next_card(&mut screen, Duration::from_secs(3)).await;
+        assert!(!card.sms && !card.sms_checking && card.sms_access == Some(true), "{card:?}");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(!pipe_is_read(&chat_db), "chat.db was opened for a person who never turned Messages on");
+}
+
+/// Turning Messages on is what asks macOS: off the loop, the card first saying
+/// it is waiting, and the core keeps answering until the person has allowed it.
 #[cfg(target_os = "macos")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_open_of_messages_that_waits_for_consent_holds_no_screen_up() {
     fake_git();
     let home = scratch("home");
-    let messages = home.join("person/Library/Messages");
-    std::fs::create_dir_all(&messages).unwrap();
-    let chat_db = messages.join("chat.db");
-    assert!(Process::new("mkfifo").arg(&chat_db).status().unwrap().success());
+    let chat_db = messages_pipe(&home);
     let socket = daemon(&home, &fake_claude("true")).await;
     let (mut screen, _) = tokio::time::timeout(Duration::from_secs(5), Client::connect(&socket, "test", "acme")).await.unwrap().unwrap();
 
-    screen.send(Command::Autopilot);
-    // The card comes at once, access not known yet…
-    let mut first = None;
-    let wait = async {
-        while let Some(event) = screen.next_event().await {
-            if let Event::Autopilot { status } = event {
-                first = Some(status.sms_access);
-                return;
-            }
+    screen.send(Command::SetSmsCodes { on: true });
+    // The card says it is waiting for macOS…
+    loop {
+        let card = next_card(&mut screen, Duration::from_secs(5)).await;
+        if card.sms && card.sms_checking {
+            break;
         }
-    };
-    tokio::time::timeout(Duration::from_secs(3), wait).await.expect("the card came while the open waits");
-    assert_eq!(first, Some(None));
+    }
     // …and the core keeps answering while the open still waits.
     tokio::time::sleep(Duration::from_millis(500)).await;
     let busy = busy_within(&socket, Duration::from_secs(2)).await;
@@ -299,7 +342,34 @@ async fn an_open_of_messages_that_waits_for_consent_holds_no_screen_up() {
     let hello = tokio::time::timeout(Duration::from_secs(2), Client::connect(&socket, "test", "acme")).await;
     assert!(hello.is_ok_and(|h| h.is_ok()), "a hello waits for no consent prompt");
 
-    // The person says yes (a writer opens the pipe): the card comes again, now saying so.
+    // The person says Allow (a writer opens the pipe): the card says it's fine.
     let _writer = tokio::task::spawn_blocking(move || std::fs::OpenOptions::new().write(true).open(&chat_db)).await.unwrap().unwrap();
-    until(&mut screen, Duration::from_secs(10), |e| matches!(e, Event::Autopilot { status } if status.sms_access == Some(true))).await;
+    until(&mut screen, Duration::from_secs(10), |e| matches!(e, Event::Autopilot { status } if status.sms && !status.sms_checking && status.sms_access == Some(true))).await;
+}
+
+/// A "no" from macOS is said, once, and not asked again on its own.
+#[cfg(target_os = "macos")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refused_messages_is_said_and_not_asked_again() {
+    use std::os::unix::fs::PermissionsExt as _;
+    fake_git();
+    let home = scratch("home");
+    let messages = home.join("person/Library/Messages");
+    std::fs::create_dir_all(&messages).unwrap();
+    let chat_db = messages.join("chat.db");
+    std::fs::write(&chat_db, "").unwrap();
+    std::fs::set_permissions(&chat_db, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let socket = daemon(&home, &fake_claude("true")).await;
+    let (mut screen, _) = tokio::time::timeout(Duration::from_secs(5), Client::connect(&socket, "test", "acme")).await.unwrap().unwrap();
+
+    screen.send(Command::SetSmsCodes { on: true });
+    until(&mut screen, Duration::from_secs(10), |e| matches!(e, Event::Autopilot { status } if status.sms && !status.sms_checking && status.sms_access == Some(false))).await;
+    // Allowed behind its back, the card still says no until the person turns it off and on.
+    std::fs::set_permissions(&chat_db, std::fs::Permissions::from_mode(0o644)).unwrap();
+    screen.send(Command::Autopilot);
+    let card = next_card(&mut screen, Duration::from_secs(3)).await;
+    assert!(card.sms && card.sms_access == Some(false) && !card.sms_checking, "{card:?}");
+    screen.send(Command::SetSmsCodes { on: false });
+    screen.send(Command::SetSmsCodes { on: true });
+    until(&mut screen, Duration::from_secs(10), |e| matches!(e, Event::Autopilot { status } if status.sms && !status.sms_checking && status.sms_access == Some(true))).await;
 }

@@ -276,9 +276,14 @@ pub struct AutopilotStatus {
     pub gmail_client_builtin: bool,
     /// The person lets equipe read codes from Messages.
     pub sms: bool,
-    /// Whether equipe can read Messages now (Full Disk Access): `None` where
-    /// this machine has no Messages to read.
+    /// Whether equipe can read Messages: `None` where this machine has no
+    /// Messages to read; `Some(false)` only once a look said macOS refused
+    /// (made when the person turns this on, never before); else `Some(true)`.
     pub sms_access: Option<bool>,
+    /// The look is under way: macOS may be asking the person to allow equipe
+    /// to access data from other apps.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub sms_checking: bool,
     /// Hours between keep-alive looks at a site (jittered); 0: never.
     pub keepalive_hours: u32,
     pub cli: Vec<CliLogin>,

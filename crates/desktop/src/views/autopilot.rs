@@ -32,6 +32,8 @@ pub struct AutopilotUi {
     pub imap_user: Entity<InputState>,
     pub imap_password: Entity<InputState>,
     pub mailbox_open: bool,
+    /// Messages is about to be turned on: macOS's question said first, in plain words.
+    pub sms_confirm: bool,
     pub cli_name: Entity<InputState>,
     pub cli_host: Entity<InputState>,
     pub cli_public: Entity<InputState>,
@@ -52,6 +54,7 @@ impl AutopilotUi {
             imap_user: input(t!("autopilot.imap_user"), false, window, cx),
             imap_password: input(t!("autopilot.imap_password"), true, window, cx),
             mailbox_open: false,
+            sms_confirm: false,
             cli_name: input(t!("autopilot.cli_name"), false, window, cx),
             cli_host: input(t!("autopilot.cli_host"), false, window, cx),
             cli_public: input(t!("autopilot.cli_public"), false, window, cx),
@@ -270,14 +273,53 @@ pub(super) fn section(shell: &Shell, cx: &mut Context<Shell>) -> Section {
         );
     }
     lines.push(mailbox);
-    // Messages: the person's grant, said plainly where it is missing.
+    // Messages: macOS's question is said before it is asked (turning it on
+    // is what asks), and a no is said with where to change it.
+    let denied = status.sms && status.sms_access == Some(false);
     let sms_desc = match status.sms_access {
         None => t!("autopilot.sms_unsupported"),
+        Some(_) if status.sms_checking => t!("autopilot.sms_checking"),
         Some(false) if status.sms => t!("autopilot.sms_no_access"),
         _ => t!("autopilot.sms_desc"),
     };
     let sms_on = status.sms;
-    lines.push(Line::new(t!("autopilot.sms_line"), sms_desc).warn(status.sms && status.sms_access == Some(false)).switch(shell, "ap-sms", sms_on, status.sms_access.is_some(), |this, on, _, _| this.send_command(Command::SetSmsCodes { on }), cx));
+    let mut sms = Line::new(t!("autopilot.sms_line"), sms_desc).warn(denied).switch(
+        shell,
+        "ap-sms",
+        sms_on,
+        status.sms_access.is_some(),
+        |this, on, _, cx| {
+            if on {
+                // Said first; nothing is sent, so macOS asks nothing, until "Continue".
+                this.logins_ui.autopilot.sms_confirm = true;
+                cx.notify();
+            } else {
+                this.logins_ui.autopilot.sms_confirm = false;
+                this.send_command(Command::SetSmsCodes { on: false });
+            }
+        },
+        cx,
+    );
+    if ui.sms_confirm && !status.sms {
+        sms = sms.below(
+            h_flex()
+                .w_full()
+                .gap_2()
+                .items_center()
+                .pt_1()
+                .child(small(p, t!("autopilot.sms_confirm")).flex_1())
+                .child(ui::button(p, "ap-sms-cancel", Kind::Ghost, t!("accounts.cancel")).on_click(cx.listener(|this, _, _, cx| {
+                    this.logins_ui.autopilot.sms_confirm = false;
+                    cx.notify();
+                })))
+                .child(ui::button(p, "ap-sms-go", Kind::Primary, t!("autopilot.sms_confirm_go")).on_click(cx.listener(|this, _, _, cx| {
+                    this.logins_ui.autopilot.sms_confirm = false;
+                    this.send_command(Command::SetSmsCodes { on: true });
+                    cx.notify();
+                }))),
+        );
+    }
+    lines.push(sms);
     // Keep-alive: how often.
     let hours = status.keepalive_hours;
     let options: Vec<(u32, String)> = [0u32, 3, 6, 12, 24].into_iter().map(|h| (h, if h == 0 { t!("autopilot.keepalive_off").to_owned() } else { t!("autopilot.hours", n = h) })).collect();

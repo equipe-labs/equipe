@@ -140,7 +140,9 @@ impl Runtime {
             Command::ForgetLoginPasskey { id } => self.with_vault(move |v| v.set_passkey(id, None)),
             Command::SaveMailbox { mailbox } => self.vault_then_status(move |v| v.save_mailbox(mailbox)),
             Command::SetSmsCodes { on } => {
-                // Probed again, off the loop, by the status the change ends in.
+                // Messages is touched only once the person turns this on, and
+                // asked again (off the loop, by the status the change ends in)
+                // only by turning it on again: a "no" is never re-asked on its own.
                 self.autopilot.sms_probed = false;
                 self.autopilot.sms_access = None;
                 self.vault_then_status(move |v| v.set_sms(on));
@@ -171,13 +173,21 @@ impl Runtime {
     /// whether Messages can be read from the last probe, which runs off the loop.
     pub(super) fn publish_autopilot(&mut self) {
         let status = self.autopilot_status();
-        self.publish(Event::Autopilot { status });
-        self.probe_sms();
+        self.publish(Event::Autopilot { status: status.clone() });
+        self.probe_sms(status.sms);
     }
 
-    /// Whether equipe may read Messages, asked off the loop: opening
-    /// `chat.db` is a macOS consent check that can block in `open()`.
-    fn probe_sms(&mut self) {
+    /// Whether equipe may read Messages, asked off the loop (opening
+    /// `chat.db` is a macOS consent check that can wait on a prompt), and
+    /// only for a person who turned Messages on: never at start, never for
+    /// someone who didn't, so macOS has no surprise to put on their screen.
+    fn probe_sms(&mut self, on: bool) {
+        if !on {
+            // Off: nothing kept, so turning it on asks again.
+            self.autopilot.sms_probed = false;
+            self.autopilot.sms_access = None;
+            return;
+        }
         if self.autopilot.sms_probed || self.autopilot.sms_probing {
             return;
         }
@@ -190,6 +200,9 @@ impl Runtime {
         tokio::task::spawn_blocking(move || {
             let _ = internal.send(Internal::Autopilot(Note::SmsAccess(ap::sms::access(&home))));
         });
+        // Said to the screens now: "waiting for macOS".
+        let status = self.autopilot_status();
+        self.publish(Event::Autopilot { status });
     }
 
     /// The logins' settings and command-line credentials as last seen,
@@ -210,7 +223,15 @@ impl Runtime {
             gmail: settings.gmail,
             gmail_client_builtin: crate::verify::gmail::builtin().is_some(),
             sms: settings.sms,
-            sms_access: self.autopilot.sms_access,
+            sms_access: if !ap::sms::supported() {
+                None
+            } else if settings.sms && self.autopilot.sms_probed {
+                // `Some(false)` only after a look said so.
+                Some(self.autopilot.sms_access.unwrap_or(true))
+            } else {
+                Some(true)
+            },
+            sms_checking: settings.sms && self.autopilot.sms_probing,
             keepalive_hours: settings.keepalive_hours,
             cli,
             resolved: stats.resolved.into_iter().collect(),
@@ -416,7 +437,7 @@ impl Runtime {
             Some(Step::Passkey)
         } else if a.email && settings.mailbox.is_some() {
             Some(Step::Email)
-        } else if a.sms && settings.sms && cfg!(target_os = "macos") {
+        } else if a.sms && settings.sms && cfg!(target_os = "macos") && self.autopilot.sms_access != Some(false) {
             Some(Step::Sms)
         } else {
             None

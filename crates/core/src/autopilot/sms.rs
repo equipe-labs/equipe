@@ -41,7 +41,15 @@ pub fn database(home: &Path) -> PathBuf {
     home.join("Library/Messages/chat.db")
 }
 
-/// Whether equipe may read Messages now: `None` off a Mac.
+/// Whether this machine has Messages to read at all (a Mac). Touches nothing.
+pub fn supported() -> bool {
+    cfg!(target_os = "macos")
+}
+
+/// Whether equipe may read Messages now: `None` off a Mac. Opening the file
+/// is what makes macOS ask the person ("equipe wants to access data from
+/// other apps") and it waits for the answer: call it only once the person
+/// turned Messages on, and off the daemon's loop.
 pub fn access(home: &Path) -> Option<bool> {
     if !cfg!(target_os = "macos") {
         return None;
