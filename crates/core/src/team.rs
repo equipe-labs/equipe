@@ -72,6 +72,19 @@ holds, or when the person asks for one (then say `asked`).",
     ))
 }
 
+/// What the PM hears when the squad runs on full autonomy and the change was
+/// made at once: the person is told, not asked.
+pub fn settled_reply(p: &Proposal) -> String {
+    let what = match p.change {
+        Change::Add => format!("{} {} join{} the team now", p.count, p.role, if p.count == 1 { "s" } else { "" }),
+        Change::Remove => format!("{} leaves the team now", p.member.as_deref().unwrap_or(&p.role)),
+    };
+    format!(
+        "Done — this squad runs on its own for staffing, so no approval is needed: {what}. Tell the person in one short line \
+who changed and why; don't ask them anything about it. You'll be told when it is in place."
+    )
+}
+
 /// A member as a proposal is checked against.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Mate<'a> {

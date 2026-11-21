@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use equipe_core::autonomy::Store;
-use equipe_core::protocol::autonomy::{Kind, Level};
+use equipe_core::protocol::autonomy::{Autonomy, Kind, Level};
 use equipe_core::protocol::{Command, Event};
 use equipe_core::t;
 
@@ -35,6 +35,7 @@ pub enum Action {
     Show,
     Set(Kind, Level),
     Window(u32),
+    Mode(Autonomy),
     Revoke(u64),
 }
 
@@ -52,6 +53,7 @@ pub fn parse(words: &[&str]) -> Result<Action, String> {
             Action::Set(kind, level)
         }
         ["window", minutes] => Action::Window(minutes.trim_end_matches("min").parse::<u32>().map_err(|_| usage())?.min(24 * 60)),
+        ["mode", mode] => Action::Mode(Autonomy::parse(mode).ok_or_else(usage)?),
         ["revoke", id] => Action::Revoke(id.trim_start_matches('#').parse().map_err(|_| usage())?),
         _ => return Err(usage()),
     })
@@ -64,6 +66,7 @@ pub fn lines(squad: &str, store: &Store, pm_accepts: bool, now: u64) -> Vec<Stri
     for kind in Kind::SET {
         out.push(format!("  {:<16} {}  ({})", kind.code(), level_word(state.policy.level(kind)), kind_word(kind)));
     }
+    out.push(format!("  {:<16} {}", "mode", state.mode.code()));
     out.push(t!("autonomy.window", minutes = state.policy.window_minutes));
     out.push(t!("autonomy.always_asks", kinds = Kind::FLOOR.iter().map(|k| kind_word(*k)).collect::<Vec<_>>().join(", ")));
     out.push(String::new());
@@ -106,6 +109,7 @@ pub async fn command(home: &Path, socket: &Path, squad: &str, words: &[&str]) ->
     let command = match action {
         Action::Set(kind, level) => Command::SetAutonomy { squad: squad.to_owned(), kind, level },
         Action::Window(minutes) => Command::SetAutonomyWindow { squad: squad.to_owned(), minutes },
+        Action::Mode(mode) => Command::SetAutonomyMode { squad: squad.to_owned(), mode },
         Action::Revoke(id) => {
             if !journal.autonomy().allowances.iter().any(|a| a.id == id && a.live(now())) {
                 return Err(t!("autonomy.no_allowance", id = id));
@@ -137,6 +141,7 @@ fn apply(home: &Path, squad: &str, command: &Command) -> Result<(), String> {
         }
         Command::SetAutonomy { kind, level, .. } => store.policy.set(*kind, *level).map_err(|_| t!("autonomy.floor", kind = kind_word(*kind)))?,
         Command::SetAutonomyWindow { minutes, .. } => store.policy.window_minutes = *minutes,
+        Command::SetAutonomyMode { mode, .. } => store.mode = *mode,
         Command::RevokeAllowance { id, .. } => {
             store.revoke(*id, now());
         }
@@ -173,6 +178,9 @@ mod tests {
         assert_eq!(parse(&["set", "production", "decide-and-tell"]), Ok(Action::Set(Kind::ProductionData, Level::Tell)));
         assert_eq!(parse(&["window", "45"]), Ok(Action::Window(45)));
         assert_eq!(parse(&["revoke", "#3"]), Ok(Action::Revoke(3)));
+        assert_eq!(parse(&["mode", "full"]), Ok(Action::Mode(Autonomy::Full)));
+        assert_eq!(parse(&["mode", "standard"]), Ok(Action::Mode(Autonomy::Standard)));
+        assert!(parse(&["mode", "wild"]).is_err());
         assert!(parse(&["set", "money", "just_do"]).is_err(), "the floor always asks");
         assert_eq!(parse(&["set", "money", "ask"]), Ok(Action::Set(Kind::Money, Level::Ask)));
         assert!(parse(&["set", "design"]).is_err());

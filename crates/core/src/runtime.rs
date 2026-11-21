@@ -892,6 +892,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         providers: HashMap::new(),
         questions: HashMap::new(),
         team_changes: HashMap::new(),
+        team_by_policy: HashSet::new(),
         routine_proposals: HashMap::new(),
         design_reviews: HashMap::new(),
         retros: HashMap::new(),
@@ -1648,6 +1649,8 @@ struct Runtime {
     questions: HashMap<String, Vec<equipe_protocol::decide::QuestionSet>>,
     /// Changes to the team the PM proposed, waiting for the person, by squad (`team`).
     team_changes: HashMap<String, Vec<equipe_protocol::team::TeamChange>>,
+    /// Changes the squad's own autonomy mode made at once (not asked of the person): told, not approved.
+    team_by_policy: HashSet<u64>,
     /// Routines the PM proposed, waiting for the person, by squad (`heartbeat`).
     routine_proposals: HashMap<String, Vec<equipe_protocol::routines::RoutineProposal>>,
     /// Designers handed their weekly review, and when (`review`): the
@@ -3495,6 +3498,7 @@ impl Runtime {
             }
             Command::SetAutonomy { squad, kind, level } => self.set_autonomy(&squad, kind, level),
             Command::SetAutonomyWindow { squad, minutes } => self.set_autonomy_window(&squad, minutes),
+            Command::SetAutonomyMode { squad, mode } => self.set_autonomy_mode(&squad, mode),
             Command::AllowKind { squad, approval, days } => self.allow_kind(&squad, approval, days),
             Command::RevokeAllowance { squad, id } => self.revoke_allowance(&squad, id),
             Command::ReopenAutoPick { squad, set } => self.reopen_auto_pick(&squad, set),
@@ -6052,6 +6056,7 @@ runbooks and reports live there, and work across the projects or on running them
                 browser: browser.is_some(),
                 profiles: &profile_browsers.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>(),
                 pm_accepts: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::pm_accepts),
+                hands_off: squad.as_deref().is_some_and(|s| self.autonomy_mode(s) == equipe_protocol::autonomy::Autonomy::Full),
                 self_land: squad.as_deref().and_then(|s| self.journals.get(s)).is_none_or(Journal::self_land),
                 desktop,
                 design: design.is_some(),
@@ -9587,7 +9592,11 @@ there, end your turn, and carry on when they say they're done."
         }
         // A standing allowance the person granted for this kind of command
         // ("Allow for this kind"): allowed, and its use logged.
-        let kind = crate::autonomy::engine_kind(&tool, &action);
+        // The squad's own working areas under `.equipe` (a ticket's scratch folder, the
+        // build cache, the desk) hold no secrets: only its config, credentials,
+        // journals and other squads' folders do.
+        let scratch = permissions::scratch_areas(&self.config.home, &call.squad);
+        let kind = crate::autonomy::engine_kind_in(&tool, &action, &scratch);
         let mut ask = crate::protocol::autonomy::Ask { kind, plain: None, standing: None, later: false, op: None };
         if kind == crate::protocol::autonomy::Kind::Other && self.allowed_standing(&call.squad, id, &call.member, ticket, &ask, (&tool, &action)).is_some() {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
@@ -9625,9 +9634,30 @@ there, end your turn, and carry on when they say they're done."
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
         }
-        if auto && permissions::only_reads(&tool, &action, &input) {
+        if auto && permissions::only_reads_in(&tool, &action, &input, &scratch) {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
+        }
+        // Writing in the squad's own scratch areas is part of the work, as it is inside the fence.
+        if auto && permissions::writes_in_scratch(&tool, &action, &scratch) {
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
+        // A squad on full autonomy (non-developers): its internal work goes ahead
+        // without the person; outward and irreversible things still ask.
+        if self.autonomy_mode(&call.squad) == crate::protocol::autonomy::Autonomy::Full {
+            let mut roots: Vec<String> = self.projects_cached(&call.squad).iter().map(|p| p.to_string_lossy().into_owned()).collect();
+            roots.push(squad_home::path(&self.config.home, &call.squad).to_string_lossy().into_owned());
+            if let Some(session) = self.sessions.get(&id) {
+                roots.push(session.cwd.to_string_lossy().into_owned());
+                roots.push(session.project.to_string_lossy().into_owned());
+                roots.extend(session.work.as_ref().map(|w| w.cwd.to_string_lossy().into_owned()));
+            }
+            if crate::autonomy::hands_off_allows(&tool, &action, &input, kind, &roots, &scratch) {
+                self.audit(&call.squad, ticket, "equipe", "allowed (full autonomy)", &action);
+                let _ = reply.send(verdict(Decision::Allow, &input, ""));
+                return;
+            }
         }
         if fenced && permissions::stays_in_sandbox(&tool, &input) && !permissions::outward(&tool, &action) {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));

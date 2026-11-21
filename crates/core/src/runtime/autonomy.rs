@@ -27,6 +27,23 @@ impl Runtime {
         self.journal(squad).map(Journal::autonomy).unwrap_or_default()
     }
 
+    /// How the squad is let to work: [`au::Autonomy::Standard`] unless the person
+    /// set it to full.
+    pub(super) fn autonomy_mode(&self, squad: &str) -> au::Autonomy {
+        self.journals.get(squad).map(|j| j.autonomy().mode).unwrap_or_default()
+    }
+
+    /// The person set the squad's autonomy mode.
+    pub(super) fn set_autonomy_mode(&mut self, squad: &str, mode: au::Autonomy) {
+        let mut store = self.autonomy_store(squad);
+        if store.mode == mode {
+            return;
+        }
+        store.mode = mode;
+        crate::daemon_log!("equipe: {squad}'s autonomy mode is now {}", mode.code());
+        self.save_autonomy(squad, store);
+    }
+
     /// The squad's policy as it stands, its merge level read from `pm_accepts`.
     pub(super) fn autonomy_policy(&mut self, squad: &str) -> au::Policy {
         let pm_accepts = self.journals.get(squad).is_some_and(Journal::pm_accepts);

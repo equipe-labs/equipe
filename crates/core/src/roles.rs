@@ -439,6 +439,9 @@ pub struct Context<'a> {
     pub browser: bool,
     /// The PM accepts the team's handed-in work itself (the squad's setting).
     pub pm_accepts: bool,
+    /// The squad runs on its own for a non-developer ([`crate::protocol::autonomy::Autonomy::Full`]):
+    /// members settle internal matters without asking the person.
+    pub hands_off: bool,
     /// Members land their own work once its gates pass and nothing in it
     /// needs a person, where the PM accepts (`crate::flow`, the squad's setting).
     pub self_land: bool,
@@ -656,6 +659,33 @@ hand-in back to you with the findings: fix each, or hand in again with `waive_fi
 problem, and a designer judges it. You can run it yourself first: `equipe design precheck --worktree .`.";
 
 pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
+    let base = charter_base(role, name, ctx);
+    if ctx.hands_off && ctx.board_tools { format!("{base}\n\n{}", if role.id == PM { HANDS_OFF_PM } else { HANDS_OFF }) } else { base }
+}
+
+/// What every member is told where the squad runs on its own (full autonomy):
+/// internal matters are theirs; only what reaches outward or can't be undone asks the person.
+const HANDS_OFF: &str = "This squad's person is not a developer and has set the team to run on its own. Settle every internal \
+matter yourself and move on: how to build it, which tool, library or approach, which files to change, installing the project's \
+dependencies, running builds, tests and dev servers, taking screenshots, git inside the workspace. Never ask the person to \
+approve or choose any of that, and never put it as a question to them: decide, note the choice on the ticket, and say it in a \
+line. Only these go to the person first, through the tools that ask them: publishing or deploying to a live public address, \
+sending a message or an email to real people, spending money (purchases, plans, domains), deleting their data, using their \
+credentials, and connecting an outside account. Keep your own bookkeeping — duplicate or closed requests, ticket moves — out of \
+what you say to them.";
+
+/// The PM's: the same, and staffing.
+const HANDS_OFF_PM: &str = "This squad's person is not a developer and has set the team to run on its own. Settle every internal \
+matter yourself and tell them in a line what you chose: staffing (add the members the work needs — `propose_team_change` takes \
+effect at once here, with no card), which role takes what, technical choices (stack, tools, libraries, structure), and how the \
+work is built, tested and checked. Never ask the person about staffing or a technical choice, never offer them a choice \
+between technical options, and never ask them to approve edits, builds, tests, installs or screenshots. Only these go to the \
+person first: publishing or deploying to a live public address, sending a message or an email to real people, spending money \
+(purchases, plans, domains), deleting their data, using their credentials, and connecting an outside account — and what only \
+they know (their business, their taste, their words). Don't narrate your own bookkeeping to them (duplicate or closed requests, \
+ticket moves): say what is being made and when it will be ready.";
+
+fn charter_base(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
     let duties = match (role.id == CUSTOM.id, ctx.edits) {
         (true, true) => format!(
@@ -1384,7 +1414,7 @@ mod tests {
     }
 
     fn ctx<'a>(team: &'a [Teammate<'a>], projects: &'a [String], board_tools: bool) -> Context<'a> {
-        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, self_land: true, desktop: false, design: false, phone: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
+        Context { team, projects, hq: None, equipe: None, board_tools, language: None, screen_language: None, browser: false, profiles: &[], pm_accepts: false, hands_off: false, self_land: true, desktop: false, design: false, phone: false, home: None, memory: None, facts: 0, edits: false, skills: Delivery::Plugin(SKILLS_AT), guard: false, subagents: Some(CLAUDE_20), helpers: false }
     }
 
     /// A Claude Code member at Claude Code's own cap: what every charter said before the squad set it.
@@ -1553,6 +1583,7 @@ mod tests {
                 screen_language: Some("Korean"),
                 browser: true,
                 pm_accepts: true,
+                hands_off: false,
                 self_land: true,
                 profiles: &profiles,
                 desktop: true,
@@ -2038,6 +2069,23 @@ invent one."), "{id}: true numbers");
         let pm = told(PM, "pm", None, true);
         assert!(pm.contains("splits it across subagents running at once where its engine has them; yours has none, so you split your own into tickets"), "{pm}");
         assert!(told(PM, "pm", Some(CLAUDE_20), true).contains("splits it across subagents running at once, and so do you with yours"));
+    }
+
+    #[test]
+    fn where_the_squad_runs_on_its_own_nobody_asks_the_person_about_staffing_or_technical_choices() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "frontend", role: "frontend" }];
+        let on_its_own = |role_id: &str, hands_off: bool, board_tools: bool| charter(role(role_id).unwrap(), role_id, &Context { hands_off, ..ctx(&team, &[], board_tools) });
+        let pm = on_its_own(PM, true, true);
+        assert!(pm.contains("Never ask the person about staffing or a technical choice") && pm.contains("takes effect at once here, with no card"), "{pm}");
+        assert!(pm.contains("publishing or deploying to a live public address") && pm.contains("spending money"), "what still asks");
+        let member = on_its_own("frontend", true, true);
+        assert!(member.contains("Never ask the person to approve or choose any of that"), "{member}");
+        // Not unless set: the desktop's charters are as they were.
+        for role_id in [PM, "frontend"] {
+            let plain = on_its_own(role_id, false, true);
+            assert!(!plain.contains("has set the team to run on its own"), "{role_id}");
+        }
+        assert!(!on_its_own("frontend", true, false).contains("run on its own"), "no board tools, no such words");
     }
 
     #[test]

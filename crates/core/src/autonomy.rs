@@ -31,10 +31,16 @@ pub struct Request<'a> {
 /// say: reaching outside (publishing, pushing, deploying), credentials,
 /// deleting — the floor — or anything else.
 pub fn engine_kind(tool: &str, action: &str) -> Kind {
+    engine_kind_in(tool, action, &[])
+}
+
+/// [`engine_kind`], the squad's own `scratch` areas
+/// ([`permissions::scratch_areas`]) not counted as credentials.
+pub fn engine_kind_in(tool: &str, action: &str, scratch: &[String]) -> Kind {
     if permissions::outward(tool, action) {
         return Kind::Outside;
     }
-    if permissions::SECRETS.iter().any(|s| action.contains(s)) {
+    if permissions::touches_secret(action, scratch) {
         return Kind::SignIn;
     }
     if tool == "Bash" && deletes(action) {
@@ -50,6 +56,61 @@ fn deletes(command: &str) -> bool {
     let words: Vec<&str> = lower.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`' | '"' | '\'')).filter(|w| !w.is_empty()).collect();
     words.iter().any(|w| matches!(*w, "rm" | "rmdir" | "unlink" | "shred" | "truncate" | "drop" | "delete"))
         || words.windows(2).any(|w| w == ["git", "clean"])
+}
+
+/// Whether a squad on full autonomy ([`crate::protocol::autonomy::Autonomy::Full`])
+/// lets an engine's permission prompt through without the person: its work
+/// inside the workspace — file edits, builds, tests, dev servers, project
+/// dependencies, screenshots, git without a remote — and nothing that reaches
+/// outward or can't be undone. Outward commands, credentials, the floor's
+/// other kinds, anything in the system, the browser's code tool and tools of
+/// servers equipe doesn't know all still ask. `roots`: the folders the member
+/// works in (its worktree, the squad's projects and desk); `scratch`: the
+/// squad's own working areas ([`permissions::scratch_areas`]).
+pub fn hands_off_allows(tool: &str, action: &str, input: &Value, kind: Kind, roots: &[String], scratch: &[String]) -> bool {
+    if tool == permissions::BROWSER_CODE || permissions::outward(tool, action) || permissions::outward_more(tool, action) || permissions::touches_secret(&input.to_string(), scratch) {
+        return false;
+    }
+    match kind {
+        Kind::Other => {}
+        Kind::Deletion => return tool == "Bash" && deletes_only_inside(action),
+        _ => return false,
+    }
+    match tool {
+        "Read" | "Glob" | "Grep" | "LS" | "NotebookRead" | "TodoWrite" | "WebSearch" | "WebFetch" | "Task" | "Agent" => true,
+        "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => within(action, roots, scratch),
+        "Bash" => !permissions::touches_system(action),
+        _ => false,
+    }
+}
+
+/// Whether `path` is somewhere a member works: relative (its worktree), under
+/// one of `roots` or of the squad's `scratch` areas, climbing out of none.
+fn within(path: &str, roots: &[String], scratch: &[String]) -> bool {
+    if path.is_empty() || path.contains("..") || path.contains(['$', '`']) {
+        return false;
+    }
+    if !path.starts_with(['/', '~']) {
+        return true;
+    }
+    roots.iter().any(|r| path.strip_prefix(r.trim_end_matches('/')).is_some_and(|rest| rest.starts_with('/'))) || scratch.iter().any(|d| path.starts_with(d.as_str()))
+}
+
+/// Whether every deleting command of a chain is a plain `rm`, `rmdir` or
+/// `unlink` of named things in the workspace: relative paths, climbing out of
+/// nowhere, not the folder itself, a bare glob, `.git` or a variable. A
+/// deletion of anything else — a database, `git clean`, a path elsewhere — is
+/// the person's to allow.
+fn deletes_only_inside(command: &str) -> bool {
+    permissions::commands(command).iter().filter(|c| deletes(c)).all(|c| {
+        let words: Vec<&str> = c.split_whitespace().collect();
+        let targets: Vec<&str> = words.iter().skip(1).filter(|w| !w.starts_with('-')).map(|w| w.trim_matches(['"', '\''])).collect();
+        matches!(words.first(), Some(&("rm" | "rmdir" | "unlink")))
+            && !targets.is_empty()
+            && targets.iter().all(|t| {
+                !t.starts_with(['/', '~']) && !t.contains(['$', '`', '*', '?', '[']) && !t.contains("..") && !matches!(*t, "." | "./" | "") && !t.trim_start_matches("./").starts_with(".git")
+            })
+    })
 }
 
 /// What a member's own request (`ask_person`) is: a floor kind it names in
@@ -182,6 +243,9 @@ pub struct Due {
 pub struct Store {
     #[serde(default)]
     pub policy: Policy,
+    /// How the squad is let to work ([`crate::protocol::autonomy::Autonomy`]).
+    #[serde(default, skip_serializing_if = "crate::protocol::autonomy::Autonomy::is_default")]
+    pub mode: crate::protocol::autonomy::Autonomy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowances: Vec<Allowance>,
     /// Oldest first, the latest [`USES_KEPT`].
@@ -250,6 +314,7 @@ impl Store {
         };
         State {
             policy,
+            mode: self.mode,
             allowances: self.allowances.iter().rev().cloned().collect(),
             uses: self.uses.iter().rev().take(50).cloned().collect(),
             picks: self.picks.iter().rev().map(AutoPick::view).collect(),
@@ -280,6 +345,45 @@ mod tests {
 
     fn req<'a>(member: &'a str, action: &'a str, op: Op) -> Request<'a> {
         Request { kind: Kind::ProductionData, member, tool: "Confirm", action, system: Some("ERP"), op: Some(op) }
+    }
+
+    #[test]
+    fn the_squads_scratch_is_not_credentials_for_lying_under_dot_equipe() {
+        let scratch = permissions::scratch_areas(std::path::Path::new("/home/tenki/.equipe"), "team");
+        let edit = "/home/tenki/.equipe/tmp/team/t1/shoot.mjs";
+        assert_eq!(engine_kind("Edit", edit), Kind::SignIn, "unnarrowed it is asked as a key");
+        assert_eq!(engine_kind_in("Edit", edit, &scratch), Kind::Other);
+        assert_eq!(engine_kind_in("Edit", "/home/tenki/.equipe/config.json", &scratch), Kind::SignIn);
+        assert_eq!(engine_kind_in("Bash", "cat /home/tenki/.equipe/tmp/other/t1/a", &scratch), Kind::SignIn);
+    }
+
+    #[test]
+    fn full_autonomy_lets_internal_work_through_and_keeps_the_rest_for_the_person() {
+        let scratch = permissions::scratch_areas(std::path::Path::new("/home/tenki/.equipe"), "team");
+        let roots = ["/home/tenki/work/site".to_owned(), "/home/tenki/.equipe/squads/team/home".to_owned()];
+        let allows = |tool: &str, action: &str| {
+            let input = if tool == "Bash" { json!({ "command": action }) } else { json!({ "file_path": action }) };
+            hands_off_allows(tool, action, &input, engine_kind_in(tool, action, &scratch), &roots, &scratch)
+        };
+        for (tool, action) in [
+            ("Bash", "npm install"), ("Bash", "npm run build && npm test"), ("Bash", "pnpm dev"), ("Bash", "git add -A && git commit -m x"), ("Bash", "git checkout -b fix"),
+            ("Bash", "node /home/tenki/.equipe/tmp/team/t1/shoot.mjs"), ("Bash", "pip install -r requirements.txt"), ("Bash", "rm -rf node_modules dist"),
+            ("Bash", "curl https://example.com/a.json -o a.json"), ("Write", "/home/tenki/work/site/index.html"), ("Edit", "src/App.tsx"),
+            ("Write", "/home/tenki/.equipe/tmp/team/t1/shoot.mjs"), ("Edit", "/home/tenki/.equipe/squads/team/home/notes/plan.md"), ("Read", "/anywhere/readme.md"),
+            ("WebFetch", "https://example.com"),
+        ] {
+            assert!(allows(tool, action), "{tool} {action}");
+        }
+        for (tool, action) in [
+            ("Bash", "git push origin main"), ("Bash", "gh pr create"), ("Bash", "vercel deploy"), ("Bash", "npx wrangler deploy"), ("Bash", "curl -X POST https://x.test -d a=b"),
+            ("Bash", "rm -rf /home/tenki/Documents"), ("Bash", "rm -rf ../photos"), ("Bash", "rm -rf ."), ("Bash", "rm -rf *"), ("Bash", "rm -rf .git"), ("Bash", "git clean -fdx"),
+            ("Bash", "psql -c 'DROP TABLE users'"), ("Bash", "cat ~/.ssh/id_rsa"), ("Bash", "cat /home/tenki/.equipe/config.json"), ("Bash", "cp a /etc/hosts"),
+            ("Bash", "npm install && npm publish"), ("Write", "/etc/hosts"), ("Write", "/home/tenki/other-project/a.txt"), ("Write", "/home/tenki/work/site/../../.bashrc"),
+            ("Write", "/home/tenki/.equipe/config.json"), ("Write", "/home/tenki/.equipe/tmp/other/t1/a"), ("Edit", "/home/tenki/work/site/.env"),
+            (permissions::BROWSER_CODE, "async (page) => page.click('#buy')"), ("mcp__gmail__send_message", "{}"),
+        ] {
+            assert!(!allows(tool, action), "{tool} {action}");
+        }
     }
 
     #[test]

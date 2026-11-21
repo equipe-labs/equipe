@@ -384,6 +384,7 @@ mod tests {
             browser: false,
             profiles: &[],
             pm_accepts: false,
+            hands_off: false,
             self_land: true,
             desktop: false,
             design: false,

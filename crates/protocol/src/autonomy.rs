@@ -195,6 +195,45 @@ impl Level {
     }
 }
 
+/// How a squad's members are let to work, over and above its [`Policy`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Autonomy {
+    /// For people who are not developers (what self-serve and cloud teams
+    /// start on): internal matters are the team's own — staffing, files in
+    /// the workspace, builds, tests, dev servers, project dependencies,
+    /// screenshots, git inside the workspace all proceed without asking.
+    /// Only what reaches outward or cannot be undone still asks the person:
+    /// publishing, messages to real people, spending, deleting, credentials,
+    /// connecting accounts. Approvals stay the person's alone either way.
+    Full,
+    /// Members ask for what their mode says they ask for. The default.
+    #[default]
+    #[serde(other)]
+    Standard,
+}
+
+impl Autonomy {
+    pub fn code(self) -> &'static str {
+        match self {
+            Autonomy::Standard => "standard",
+            Autonomy::Full => "full",
+        }
+    }
+
+    pub fn parse(text: &str) -> Option<Autonomy> {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "standard" | "default" | "off" => Some(Autonomy::Standard),
+            "full" | "non_developer" | "non-developer" | "nondev" => Some(Autonomy::Full),
+            _ => None,
+        }
+    }
+
+    pub fn is_default(&self) -> bool {
+        *self == Autonomy::Standard
+    }
+}
+
 /// How long a decide-and-tell choice waits for the person by default.
 pub const WINDOW_MINUTES: u32 = 30;
 /// The windows screens offer, in minutes; 0: at once.
@@ -528,6 +567,8 @@ impl AutoPick {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct State {
     pub policy: Policy,
+    #[serde(default, skip_serializing_if = "Autonomy::is_default")]
+    pub mode: Autonomy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowances: Vec<Allowance>,
     /// Latest first.

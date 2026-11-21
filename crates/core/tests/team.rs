@@ -144,6 +144,26 @@ async fn busy_squad(home: &Path, project: &Path, persist: bool) -> (Handle, Unbo
 }
 
 #[tokio::test]
+async fn a_squad_on_full_autonomy_staffs_itself_and_tells_instead_of_asking() {
+    let (home, project) = squad_home();
+    let (handle, mut events) = busy_squad(&home, &project, true).await;
+    handle.send(Command::SetAutonomyMode { squad: "acme".into(), mode: equipe_core::protocol::autonomy::Autonomy::Full });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { .. })).await;
+
+    // The same checks apply: unasked, a role the team holds is no add.
+    let soon = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "qa", "reason": "-", "unblocks": [2] })).await;
+    assert!(soon.is_error && soon.text.contains("needs no new member"), "{soon:?}");
+    // A role nobody holds: made now, no card, the PM told to say so in a line.
+    let said = tool(&handle, "pm", "propose_team_change", json!({ "change": "add", "role": "data", "reason": "the report needs numbers" })).await;
+    assert!(!said.is_error && said.text.starts_with("Done — this squad runs on its own"), "{said:?}");
+    let seen = until(&mut events, |e| matches!(e, Event::TeamChangeClosed { approved: true, .. })).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::TeamChangeProposed { .. })), "no card was put to the person: {seen:#?}");
+    assert_eq!(names(&handle).await, ["data", "pm", "qa"]);
+    assert!(handle.snapshot("acme").await.team_changes.is_empty());
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_pm_proposes_the_person_approves_and_the_new_member_takes_the_waiting_ticket() {
     let (home, project) = squad_home();
     let (handle, mut events) = busy_squad(&home, &project, false).await;
