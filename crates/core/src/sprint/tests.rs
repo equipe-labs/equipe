@@ -433,6 +433,8 @@ fn the_review_hands_the_pm_its_facts_results_and_numbers_in_one_compact_message(
         marketer: true,
         measurable: true,
         later: vec!["P-9 Google sign-in — +5%".into()],
+        platform: false,
+        notes: vec![],
     };
     let text = review_message(&review);
     for must in [
@@ -554,4 +556,15 @@ fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
         priority: Default::default(),
         rank: 0,
     }
+}
+
+#[test]
+fn a_platform_team_is_told_how_to_measure_with_its_experiments() {
+    let mut r = Review { to: "2026-11-06".into(), measurable: true, notes: vec!["Top sources (visitors): news.example (40).".into()], ..Review::default() };
+    let plain = planning_message(&r);
+    assert!(!plain.contains("equipe platform") && !plain.contains("create_experiment"));
+    r.platform = true;
+    let text = planning_message(&r);
+    assert!(text.contains("Top sources (visitors): news.example (40)."));
+    assert!(text.contains("`split.flag`") && text.contains("`create_experiment`") && text.contains("`equipe.variant(key)`"));
 }
