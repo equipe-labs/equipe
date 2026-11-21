@@ -822,6 +822,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         looked_first: HashMap::new(),
         recent_asks: crate::logins::RecentAsks::default(),
         site_waits: crate::logins::SiteWaits::default(),
+        open_asks: HashMap::new(),
         asking_cause: None,
         fill_waits: Default::default(),
         next_fill: 0,
@@ -1835,6 +1836,9 @@ struct Runtime {
     recent_asks: crate::logins::RecentAsks,
     /// Sign-ins waiting on the person, or blocked for automation, told to the next member who asks.
     site_waits: crate::logins::SiteWaits,
+    /// By squad, read back from its record when first needed: the sign-in asks
+    /// no finished sign-in answers yet, looked for in their members' pages.
+    open_asks: HashMap<String, crate::logins::OpenAsks>,
     /// The cause of the hand-off being asked for now, for what the person is told.
     asking_cause: Option<crate::logins::Cause>,
     /// equipe's fills of a kept login waiting for the browser host's answer, by token.
@@ -10477,6 +10481,8 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 self.follow_sign_ins(&lane, &pages, touched).await;
                 // Back from the person: whether the sign-in they were handed it for went through.
                 self.verify_back(&lane, &pages, agent).await;
+                // Past the watch, or before a restart: an ask still open on the record, seen through now.
+                self.late_sign_ins(&lane, &pages, agent).await;
                 if !lane.is_empty() {
                     self.host_pages.insert(lane.clone(), (pages.clone(), agent));
                 }
@@ -10539,6 +10545,12 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                         if let Some((pages, agent)) = self.host_pages.get(&lane).cloned() {
                             self.verify_back(&lane, &pages, agent).await;
                         }
+                    }
+                    // Not seen through by the watch: an ask open on the record may still be, by any page of the lane.
+                    // (Its lane isn't theirs any more: held was cleared below, so say so here.)
+                    if let Some((pages, agent)) = self.host_pages.get(&lane).cloned() {
+                        self.held.remove(&lane);
+                        self.late_sign_ins(&lane, &pages, agent).await;
                     }
                     self.release_login_waiters(&lane).await;
                 }

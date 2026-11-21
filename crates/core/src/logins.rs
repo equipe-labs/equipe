@@ -303,6 +303,14 @@ pub enum Back {
 
 /// Whether a page back from the person's hands shows the sign-in to `site` went through.
 pub fn back_verdict(site: &str, page: &crate::browser::HostPage) -> Back {
+    back_verdict_in(site, page, true)
+}
+
+/// [`back_verdict`], where `went_on` says whether a page on another site
+/// counts for a sign-in handed over on an identity provider's page: right
+/// after a hand-back it does (it is the site the provider sent the member on
+/// to), long after it says nothing of the sign-in.
+fn back_verdict_in(site: &str, page: &crate::browser::HostPage, went_on_counts: bool) -> Back {
     if page.loading {
         return Back::Wait;
     }
@@ -310,12 +318,105 @@ pub fn back_verdict(site: &str, page: &crate::browser::HostPage) -> Back {
         return Back::StillAsks;
     }
     let on = crate::vault::site_of(&page.url);
-    let went_on = crate::vault::idp_provider(site).is_some() && crate::vault::idp_provider(&on).is_none();
+    let went_on = went_on_counts && crate::vault::idp_provider(site).is_some() && crate::vault::idp_provider(&on).is_none();
     if (crate::vault::same_org(site, &page.url) || went_on) && crate::browser::past_sign_in(&page.url, &page.title, page.signals.as_ref(), page.loading) {
         Back::SignedIn { on }
     } else {
         Back::Wait
     }
+}
+
+/// The page of a lane back from the person's hands that shows the sign-in to
+/// `site` went through, and where it is (`on`): the member's own tab
+/// (`agent`, else the last) first, then any other tab of the lane. A member
+/// that opened another tab, or moved on to the site's app in a new one, is as
+/// signed in as one that reloaded. Not while its own tab still asks to sign in.
+pub fn seen_through<'a>(site: &str, pages: &'a [crate::browser::HostPage], agent: Option<u64>, went_on_counts: bool) -> Option<(&'a crate::browser::HostPage, String)> {
+    let first = agent.and_then(|a| pages.iter().find(|p| p.id == a)).or(pages.last())?;
+    if back_verdict_in(site, first, went_on_counts) == Back::StillAsks {
+        return None;
+    }
+    std::iter::once(first).chain(pages.iter().filter(|p| p.id != first.id)).find_map(|p| match back_verdict_in(site, p, went_on_counts) {
+        Back::SignedIn { on } => Some((p, on)),
+        _ => None,
+    })
+}
+
+/// How long a sign-in ask with no finish on the record is still looked for
+/// in its member's pages. Longer than the hand-back watch, and read back from
+/// the record, so a member slow to look again, or a daemon restarted for an
+/// update meanwhile, doesn't leave a finished sign-in unrecorded.
+pub const OPEN_ASK_LIFE: u64 = 6 * 60 * 60;
+
+/// A sign-in the person was asked for (a hand-off, or a `sign_in` card) that
+/// no finished sign-in on the record answers yet.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAsk {
+    pub member: String,
+    /// The site, by host.
+    pub site: String,
+    pub at: u64,
+    /// A `sign_in` card, not a hand-off: its member's page may be anywhere while it waits.
+    pub card: bool,
+}
+
+/// How long after a hand-off a page past the sign-in on any other site counts
+/// as the one an identity provider's sign-in was for.
+pub const WENT_ON_LIFE: u64 = 30 * 60;
+
+/// A squad's sign-in asks that stand unanswered on the record.
+#[derive(Debug, Default)]
+pub struct OpenAsks {
+    asks: Vec<OpenAsk>,
+}
+
+impl OpenAsks {
+    /// What the record's rows (oldest first) leave open at `now`.
+    pub fn from_rows(rows: &[Entry], now: u64) -> Self {
+        let mut open = OpenAsks::default();
+        for row in rows {
+            open.see(row);
+        }
+        open.forget_old(now);
+        open
+    }
+
+    fn forget_old(&mut self, now: u64) {
+        self.asks.retain(|a| now.saturating_sub(a.at) < OPEN_ASK_LIFE);
+    }
+
+    /// A row of the record: an ask for a sign-in (or the step after it) opens
+    /// one — one per member and site — and a finished sign-in closes every
+    /// ask of its organisation that came before.
+    pub fn see(&mut self, row: &Entry) {
+        if row.site.is_empty() || is_local_page(&row.site) {
+            return;
+        }
+        match row.kind {
+            Kind::Handoff | Kind::Card if row.cause.is_some_and(Cause::is_shared_step) => {
+                self.asks.retain(|a| !(a.member == row.member && crate::vault::same_org(&a.site, &row.site)));
+                self.asks.push(OpenAsk { member: row.member.clone(), site: row.site.clone(), at: row.at, card: row.kind == Kind::Card });
+            }
+            Kind::SignedIn => self.asks.retain(|a| !(crate::vault::same_org(&a.site, &row.site) && a.at <= row.at)),
+            _ => {}
+        }
+    }
+
+    /// `member`'s asks still open at `now`.
+    pub fn of(&mut self, member: &str, now: u64) -> Vec<OpenAsk> {
+        self.forget_old(now);
+        self.asks.iter().filter(|a| a.member == member).cloned().collect()
+    }
+}
+
+/// An open ask that a member's pages show finished: the ask, the page that
+/// shows it, and where it is.
+pub fn late_finish<'a>(asks: &[OpenAsk], pages: &'a [crate::browser::HostPage], agent: Option<u64>, now: u64) -> Option<(OpenAsk, &'a crate::browser::HostPage, String)> {
+    asks.iter().find_map(|ask| {
+        // Only soon after a hand-off is another site's page a sign-in handed over on Google's or GitHub's own page finished.
+        let went_on = !ask.card && now.saturating_sub(ask.at) < WENT_ON_LIFE;
+        seen_through(&ask.site, pages, agent, went_on).map(|(page, on)| (ask.clone(), page, on))
+    })
 }
 
 /// What equipe's own sign-in came to, by where the page went after it.
@@ -1060,6 +1161,83 @@ mod tests {
             assert_eq!(cause_of_handoff("Please take over", Some(url), None, true), Cause::SessionExpired, "{url}");
         }
         assert_eq!(cause_of_handoff("Please take over", Some("https://app.example.com/board"), None, true), Cause::Other);
+    }
+
+    /// The Atinum squad's 2026-11-19 rows, as they were: asked, and the finish never written.
+    fn atinum_nov_19() -> Vec<Entry> {
+        let t = 1_795_000_000;
+        vec![
+            e(t, "accounts.google.com", "backend", Kind::Card, Some(Cause::SessionExpired), None),
+            e(t + 940, "accounts.google.com", "backend", Kind::FillFailed, None, Some(BY_EQUIPE)),
+            e(t + 25_000, "accounts.google.com", "qa-2", Kind::Card, Some(Cause::SessionExpired), None),
+            e(t + 25_002, "accounts.google.com", "qa-2", Kind::FillFailed, None, Some(BY_EQUIPE)),
+            e(t + 33_000, "accounts.google.com", "qa-2", Kind::Handoff, Some(Cause::SessionExpired), None),
+            e(t + 34_800, "accounts.google.com", "backend", Kind::Handoff, Some(Cause::SessionExpired), None),
+            e(t + 50_000, "app.slack.com", "designer", Kind::Handoff, Some(Cause::NoLoginKept), None),
+            e(t + 50_001, "ap-northeast-2.signin.aws.amazon.com", "backend", Kind::Handoff, Some(Cause::TwoFactor), None),
+        ]
+    }
+
+    #[test]
+    fn asks_with_no_finish_on_the_record_stay_open_for_their_member() {
+        let rows = atinum_nov_19();
+        let t = 1_795_000_000;
+        let mut open = OpenAsks::from_rows(&rows, t + 51_000);
+        let qa = open.of("qa-2", t + 51_000);
+        assert_eq!(qa.len(), 1, "one ask per member and site, however often it was made: {qa:?}");
+        assert_eq!((qa[0].site.as_str(), qa[0].at), ("accounts.google.com", t + 33_000));
+        assert_eq!(open.of("backend", t + 51_000).iter().map(|a| a.site.as_str()).collect::<Vec<_>>(), ["accounts.google.com", "ap-northeast-2.signin.aws.amazon.com"]);
+        assert_eq!(open.of("designer", t + 51_000)[0].site, "app.slack.com");
+        // A fill that failed is no ask of its own; a finish closes every ask of its organisation before it.
+        let mut rows = rows;
+        rows.push(e(t + 52_000, "mail.google.com", "pm", Kind::SignedIn, None, Some(BY_PERSON)));
+        let mut open = OpenAsks::from_rows(&rows, t + 52_001);
+        assert!(open.of("qa-2", t + 52_001).is_empty() && open.of("backend", t + 52_001).iter().all(|a| a.site != "accounts.google.com"));
+        assert!(!open.of("designer", t + 52_001).is_empty(), "another organisation's ask stays open");
+        // A finish before the ask closes nothing; asks outlive neither their life nor a captcha.
+        let mut open = OpenAsks::from_rows(&[e(10, "github.com", "qa", Kind::SignedIn, None, Some(BY_PERSON)), e(20, "github.com", "qa", Kind::Handoff, Some(Cause::SessionExpired), None), e(30, "github.com", "pm", Kind::Handoff, Some(Cause::Captcha), None)], 40);
+        assert_eq!(open.of("qa", 40).len(), 1);
+        assert!(open.of("pm", 40).is_empty(), "a CAPTCHA is no sign-in");
+        assert!(open.of("qa", 20 + OPEN_ASK_LIFE).is_empty());
+    }
+
+    #[test]
+    fn a_sign_in_whose_watch_was_missed_is_seen_through_by_a_later_page_of_its_member() {
+        let t = 1_795_000_000;
+        let mut open = OpenAsks::from_rows(&atinum_nov_19(), t + 51_000);
+        let asks = open.of("qa-2", t + 51_000);
+        // Still on Google's sign-in: not yet.
+        assert!(late_finish(&asks, &[host_page(5, "https://accounts.google.com/v3/signin/identifier", true, false)], Some(5), t + 51_000).is_none());
+        // On the console it was for, or Google's own account page: through, and where it is.
+        for (url, on) in [("https://console.cloud.google.com/home", "console.cloud.google.com"), ("https://myaccount.google.com/", "myaccount.google.com")] {
+            let pages = [host_page(5, url, false, false)];
+            let (ask, page, landed) = late_finish(&asks, &pages, Some(5), t + 51_000).unwrap_or_else(|| panic!("{url}"));
+            assert_eq!((ask.site.as_str(), page.id, landed.as_str()), ("accounts.google.com", 5, on));
+        }
+        // Moved on in a second tab while the first still shows a stale sign-in page: its own tab asking wins.
+        let two = [host_page(5, "https://accounts.google.com/signin", true, false), host_page(6, "https://mail.google.com/mail/u/0/", false, false)];
+        assert!(late_finish(&asks, &two, Some(5), t + 51_000).is_none(), "its own tab still asks");
+        // …but where its own tab went elsewhere, another tab past the sign-in is the finish.
+        let two = [host_page(5, "https://example.com/", false, false), host_page(6, "https://mail.google.com/mail/u/0/", false, false)];
+        assert_eq!(late_finish(&asks, &two, Some(5), t + 51_000).map(|(_, p, _)| p.id), Some(6));
+        // A page on another site is no finish of Google's sign-in, nor is a loading one.
+        let mut loading = host_page(5, "https://console.cloud.google.com/home", false, false);
+        loading.loading = true;
+        assert!(late_finish(&asks, &[loading], Some(5), t + 51_000).is_none());
+        let slack = host_page(5, "https://app.slack.com/client/T1/C1", false, false);
+        assert!(late_finish(&asks, std::slice::from_ref(&slack), Some(5), t + 51_000).is_none());
+        // Slack's own ask is seen through on its own host.
+        let mut designer = OpenAsks::from_rows(&atinum_nov_19(), t + 51_000);
+        assert!(late_finish(&designer.of("designer", t + 51_000), &[slack], Some(5), t + 51_000).is_some());
+        // The AWS console past the person's code step finishes AWS's ask; a Google ask isn't finished by an AWS page
+        // hours after it, nor by any page while it is only a card.
+        let mut backend = OpenAsks::from_rows(&atinum_nov_19(), t + 51_000);
+        let console = host_page(7, "https://ap-northeast-2.console.aws.amazon.com/console/home", false, false);
+        let asks = backend.of("backend", t + 51_000);
+        assert_eq!(late_finish(&asks, std::slice::from_ref(&console), Some(7), t + 51_000).map(|(a, _, _)| a.site).as_deref(), Some("ap-northeast-2.signin.aws.amazon.com"));
+        let google_only: Vec<OpenAsk> = asks.into_iter().filter(|a| a.site == "accounts.google.com").collect();
+        assert!(late_finish(&google_only, std::slice::from_ref(&console), Some(7), t + 51_000).is_none(), "long after, a page of another site says nothing of Google's sign-in");
+        assert!(late_finish(&google_only, std::slice::from_ref(&console), Some(7), t + 34_800 + 60).is_some(), "right after the hand-off, it is the site Google sent the member on to");
     }
 
     #[test]

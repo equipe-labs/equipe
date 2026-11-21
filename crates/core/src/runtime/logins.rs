@@ -97,6 +97,54 @@ impl Runtime {
         if let Some(journal) = self.journal(squad) {
             let _ = journal.record_login(&entry);
         }
+        if let Some(open) = self.open_asks.get_mut(squad) {
+            open.see(&entry);
+        }
+    }
+
+    /// `member`'s sign-in asks still open on `squad`'s record.
+    fn open_asks_of(&mut self, squad: &str, member: &str) -> Vec<logins::OpenAsk> {
+        let now = now_secs();
+        if !self.open_asks.contains_key(squad) {
+            let rows = self.journal(squad).and_then(|j| j.logins_since(now.saturating_sub(logins::OPEN_ASK_LIFE)).ok()).unwrap_or_default();
+            self.open_asks.insert(squad.to_owned(), logins::OpenAsks::from_rows(&rows, now));
+        }
+        self.open_asks.get_mut(squad).map(|o| o.of(member, now)).unwrap_or_default()
+    }
+
+    /// A lane not in the person's hands whose pages show a sign-in its member
+    /// was asked for — and the record has no finish for — went through: the
+    /// watch after a hand-back may have ended or never begun (the daemon
+    /// restarted for an update meanwhile, the member looked again late, the
+    /// person never pressed Done), but the sign-in stands in the shared
+    /// browser all the same. Recorded as the person's, kept, and members
+    /// waiting on it told, as [`Runtime::verify_back`] does.
+    pub(super) async fn late_sign_ins(&mut self, lane: &str, pages: &[browser::HostPage], agent: Option<u64>) {
+        let Some((squad, key)) = lane.split_once('/') else { return };
+        if pages.is_empty()
+            || self.verify_back.contains_key(lane)
+            || self.held.contains_key(lane)
+            || self.checking.contains_key(lane)
+            || self.relogins.contains_key(lane)
+            || self.windows.handoffs.busy_lane(lane)
+            || self.windows.views.holds(lane)
+        {
+            return;
+        }
+        let (squad, member, profile) = (squad.to_owned(), browser::member_of(key).to_owned(), browser::split_profile(key).1.unwrap_or_default().to_owned());
+        let asks = self.open_asks_of(&squad, &member);
+        let Some((ask, _, on)) = logins::late_finish(&asks, pages, agent, now_secs()) else { return };
+        let site = ask.site;
+        self.recent_asks.signed_in(&site);
+        crate::daemon_log!("equipe: {member}'s browser is signed in to {site}; the person's ask for it was still open on the record");
+        self.login_record(&squad, Entry::new(now_secs(), &site, &member, Kind::SignedIn, None, Some(BY_PERSON)));
+        let squads = self.sharing_squads(&squad, &profile);
+        self.collect_sign_in(squads.clone(), &profile, &site);
+        if on != site {
+            self.collect_sign_in(squads, &profile, &on);
+        }
+        self.reload_waiting(&site, lane);
+        self.release_login_waiters(lane).await;
     }
 
     /// A member hands its browser to the person (`show_my_browser`): kept
@@ -227,13 +275,10 @@ Don't hand over yours: end your turn saying you wait for that sign-in — you ge
             self.verify_back.remove(lane);
             return;
         }
-        let Some(page) = agent.and_then(|a| pages.iter().find(|p| p.id == a)).or(pages.last()) else { return };
+        // Its own tab first, then any other: a member that went on in a new tab is as signed in.
         // Still asking may be a page from before the hand-off on its way to the
         // site: watched on until the wait is over.
-        let on = match logins::back_verdict(&site, page) {
-            logins::Back::Wait | logins::Back::StillAsks => return,
-            logins::Back::SignedIn { on } => on,
-        };
+        let Some((page, on)) = logins::seen_through(&site, pages, agent, true) else { return };
         self.verify_back.remove(lane);
         self.recent_asks.signed_in(&site);
         let Some((squad, key)) = lane.split_once('/') else { return };

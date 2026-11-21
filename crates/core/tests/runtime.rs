@@ -5014,6 +5014,56 @@ async fn a_sign_in_the_person_made_where_no_member_could_watch_is_seen_through_w
     assert!(finished, "{:?}", equipe_core::logins::read(&db, 0));
 }
 
+/// The Atinum squad's 2026-11-19 Google asks: the person was asked, signed in,
+/// and nothing was written — the watch after the hand-back had ended, or the
+/// daemon had been restarted for an update since. The ask stands open on the
+/// record, so the member's page past Google's sign-in, whenever it is seen,
+/// is the finish: on the record as the person's, and kept.
+#[tokio::test]
+async fn a_google_ask_the_record_left_open_is_finished_by_its_members_page_past_the_sign_in_after_a_restart() {
+    unsafe { std::env::set_var("EQUIPE_VAULT_IN_MEMORY", "1") };
+    let repo = repo();
+    let (claude, _) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let asked = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() - 20 * 60;
+    let journal = Journal::for_squad(&home, "acme").unwrap();
+    for row in [
+        equipe_core::logins::Entry::new(asked, "accounts.google.com", "pm", equipe_core::logins::Kind::Card, Some(equipe_core::logins::Cause::SessionExpired), None),
+        equipe_core::logins::Entry::new(asked + 2, "accounts.google.com", "pm", equipe_core::logins::Kind::FillFailed, None, Some(equipe_core::logins::BY_EQUIPE)),
+        equipe_core::logins::Entry::new(asked + 60, "accounts.google.com", "pm", equipe_core::logins::Kind::Handoff, Some(equipe_core::logins::Cause::SessionExpired), None),
+    ] {
+        journal.record_login(&row).unwrap();
+    }
+    drop(journal);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.browser_hub().await.unwrap().screen(true);
+    // A hand-over that says nothing of a sign-in (no ask of its own), on a page past Google's: the person is done, the browser comes back.
+    let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://console.cloud.google.com/home", "why": "Look at the console" })).await;
+    assert!(!said.is_error, "{said:?}");
+    handle.send(Command::BrowserControl { lane: "acme/pm".into(), take: false });
+    let db = equipe_core::journal::squad_dir(&home, "acme").join("squad.db");
+    let mut rows = Vec::new();
+    for _ in 0..200 {
+        rows = equipe_core::logins::read(&db, 0).unwrap_or_default();
+        if rows.iter().any(|r| r.kind == equipe_core::logins::Kind::SignedIn) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        rows.iter().any(|r| r.kind == equipe_core::logins::Kind::SignedIn && r.site == "accounts.google.com" && r.member == "pm" && r.by.as_deref() == Some("person")),
+        "{rows:?}"
+    );
+    // Kept for the squads sharing the browser, and recorded once.
+    let line = host_line(&ops, |l| l.contains("\"op\":\"collect\"") && l.contains("accounts.google.com")).await;
+    assert!(line.contains("accounts.google.com"), "{line}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let rows = equipe_core::logins::read(&db, 0).unwrap();
+    assert_eq!(rows.iter().filter(|r| r.kind == equipe_core::logins::Kind::SignedIn).count(), 1, "{rows:?}");
+}
+
 #[tokio::test]
 async fn a_sign_in_from_a_view_the_site_doesnt_take_goes_on_in_the_members_own_browser_and_that_site_skips_the_view_after() {
     let repo = repo();
