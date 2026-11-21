@@ -8035,3 +8035,34 @@ async fn the_pm_hears_where_each_project_stands_once_per_conversation_then_only_
     assert!(third.contains("- site: no one on it now; 1 to do or in progress"), "{third}");
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn on_full_autonomy_a_member_is_never_allowed_to_hand_the_person_a_terminal_chore() {
+    use equipe_core::protocol::autonomy::Autonomy;
+    let site = named("site");
+    let home = scratch("chore").join(".equipe");
+    std::fs::create_dir_all(&home).unwrap();
+    squads::create(&home, "acme", &site).unwrap();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+    let chore = serde_json::json!({
+        "ask": "Install Chrome",
+        "effort_minutes": 2,
+        "needs": ["Run `npx playwright install --with-deps chrome` in a terminal and enter your sudo password."],
+    });
+    // On the desktop's default the ask is the squad's own to judge: not turned back as an internal step.
+    let before = tool(&handle, "frontend", "block_on_person", chore.clone()).await;
+    assert!(!before.text.contains("do it yourself"), "{}", before.text);
+
+    handle.send(Command::SetAutonomyMode { squad: "acme".into(), mode: Autonomy::Full });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.mode == Autonomy::Full)).await;
+    let refused = tool(&handle, "frontend", "block_on_person", chore).await;
+    assert!(refused.is_error && refused.text.contains("do it yourself") && refused.text.contains("never ask them to open a terminal"), "{}", refused.text);
+
+    // The same words as a request for the person's yes are turned back too.
+    let said = tool(&handle, "frontend", "ask_person", serde_json::json!({ "action": "Run sudo npx playwright install --with-deps chrome", "why": "Chrome is missing" })).await;
+    assert!(said.is_error && said.text.contains("do it yourself"), "{}", said.text);
+    handle.shutdown().await;
+}

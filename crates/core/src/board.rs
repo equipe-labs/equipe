@@ -950,7 +950,9 @@ have done it. Your changes so far are kept. Then end your turn. The person reads
 alone, so it says what they must do — not what you do. Never list macOS privacy-permission steps \
 (System Settings panes, adding equipe's binary with +, restarting equipe): equipe's desktop tools hold Accessibility and \
 Screen Recording themselves, so use them for screenshots, clicks and dialogs; if one says a permission is missing, call \
-this with `permission` — the person gets one card with one button — and no steps. When your browser's page asks \
+this with `permission` — the person gets one card with one button — and no steps. Never list opening a terminal, running a \
+command, installing software or typing a sudo password as theirs: where the squad runs on its own, equipe turns such an ask back \
+to you — you have a shell, so do it yourself. When your browser's page asks \
 for a verification code the site emailed (GitHub's \"Confirm access\", Google's \"Verify it's you\") and no card came \
 up for it by itself, call this with `verification` and nothing else: the person gets one card that fills the code from \
 their mailbox on their click, your ticket stays yours, and you never see, ask for or type the code.",
