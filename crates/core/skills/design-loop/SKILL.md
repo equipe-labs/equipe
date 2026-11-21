@@ -18,6 +18,7 @@ title: Pricing
 status: draft | in-review | approved | built | verified
 ticket: T-123
 flow: Onboarding
+route: /pricing        where the built screen is, for the screenshots
 updated: 2026-11-21
 ---
 ## Job            what the person comes to do, and what they should feel
@@ -30,7 +31,7 @@ updated: 2026-11-21
 ```
 
 Pictures sit beside it: `design/screens/<slug>/design.png` (the design), `built-1280.png` and `built-390.png` (the
-built screen). The team's Design view reads these files, so a spec without them shows as unbuilt.
+built screen; in a scaffolded project `npm run build && npm run shots` writes them from each spec's `route`). The team's Design view reads these files, so a spec without them shows as unbuilt.
 
 ## Plan
 
