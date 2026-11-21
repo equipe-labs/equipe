@@ -126,7 +126,7 @@ impl Runtime {
             }
             return id;
         }
-        let settings = self.vault.lock().map(|v| v.settings.clone()).unwrap_or_default();
+        let settings = self.vault_view().0;
         let (mailbox, open_url) = mailbox_ref(&settings, site);
         let member = session.and_then(|s| self.sessions.get(&s)).and_then(|s| s.name().map(str::to_owned)).unwrap_or_else(|| browser::member_of(lane.split_once('/').map_or(lane, |(_, k)| k)).to_owned());
         let ticket = session.and_then(|s| self.sessions.get(&s)).and_then(|s| s.work.as_ref().map(|w| w.ticket));
@@ -251,7 +251,7 @@ they have, and carry on in this browser.",
         let requested_at = self.verify.requested.get(&id).copied().unwrap_or(card.at);
         let mail_from = self.logins.iter().find(|l| vault::serves(&l.site, &card.site)).and_then(|l| l.autopilot.mail_from.clone());
         let wanted = vf::Wanted { site: card.site.clone(), mail_from, requested_at };
-        let settings = self.vault.lock().map(|v| v.settings.clone()).unwrap_or_default();
+        let settings = self.vault_view().0;
         let (store, internal, waits) = (self.vault.clone(), self.internal.clone(), self.fill_waits.clone());
         let tab = HostTab { host, waits, lane: card.lane.clone(), page, token: self.next_fill_token() };
         let squad_s = squad.to_owned();

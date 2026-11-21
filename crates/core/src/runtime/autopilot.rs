@@ -89,7 +89,14 @@ pub(super) struct State {
     device_running: HashMap<u32, Option<SessionId>>,
     /// When each GitHub App's token is minted again.
     app_next: HashMap<u32, u64>,
+    /// Whether Messages can be read, as last probed off the loop (`None`:
+    /// not probed yet, or not a Mac).
     sms_access: Option<bool>,
+    /// The probe has answered (`sms_access` is its word, not a blank).
+    sms_probed: bool,
+    /// A probe is running off the loop: opening `chat.db` can wait on macOS's
+    /// consent prompt for as long as the person takes to answer.
+    sms_probing: bool,
 }
 
 /// What comes back to the loop from autopilot's work off it.
@@ -97,6 +104,8 @@ pub(super) enum Note {
     CliValues(HashMap<u32, String>),
     /// A fill on a page equipe opened for itself ended: look at it again.
     Look { token: u64 },
+    /// The Messages probe came back (`sms::access`).
+    SmsAccess(Option<bool>),
     /// A change to the vault went through (or didn't): the card again.
     Changed(Result<(), String>),
     Scanned(Result<(), String>),
@@ -131,7 +140,9 @@ impl Runtime {
             Command::ForgetLoginPasskey { id } => self.with_vault(move |v| v.set_passkey(id, None)),
             Command::SaveMailbox { mailbox } => self.vault_then_status(move |v| v.save_mailbox(mailbox)),
             Command::SetSmsCodes { on } => {
-                self.autopilot.sms_access = self.person_home().and_then(|h| ap::sms::access(&h));
+                // Probed again, off the loop, by the status the change ends in.
+                self.autopilot.sms_probed = false;
+                self.autopilot.sms_access = None;
                 self.vault_then_status(move |v| v.set_sms(on));
             }
             Command::SetKeepAlive { hours } => self.vault_then_status(move |v| v.set_keepalive_hours(hours)),
@@ -155,23 +166,45 @@ impl Runtime {
         });
     }
 
-    /// Login autopilot as a whole, to every screen.
+    /// Login autopilot as a whole, to every screen. Nothing here waits: the
+    /// logins come from what was last seen ([`Self::vault_view`]), and
+    /// whether Messages can be read from the last probe, which runs off the loop.
     pub(super) fn publish_autopilot(&mut self) {
         let status = self.autopilot_status();
         self.publish(Event::Autopilot { status });
+        self.probe_sms();
+    }
+
+    /// Whether equipe may read Messages, asked off the loop: opening
+    /// `chat.db` is a macOS consent check that can block in `open()`.
+    fn probe_sms(&mut self) {
+        if self.autopilot.sms_probed || self.autopilot.sms_probing {
+            return;
+        }
+        let Some(home) = self.person_home() else {
+            self.autopilot.sms_probed = true;
+            return;
+        };
+        self.autopilot.sms_probing = true;
+        let internal = self.internal.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = internal.send(Internal::Autopilot(Note::SmsAccess(ap::sms::access(&home))));
+        });
+    }
+
+    /// The logins' settings and command-line credentials as last seen,
+    /// without waiting on the vault: another thread may hold it while the
+    /// secret store asks the person something. The lock is taken when it's
+    /// free, and the last copy answers when it isn't.
+    pub(super) fn vault_view(&self) -> (crate::autopilot::Settings, Vec<crate::protocol::vault::CliLogin>) {
+        peek_vault(&self.vault, &self.vault_seen)
     }
 
     pub(super) fn autopilot_status(&mut self) -> AutopilotStatus {
-        let (settings, cli) = match self.vault.lock() {
-            Ok(v) => (v.settings.clone(), v.cli.clone()),
-            Err(_) => Default::default(),
-        };
+        let (settings, cli) = self.vault_view();
         let since = now_secs().saturating_sub(7 * 24 * 3600);
         let rows: Vec<Entry> = self.journals.values().filter_map(|j| j.logins_since(since).ok()).flatten().collect();
         let stats = crate::logins::summarize(&rows);
-        if self.autopilot.sms_access.is_none() {
-            self.autopilot.sms_access = self.person_home().and_then(|h| ap::sms::access(&h));
-        }
         AutopilotStatus {
             mailbox: settings.mailbox,
             gmail: settings.gmail,
@@ -196,6 +229,12 @@ impl Runtime {
                 self.autopilot.cli_values = values;
             }
             Note::Look { token } => self.look_again(token),
+            Note::SmsAccess(access) => {
+                self.autopilot.sms_probing = false;
+                self.autopilot.sms_probed = true;
+                self.autopilot.sms_access = access;
+                self.publish_autopilot();
+            }
             Note::Changed(Ok(())) => {
                 self.reload_cli_values();
                 self.publish_autopilot();
@@ -234,7 +273,7 @@ impl Runtime {
             self.autopilot.loaded = true;
             self.reload_cli_values();
             // GitHub Apps' tokens: minted at start, then before each runs out.
-            let apps: Vec<u32> = self.vault.lock().map(|v| v.cli.iter().filter(|c| c.kind == CliKind::GhApp).map(|c| c.id).collect()).unwrap_or_default();
+            let apps: Vec<u32> = self.vault_view().1.iter().filter(|c| c.kind == CliKind::GhApp).map(|c| c.id).collect();
             for id in apps {
                 self.autopilot.app_next.insert(id, 0);
             }
@@ -267,7 +306,7 @@ impl Runtime {
 
     /// The environment a member's run in `squad` gets from the person's kept values.
     pub(super) fn member_run_env(&self, squad: &str) -> Vec<(String, String)> {
-        let cli = self.vault.lock().map(|v| v.cli.clone()).unwrap_or_default();
+        let cli = self.vault_view().1;
         ap::cli_logins::run_env(&cli, &self.autopilot.cli_values, squad)
     }
 
@@ -367,7 +406,7 @@ impl Runtime {
     /// passkey (where the page offers one), then the mailbox or Messages.
     fn code_step(&self, login: &Login, passkey_offered: bool, sign_in_page: bool) -> Option<Step> {
         let a = &login.autopilot;
-        let settings = self.vault.lock().map(|v| v.settings.clone()).unwrap_or_default();
+        let settings = self.vault_view().0;
         if sign_in_page {
             return (a.passkey && a.has_passkey && passkey_offered).then_some(Step::Passkey);
         }
@@ -440,7 +479,7 @@ impl Runtime {
 
     /// What a code step needs, gathered on the loop; secrets are read off it.
     fn code_job(&self, login: &Login, step: Step) -> CodeJob {
-        let settings = self.vault.lock().map(|v| v.settings.clone()).unwrap_or_default();
+        let settings = self.vault_view().0;
         CodeJob {
             vault: self.vault.clone(),
             login: login.clone(),
@@ -455,7 +494,7 @@ impl Runtime {
     // ── keep-alive ──
 
     fn keepalive_tick(&mut self, now: u64) {
-        let hours = self.vault.lock().map(|v| v.settings.keepalive_hours).unwrap_or(0);
+        let hours = self.vault_view().0.keepalive_hours;
         if self.host.is_none() || self.autopilot.visits.values().any(|v| v.lane == VISIT_LANE) {
             return;
         }
@@ -632,7 +671,7 @@ impl Runtime {
     pub(super) fn device_login_from_reply(&mut self, session: SessionId, reply: &str) {
         let Some(command) = shell_commands(reply).into_iter().find(|c| ap::cli_logins::device_command(c).is_some()) else { return };
         let Some(cli_name) = ap::cli_logins::cli_of(&command) else { return };
-        let cli = self.vault.lock().map(|v| v.cli.clone()).unwrap_or_default();
+        let cli = self.vault_view().1;
         let Some(approval) = ap::cli_logins::approval_for(&cli, &self.logins, &cli_name) else { return };
         if self.autopilot.device_running.contains_key(&approval.id) {
             return;
@@ -658,7 +697,7 @@ impl Runtime {
     /// browser like any other. The approval's number when this call took it
     /// over (to be let go of with [`Self::device_card_ended`]).
     pub(super) fn approve_device_for_card(&mut self, session: SessionId, cli_name: &str, url: String, code: Option<String>) -> Option<u32> {
-        let cli = self.vault.lock().map(|v| v.cli.clone()).unwrap_or_default();
+        let cli = self.vault_view().1;
         let approval = ap::cli_logins::approval_for(&cli, &self.logins, cli_name)?;
         let took = !self.autopilot.device_running.contains_key(&approval.id);
         if took {
@@ -771,7 +810,7 @@ impl Runtime {
 
     /// A device sign-in approval by its number: kept, or a login's own switch's.
     fn approval(&self, id: u32) -> Option<crate::protocol::vault::CliLogin> {
-        let cli = self.vault.lock().map(|v| v.cli.clone()).unwrap_or_default();
+        let cli = self.vault_view().1;
         ap::cli_logins::approval_by_id(&cli, &self.logins, id)
     }
 
@@ -805,7 +844,7 @@ impl Runtime {
 
     /// Give a GitHub token (or a GitHub App's fresh installation token) to `gh`.
     fn apply_cli(&mut self, id: u32) {
-        let Some(login) = self.vault.lock().ok().and_then(|v| v.cli.iter().find(|c| c.id == id).cloned()) else {
+        let Some(login) = self.vault_view().1.into_iter().find(|c| c.id == id) else {
             self.autopilot.app_next.remove(&id);
             return;
         };
@@ -1150,5 +1189,65 @@ mod tests {
         assert_eq!(told.len(), 1);
         assert_eq!((told[0].url.as_deref(), told[0].code.as_deref()), (Some("https://github.com/login/device"), Some("3A1F-9C2B")));
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+/// Settings and command-line credentials of `vault` without waiting for it:
+/// the lock when it's free (refreshing `seen`), else the copy `seen` holds.
+/// A poisoned vault reads as empty, as before.
+pub(super) fn peek_vault(
+    vault: &std::sync::Mutex<vault::Vault>,
+    seen: &std::sync::Mutex<(crate::autopilot::Settings, Vec<crate::protocol::vault::CliLogin>)>,
+) -> (crate::autopilot::Settings, Vec<crate::protocol::vault::CliLogin>) {
+    use std::sync::TryLockError;
+    match vault.try_lock() {
+        Ok(v) => {
+            let now = (v.settings.clone(), v.cli.clone());
+            if let Ok(mut seen) = seen.lock() {
+                *seen = now.clone();
+            }
+            now
+        }
+        Err(TryLockError::WouldBlock) => seen.lock().map(|s| s.clone()).unwrap_or_default(),
+        Err(TryLockError::Poisoned(_)) => Default::default(),
+    }
+}
+
+#[cfg(test)]
+mod peek_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn a_held_vault_is_not_waited_for() {
+        let home = std::env::temp_dir().join(format!("equipe-peek-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let mut kept = vault::Vault::open(&home, Box::new(vault::InMemory::default()));
+        kept.settings.keepalive_hours = 6;
+        let seen = Mutex::new(Default::default());
+        let vault = Arc::new(Mutex::new(kept));
+
+        // Free: read, and remembered.
+        assert_eq!(peek_vault(&vault, &seen).0.keepalive_hours, 6);
+
+        // Held, as while the secret store asks the person something: the last copy, at once.
+        let (held, release) = (vault.clone(), std::sync::mpsc::channel::<()>());
+        let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+        let holder = std::thread::spawn(move || {
+            let mut v = held.lock().unwrap();
+            v.settings.keepalive_hours = 12;
+            locked_tx.send(()).unwrap();
+            let _ = release.1.recv();
+        });
+        locked_rx.recv().unwrap();
+        let started = std::time::Instant::now();
+        assert_eq!(peek_vault(&vault, &seen).0.keepalive_hours, 6);
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+
+        // Let go: the new value shows.
+        release.0.send(()).unwrap();
+        holder.join().unwrap();
+        assert_eq!(peek_vault(&vault, &seen).0.keepalive_hours, 12);
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

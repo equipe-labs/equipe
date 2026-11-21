@@ -52,8 +52,8 @@ impl Runtime {
                 held.push(h);
             }
         };
-        if let Ok(v) = self.vault.lock() {
-            for c in v.cli.iter().filter(|c| c.kind == crate::protocol::vault::CliKind::Env && c.squad.as_deref() == Some(squad)) {
+        {
+            for c in self.vault_view().1.iter().filter(|c| c.kind == crate::protocol::vault::CliKind::Env && c.squad.as_deref() == Some(squad)) {
                 let (label, why) = labels.get(&c.name).cloned().unwrap_or_default();
                 add(&mut held, Held { key: c.name.clone(), label, why, open: false });
             }
