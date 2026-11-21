@@ -24,3 +24,4 @@ criteria and its cases from the test plan (`tests`). A small fix skips all of th
 The plan is kept in the squad's own folder, never in the project's repository: its tickets name it by its absolute
 path, which their owners read from their worktrees, and what in it is about the person or their team never goes into
 the repository's files, commits or pull requests.
+A plan names each screen it touches by its spec, `design/screens/<slug>.md` (your `design-loop` skill).
