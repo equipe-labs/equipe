@@ -93,6 +93,22 @@ and the sheet. What the designer couldn't confirm — a licence, a platform
 default, a taste check — goes up as a proposal ticket each, in the same
 hand-in. The designer's charter says all this (`roles.rs`).
 
+## The design loop
+
+A product's design runs as a loop on files in its repository: **plan** (the PM's ticket carries
+`Design spec: design/screens/<slug>.md` and acceptance that includes design acceptance) → **design** (the designer writes
+the spec: job, layout, states, copy, behaviour, success metric; a critic, then the person for taste calls, approve it)
+→ **build** (an engineer builds from the approved spec with the system's components, in the same worktree by baton, and
+saves built screenshots beside the spec) → **accept** (built is compared with design state by state; status `verified`)
+→ **measure** (each spec names its success metric; the growth run and sprint review read the numbers) → **improve** (a
+number that points at a screen becomes one design ticket with the same evidence ids and a hypothesis; the result is
+written into the spec's `History`, a worse change is reverted). The skills are `design-loop` (PM, designer, frontend),
+`web-stack` (the default React, Tailwind, shadcn/ui and lucide stack, and how tokens become the theme: the project's
+tokens file is the source and the stylesheet is generated from it) and `brand-kit` (the brand step: four logo concepts from an image model,
+vector first, the person's pick, then the final mark, wordmark, favicon set, social image, palette and type as tokens).
+A design file in a tool such as Penpot, when a project has one (`design/penpot.json`), mirrors the repository, never
+the other way round.
+
 ## Copies
 
 Another repository may use a generated file — the CSS, Swift, Kotlin or

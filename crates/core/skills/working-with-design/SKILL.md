@@ -19,6 +19,13 @@ designer's: route it to them with the flow, screen and state named; scope and pr
 When a project the person builds a UI on has no design system of its own yet — no tokens, no component registry —
 offer one before its screens multiply: the designer's tickets in order (the brand, the tokens, a registry with every
 component and a docs page each), then frontend's screens built only from it; the person decides whether and when.
+A new product's first sprint includes its brand step (`brand-kit`: logo concepts, the person's pick, the kit, palette
+and type as tokens) before its screens are polished; put the pick to the person as one question with tappable answers
+where the app has them. Every ticket that plans or changes a screen carries `Design spec: design/screens/<slug>.md`
+(or says the designer writes it first) and acceptance that includes design acceptance; your `design-loop` skill says how
+a spec is reviewed before build, accepted after it, and how a number from the growth run or the sprint review becomes a
+design ticket with its evidence and a hypothesis. A new web UI with no stack yet is built on the default one
+(`web-stack`: React, Tailwind, shadcn/ui, lucide), never a stack the engineer improvises; a project that has a stack keeps it.
 That setup brief is the design's — `design/brand.md`, in the project's repository with its system, which may be
 public: the product's look and voice only. The person's own plans, the people they name and their numbers stay in
 your brief and plan, in the squad's folder.

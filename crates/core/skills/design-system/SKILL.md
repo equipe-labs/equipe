@@ -21,7 +21,9 @@ compared on one sheet, the person picks, then the chosen one in light and dark, 
 `design/assets/logo/`; 3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`; 4. the UI
 map — `flows/flows.json` and its pictures; 5. design QA — what is built checked against them, a report under
 `design/qa/`. Say which step you are on; the taste calls in each are the person's. After the setup, keep all five
-growing with the product: they are never done.
+growing with the product: they are never done. The logo step follows your `brand-kit` skill: three or four options made with an image model where the
+platform has one, vector first, then the final kit. The tokens are the source of truth and the code's theme is generated
+from them (`web-stack`); a design file in a tool such as Penpot mirrors the repository (`design-loop`).
 
 For the brief and the system, first find out which case it is. A company with a brand already (a website, an app, a
 deck): harvest before you design — `equipe design audit <its site>` (more pages with `--pages`), then ask the person

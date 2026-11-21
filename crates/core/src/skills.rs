@@ -58,6 +58,7 @@ const SOURCES: &[Source] = &[
     Source { dir: "office-hours", files: &[file!("office-hours", "SKILL.md")], offered: |r, c| r.id == PM && c.board_tools },
     Source { dir: "planning", files: &[file!("planning", "SKILL.md")], offered: |r, _| r.id == PM },
     Source { dir: "working-with-design", files: &[file!("working-with-design", "SKILL.md")], offered: |r, _| r.id == PM },
+    Source { dir: "design-loop", files: &[file!("design-loop", "SKILL.md")], offered: |r, _| matches!(r.id, PM | "designer" | "frontend") },
     Source { dir: "routines-and-signals", files: &[file!("routines-and-signals", "SKILL.md")], offered: |r, _| r.id == PM },
     Source { dir: "product-ideas", files: &[file!("product-ideas", "SKILL.md")], offered: |r, c| r.id == PM && c.board_tools },
     Source {
@@ -74,6 +75,12 @@ const SOURCES: &[Source] = &[
         files: &[file!("design-system", "SKILL.md"), file!("design-system", "references/registry.md")],
         offered: |r, _| matches!(r.id, "designer" | "frontend"),
     },
+    Source {
+        dir: "web-stack",
+        files: &[file!("web-stack", "SKILL.md")],
+        offered: |r, _| matches!(r.id, "designer" | "frontend"),
+    },
+    Source { dir: "brand-kit", files: &[file!("brand-kit", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source { dir: "design-process", files: &[file!("design-process", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source {
         dir: "design-references",
@@ -494,13 +501,13 @@ mod tests {
         let team = [Teammate { name: "pm", role: PM }];
         let base = ctx(&team);
         let all = Context { browser: true, desktop: true, design: true, ..ctx(&team) };
-        assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "routines-and-signals", "product-ideas", "research-report"]);
+        assert_eq!(names(PM, &base), ["office-hours", "planning", "working-with-design", "design-loop", "routines-and-signals", "product-ideas", "research-report"]);
         let craft = ["ui-product-kinds", "ui-foundations", "ui-layout-and-states", "ui-data-display", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-writing", "ui-polish", "ui-review", "ui-vocabulary", "ui-design-systems"];
-        let designer_has = ["plan-review", "research-report", "design-system", "design-process", "design-references", "design-tools", "ui-map", "design-qa", "design-session"];
+        let designer_has = ["design-loop", "plan-review", "research-report", "design-system", "web-stack", "brand-kit", "design-process", "design-references", "design-tools", "ui-map", "design-qa", "design-session"];
         assert_eq!(names("designer", &base), designer_has.iter().chain(&craft).copied().collect::<Vec<_>>());
         assert!(names("designer", &all).contains(&"design-remix".to_owned()));
         // Engineers who build screens get the parts of the craft they build to.
-        assert_eq!(names("frontend", &base), ["plan-review", "research-report", "design-system", "ui-floor", "ui-forms", "ui-motion", "ui-accessibility", "ui-polish", "ui-design-systems"]);
+        assert_eq!(names("frontend", &base), ["design-loop", "plan-review", "research-report", "design-system", "web-stack", "ui-floor", "ui-forms", "ui-motion", "ui-accessibility", "ui-polish", "ui-design-systems"]);
         assert_eq!(names("mobile", &base), ["plan-review", "research-report", "ui-forms", "ui-mobile", "ui-motion", "ui-accessibility", "ui-polish", "ui-design-systems"]);
         // An engineer gets the component system, not the designer's setup of a brand.
         let text = |id: &str, c: &Context<'_>, name: &str| offered(role(id).unwrap(), c).into_iter().find(|s| s.name == name).unwrap().text();
@@ -518,7 +525,7 @@ mod tests {
         assert_eq!(names(CUSTOM.id, &all), ["research-report", "browser", "desktop-apps"]);
         // Without board tools: nothing that needs them.
         let bare = Context { board_tools: false, ..ctx(&team) };
-        assert_eq!(names(PM, &bare), ["planning", "working-with-design", "routines-and-signals", "research-report"]);
+        assert_eq!(names(PM, &bare), ["planning", "working-with-design", "design-loop", "routines-and-signals", "research-report"]);
         assert!(!names("backend", &bare).contains(&"plan-review".to_owned()));
     }
 
