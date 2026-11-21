@@ -44,9 +44,17 @@ proposes it to the person."
         if let Some(why) = rules::too_soon(&proposal, &mates, asked) {
             return Err(why);
         }
-        let reply = rules::proposed_reply(&proposal);
+        // A squad that runs on its own (non-developers): staffing is the team's call, made
+        // now and told — the same change an approval makes, by the squad's own setting.
+        let on_its_own = self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full;
+        let reply = if on_its_own { rules::settled_reply(&proposal) } else { rules::proposed_reply(&proposal) };
         let change = proposal.into_change(equipe_protocol::new_session_id(), member, id, now_secs());
         self.team_changes(squad).push(change.clone());
+        if on_its_own {
+            self.team_by_policy.insert(change.id);
+            let _ = self.internal.send(Internal::Apply(Box::new(Command::ApproveTeamChange { squad: squad.to_owned(), id: change.id })));
+            return Ok(reply);
+        }
         self.publish(Event::TeamChangeProposed { squad: squad.to_owned(), change });
         Ok(reply)
     }
@@ -63,6 +71,7 @@ proposes it to the person."
     /// nothing more.
     pub(super) async fn approve_team_change(&mut self, squad: &str, id: u64) {
         let Some(change) = self.take_team_change(squad, id) else { return };
+        let by_policy = self.team_by_policy.remove(&id);
         let mut members = Vec::new();
         match change.change {
             Change::Add => {
@@ -117,15 +126,27 @@ proposes it to the person."
         let names = members.join(", ");
         let (line, shown) = match (change.change, members.is_empty()) {
             (Change::Add, false) => (
-                format!("The person approved your proposal: {names} joined the team; equipe hands them ready work by the board's rules."),
+                if by_policy {
+                    format!("{names} joined the team (the squad's own setting made the change; nobody was asked). Tell the person in one short line; equipe hands them ready work by the board's rules.")
+                } else {
+                    format!("The person approved your proposal: {names} joined the team; equipe hands them ready work by the board's rules.")
+                },
                 say!(self, "news.team_added", names = names),
             ),
             (Change::Add, true) => (
-                format!("The person approved adding {}, but nobody could join (see the error on their screen).", change.role),
+                if by_policy {
+                    format!("Adding {} was made at once, but nobody could join (see the error on the person's screen).", change.role)
+                } else {
+                    format!("The person approved adding {}, but nobody could join (see the error on their screen).", change.role)
+                },
                 say!(self, "news.team_not_added", role = change.role),
             ),
             (Change::Remove, false) => (
-                format!("The person approved your proposal: {names} left the team; what it was on went back to the board."),
+                if by_policy {
+                    format!("{names} left the team (the squad's own setting made the change; nobody was asked); what it was on went back to the board. Tell the person in one short line.")
+                } else {
+                    format!("The person approved your proposal: {names} left the team; what it was on went back to the board.")
+                },
                 say!(self, "news.team_removed", name = names),
             ),
             (Change::Remove, true) => return,

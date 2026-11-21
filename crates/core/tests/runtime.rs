@@ -2453,6 +2453,97 @@ async fn running_code_in_the_browser_shows_the_code_to_the_person() {
     assert_eq!(verdict["behavior"], "allow");
 }
 
+/// A permission request that is put to the person: its card's kind, answered no.
+async fn asked_and_refused(handle: &Handle, events: &mut UnboundedReceiver<Event>, tool_name: &str, input: serde_json::Value) -> equipe_core::protocol::autonomy::Kind {
+    let handle2 = handle.clone();
+    let arguments = serde_json::json!({ "tool_name": tool_name, "input": input, "tool_use_id": "t" });
+    let waiting = tokio::spawn(async move { tool(&handle2, "frontend", "approve", arguments).await });
+    let asked = until(events, |e| matches!(e, Event::ApprovalRequested { .. })).await;
+    let Some(Event::ApprovalRequested { approval, .. }) = asked.last() else { unreachable!() };
+    let kind = approval.ask.as_ref().expect("a kind").kind;
+    handle.send(Command::Decide { squad: "acme".into(), approval: approval.id, decision: Decision::Deny, words: None, said: None });
+    let verdict: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
+    assert_eq!(verdict["behavior"], "deny");
+    kind
+}
+
+async fn verdict_of(handle: &Handle, tool_name: &str, input: serde_json::Value) -> String {
+    let said = tool(handle, "frontend", "approve", serde_json::json!({ "tool_name": tool_name, "input": input, "tool_use_id": "t" })).await;
+    serde_json::from_str::<serde_json::Value>(&said.text).unwrap()["behavior"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn the_squads_own_scratch_under_dot_equipe_is_not_a_secret_while_keys_and_other_squads_still_ask() {
+    use equipe_core::protocol::autonomy::Kind;
+    let site = named("site");
+    // Where a real install keeps it: under a folder called `.equipe`.
+    let home = scratch("dot").join(".equipe");
+    std::fs::create_dir_all(&home).unwrap();
+    squads::create(&home, "acme", &site).unwrap();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+
+    // Its ticket's scratch folder is part of the work: written without asking.
+    let shoot = home.join("tmp/acme/t1/shoot.mjs");
+    assert_eq!(verdict_of(&handle, "Write", serde_json::json!({ "file_path": shoot })).await, "allow");
+    assert_eq!(verdict_of(&handle, "Bash", serde_json::json!({ "command": format!("node {}", shoot.display()) })).await, "allow", "running what it wrote is no more");
+    // Reading what it made there is no secret either.
+    assert_eq!(verdict_of(&handle, "Read", serde_json::json!({ "file_path": home.join("tmp/acme/t1/shot.png") })).await, "allow");
+    // Everything else under `.equipe` keeps asking: config, another squad's scratch, a way out with `..`.
+    for path in [home.join("config.json"), home.join("tmp/other/t1/x.mjs"), home.join("tmp/acme/t1/../../../keys/token"), home.join("tmp/acme/t1/.env")] {
+        let kind = asked_and_refused(&handle, &mut events, "Write", serde_json::json!({ "file_path": path })).await;
+        assert_eq!(kind, Kind::SignIn, "{}", path.display());
+    }
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn on_full_autonomy_internal_work_goes_ahead_and_outward_or_irreversible_things_still_ask() {
+    use equipe_core::protocol::autonomy::{Autonomy, Kind};
+    let site = named("site");
+    let home = scratch("full").join(".equipe");
+    std::fs::create_dir_all(&home).unwrap();
+    squads::create(&home, "acme", &site).unwrap();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+    // Asked about everything, as on the desktop by default.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Ask) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+    let notes = squads_home(&home).join("notes/plan.md");
+    assert_eq!(asked_and_refused(&handle, &mut events, "Bash", serde_json::json!({ "command": "npm install" })).await, Kind::Other);
+    assert_eq!(asked_and_refused(&handle, &mut events, "Write", serde_json::json!({ "file_path": notes })).await, Kind::Other);
+
+    handle.send(Command::SetAutonomyMode { squad: "acme".into(), mode: Autonomy::Full });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.mode == Autonomy::Full)).await;
+    for command in ["npm install", "npm run build && npm test", "npm run dev &", "git commit -am 'fix' && git merge main", "node shoot.mjs", "rm -rf node_modules dist", "pip install -r requirements.txt"] {
+        assert_eq!(verdict_of(&handle, "Bash", serde_json::json!({ "command": command })).await, "allow", "{command}");
+    }
+    assert_eq!(verdict_of(&handle, "Write", serde_json::json!({ "file_path": notes })).await, "allow");
+    assert_eq!(verdict_of(&handle, "Edit", serde_json::json!({ "file_path": home.join("tmp/acme/t1/a.mjs") })).await, "allow");
+    // Outward, spending, deleting what isn't the workspace's, credentials, the system, the browser's code: asked.
+    let asks: [(&str, serde_json::Value, Kind); 9] = [
+        ("Bash", serde_json::json!({ "command": "git push origin main" }), Kind::Outside),
+        ("Bash", serde_json::json!({ "command": "vercel deploy --prod" }), Kind::Outside),
+        ("Bash", serde_json::json!({ "command": "curl -X POST https://api.example.com/send -d 'hi'" }), Kind::Other),
+        ("Bash", serde_json::json!({ "command": "npx wrangler deploy" }), Kind::Other),
+        ("Bash", serde_json::json!({ "command": "rm -rf ../../Documents" }), Kind::Deletion),
+        ("Bash", serde_json::json!({ "command": "cat ~/.aws/credentials" }), Kind::SignIn),
+        ("Write", serde_json::json!({ "file_path": home.join("config.json") }), Kind::SignIn),
+        ("Write", serde_json::json!({ "file_path": "/etc/hosts" }), Kind::Other),
+        ("mcp__browser__browser_run_code_unsafe", serde_json::json!({ "code": "async (page) => page.click('#buy')" }), Kind::Other),
+    ];
+    for (tool_name, input, kind) in asks {
+        assert_eq!(asked_and_refused(&handle, &mut events, tool_name, input.clone()).await, kind, "{input}");
+    }
+    // The person's setting, not a member's: a member can't send it.
+    assert!(equipe_core::permissions::person_only(&Command::SetAutonomyMode { squad: "acme".into(), mode: Autonomy::Full }));
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn the_persons_words_on_a_request_reach_the_member_with_their_answer() {
     let repo = repo();

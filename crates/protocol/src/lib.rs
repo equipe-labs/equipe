@@ -1707,6 +1707,11 @@ pub enum Command {
     /// How long a decide-and-tell choice waits for the person, in minutes
     /// (0: at once). Answered by [`Event::AutonomyChanged`].
     SetAutonomyWindow { squad: SquadName, minutes: u32 },
+    /// The squad's autonomy mode ([`autonomy::Autonomy`]): `Full` is for
+    /// non-developers — internal matters proceed without asking, outward and
+    /// irreversible ones still ask. The person's own setting; a member never
+    /// sends it. Answered by [`Event::AutonomyChanged`].
+    SetAutonomyMode { squad: SquadName, mode: autonomy::Autonomy },
     /// "Allow for this kind": allow request `approval` and grant the
     /// standing allowance its card offered, for `days`. The person's own tap.
     AllowKind { squad: SquadName, approval: u64, days: u32 },

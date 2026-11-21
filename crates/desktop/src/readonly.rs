@@ -249,6 +249,7 @@ pub fn reads(command: &Command) -> bool {
         | C::SetPmAccepts { .. }
         | C::SetAutonomy { .. }
         | C::SetAutonomyWindow { .. }
+        | C::SetAutonomyMode { .. }
         | C::AllowKind { .. }
         | C::RevokeAllowance { .. }
         | C::ReopenAutoPick { .. }
@@ -727,6 +728,7 @@ mod tests {
             Command::SetPmAccepts { squad: s(), on: false },
             Command::SetAutonomy { squad: s(), kind: equipe_core::protocol::autonomy::Kind::Design, level: equipe_core::protocol::autonomy::Level::Ask },
             Command::SetAutonomyWindow { squad: s(), minutes: 30 },
+            Command::SetAutonomyMode { squad: s(), mode: equipe_core::protocol::autonomy::Autonomy::Full },
             Command::AllowKind { squad: s(), approval: 1, days: 7 },
             Command::RevokeAllowance { squad: s(), id: 1 },
             Command::ReopenAutoPick { squad: s(), set: 1 },
