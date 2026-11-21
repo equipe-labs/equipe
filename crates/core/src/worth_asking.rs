@@ -35,6 +35,21 @@ or QA records is yours: choose, say what you chose and why in a comment on your 
     }
 }
 
+/// Whether `q` asks for a fact only the person knows — the shop's name, its address, real prices
+/// or hours: an open question (no options to pick from, no pictures, no board) that names nothing
+/// on the autonomy floor (money, legal, security…, which always go to the person as asked).
+/// Where a squad runs on its own, such a question never blocks its member: it goes to the PM,
+/// which asks the person once for all of them, and the member works on marked placeholders.
+pub fn is_business_fact(q: &Question) -> bool {
+    q.options.len() < 2 && !q.board && q.images.is_empty() && equipe_protocol::autonomy::Kind::floor_named(&q.question, None).is_none()
+}
+
+/// What a member is told when its business-fact question went to the PM instead of the person.
+pub const FACT_TO_PM: &str = "Not put to the person by you: a fact only they know (a name, an address, real prices or hours) never holds up work. \
+It went to the PM, who asks them once for everything the team needs, in one friendly card. Go on now with a clearly marked placeholder \
+(`[SHOP ADDRESS]`, `[PRICE]` — one that can't be mistaken for the real thing, easy to search for), say on your ticket which placeholders you \
+used, and don't end your turn or put your ticket down over it. When the answer comes, the PM tells you and you replace them.";
+
 /// Whether question `q` is one to put to the person; `Some(why)` when not.
 /// Only a choice with options in words is judged: pictures, a taste board
 /// or an open question are always theirs.
@@ -92,6 +107,18 @@ fn internal(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_fact_only_the_person_knows_is_an_open_question_off_the_floor() {
+        let open = |text: &str| Question { question: text.into(), ..Default::default() };
+        assert!(is_business_fact(&open("What is the shop's address?")));
+        assert!(is_business_fact(&open("What are your opening hours?")));
+        // Money is on the floor: it is asked as it is.
+        assert!(!is_business_fact(&open("Can we pay for the domain with your card?")));
+        // A choice between options is not a fact.
+        let choice = Question { question: "Which address?".into(), options: vec![Choice { label: "A".into(), ..Default::default() }, Choice { label: "B".into(), ..Default::default() }], ..Default::default() };
+        assert!(!is_business_fact(&choice));
+    }
+
     use super::*;
 
     fn choice(label: &str, description: &str) -> Choice {

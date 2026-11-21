@@ -83,6 +83,31 @@ impl Runtime {
                 }
             }
         }
+        // A fact only the person knows doesn't hold a member up in such a squad: the PM gathers every member's into one card.
+        let asking_pm = self.sessions.get(&id).is_some_and(Session::is_pm);
+        if !asking_pm && self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full && !questions.is_empty() && questions.iter().all(crate::worth_asking::is_business_fact) {
+            let wanted: Vec<String> = questions.iter().map(|q| q.question.trim().to_owned()).collect();
+            let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+            let on = ticket.map_or(String::new(), |t| format!(" (on T-{t})"));
+            let line = format!(
+                "{member} needs {}{on} and is working on marked placeholders meanwhile. Don't ask the person one question per ticket: \
+gather what members need (check the board and your briefings for others), and put ONE friendly card to the person with an open question for \
+each fact (name, address, prices, hours…), in their words and language, no technical terms. Then tell the members what they said so they replace \
+their placeholders.",
+                wanted.iter().map(|w| format!("\"{}\"", clip(w, 160))).collect::<Vec<_>>().join(" and ")
+            );
+            if let Some(pm) = self.pm_of(squad)
+                && let Some(session) = self.sessions.get_mut(&pm)
+                && !session.briefing.iter().any(|b| b.contains(&wanted[0]))
+            {
+                session.briefing.push(line);
+                self.save_waiting(pm);
+            }
+            if let (Some(ticket), Some(journal)) = (ticket, self.journal(squad)) {
+                let _ = journal.ticket_event(ticket, member, "needs a fact", &wanted.join("\n"));
+            }
+            return Ok(crate::worth_asking::FACT_TO_PM.to_owned());
+        }
         self.refuse_after_browser_back(squad, member)?;
         // Each picture found where the member works, or the call is refused with why.
         let (cwd, roots) = self.picture_places(squad, id);
