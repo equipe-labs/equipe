@@ -145,9 +145,40 @@ async fn until(rx: &mut UnboundedReceiver<Event>, done: impl Fn(&Event) -> bool)
         }
     };
     if tokio::time::timeout(Duration::from_secs(20), wait).await.is_err() {
-        panic!("timed out; events so far: {seen:#?}");
+        panic!("timed out; still running under these tests:\n{}events so far: {seen:#?}", descendants());
     }
     seen
+}
+
+/// The processes this test binary started that are still running, one per
+/// line: what a stall was waiting on — a git, a stand-in engine — when it
+/// timed out (on CI, once, a ticket's workspace sat "making" for 20 s).
+fn descendants() -> String {
+    let Ok(out) = Process::new("ps").args(["-A", "-o", "pid=,ppid=,etime=,command="]).output() else { return "(no ps)\n".into() };
+    let listed = String::from_utf8_lossy(&out.stdout).into_owned();
+    let rows: Vec<(u32, u32, &str)> = listed
+        .lines()
+        .filter_map(|l| {
+            let mut words = l.split_whitespace();
+            let pid = words.next()?.parse().ok()?;
+            let ppid = words.next()?.parse().ok()?;
+            Some((pid, ppid, l.trim()))
+        })
+        .collect();
+    let mut ours = std::collections::HashSet::from([std::process::id()]);
+    // Children are listed before their parents at times: until nothing new joins.
+    loop {
+        let before = ours.len();
+        for (pid, ppid, _) in &rows {
+            if ours.contains(ppid) {
+                ours.insert(*pid);
+            }
+        }
+        if ours.len() == before {
+            break;
+        }
+    }
+    rows.iter().filter(|(pid, _, _)| *pid != std::process::id() && ours.contains(pid)).map(|(_, _, l)| format!("  {l:.200}\n")).collect()
 }
 
 fn member(cwd: &Path, role: &str) -> SessionSpec {

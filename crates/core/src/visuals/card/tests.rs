@@ -7,11 +7,19 @@ const TEMPLATES: [(&str, &str); 3] =
     [("board", include_str!("examples/board.html")), ("compare", include_str!("examples/compare.html")), ("figure", include_str!("examples/figure.html"))];
 
 /// The Chrome that draws, or `None` (with a word) where there is none: the
-/// tests that need one have nothing to try then. Started once first ([`warm`]).
+/// tests that need one have nothing to try then. Started once first ([`warm`]);
+/// a Chrome that can't even be killed there fails every test at once, saying
+/// so, rather than each waiting on it.
 fn chrome_here() -> Option<PathBuf> {
     let found = chrome();
     match &found {
-        Some(chrome) => warm(chrome),
+        Some(chrome) => {
+            if let Err(e) = warm(chrome)
+                && e.contains(STUCK)
+            {
+                panic!("this machine's Chrome can't draw: {e}");
+            }
+        }
         None => eprintln!("no Chrome here: skipped"),
     }
     found
@@ -27,16 +35,19 @@ const WARMING: Duration = Duration::from_secs(120);
 /// Chromes of a run all went past [`Limits::time`], while those started a few
 /// seconds later drew in about one. What the tests time is a drawing, not
 /// that. The other tests wait here until it is done.
-fn warm(chrome: &Path) {
-    static WARM: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+fn warm(chrome: &Path) -> Result<(), String> {
+    static WARM: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
     WARM.get_or_init(|| {
         let started = Instant::now();
         let limits = Limits { time: WARMING, ..Limits::default() };
-        match render(chrome, &page("<p>warm</p>", Some(false)), false, &limits) {
-            Ok(_) => eprintln!("Chrome's first drawing took {:?}", started.elapsed()),
+        let drawn = render(chrome, &page("<p>warm</p>", Some(false)), false, &limits).map(|_| ());
+        match &drawn {
+            Ok(()) => eprintln!("Chrome's first drawing took {:?}", started.elapsed()),
             Err(e) => eprintln!("Chrome's first drawing failed after {:?}: {e}", started.elapsed()),
         }
-    });
+        drawn
+    })
+    .clone()
 }
 
 fn png_size(png: &[u8]) -> (u32, u32) {

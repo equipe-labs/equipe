@@ -144,8 +144,6 @@ impl Ui {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener;
-
     use super::*;
 
     #[core::prelude::v1::test]
@@ -183,7 +181,10 @@ mod tests {
 
     #[core::prelude::v1::test]
     fn a_port_that_takes_the_connection_is_on_and_one_that_refuses_it_is_off() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // A port no other test can be given once it is let go (`bind(0)` never
+        // hands it out): one let go from that range went straight to another
+        // test's listener, and the refusal read as On.
+        let listener = crate::ssh::listener_outside_ephemeral_range();
         let open = listener.local_addr().unwrap().port();
         assert_eq!(sharing_at("127.0.0.1", open, Duration::from_secs(2)), Sharing::On);
         drop(listener);

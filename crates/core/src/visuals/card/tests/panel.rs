@@ -20,7 +20,8 @@ const WAIT: Duration = Duration::from_secs(30);
 
 /// A headless Chrome of the test's own, spoken to over DevTools' pipe.
 struct Devtools {
-    child: std::process::Child,
+    /// Taken as it is dropped.
+    child: Option<std::process::Child>,
     to: std::fs::File,
     from: mpsc::Receiver<Value>,
     next: u64,
@@ -100,7 +101,7 @@ impl Devtools {
                 }
             }
         });
-        Self { child, to: std::fs::File::from(our_out), from, next: 0, events: Vec::new(), _scratch: scratch }
+        Self { child: Some(child), to: std::fs::File::from(our_out), from, next: 0, events: Vec::new(), _scratch: scratch }
     }
 
     /// `method` sent (to `session` when given), its result waited for.
@@ -148,11 +149,15 @@ impl Devtools {
 
 impl Drop for Devtools {
     fn drop(&mut self) {
+        let Some(child) = self.child.take() else { return };
         // SAFETY: a signal to the process group our Chrome leads.
         unsafe {
-            libc::killpg(self.child.id() as libc::pid_t, libc::SIGKILL);
+            libc::killpg(child.id() as libc::pid_t, libc::SIGKILL);
         }
-        let _ = self.child.wait();
+        // Never waited on for good: a Chrome stuck exiting ignores SIGKILL.
+        if !reap(child) {
+            eprintln!("{STUCK}");
+        }
     }
 }
 
