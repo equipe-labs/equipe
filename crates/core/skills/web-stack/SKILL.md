@@ -71,3 +71,10 @@ component, change its variants in the component file with the same variables.
 
 `npm run build` writes `dist/`. On equipe cloud, `deploy_site` uploads that folder (`spa: true` for a single-page
 app); a Worker API goes beside it with `main`. Load the page and press its main action before you say it works.
+
+## Measuring it
+
+Every new screen, form and key action gets analytics events in the same ticket (your `measure` skill has the names and
+rules). Two ways: `window.equipe?.track?.("signup_completed", { plan })` in code, or `data-eq-track="signup_completed"`
+on the button. Guard with the optional chaining: `window.equipe` only exists on the deployed page, not in local dev.
+After `deploy_site`, do the action once and check it in `query_analytics`.

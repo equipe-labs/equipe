@@ -25,3 +25,6 @@ The plan is kept in the squad's own folder, never in the project's repository: i
 path, which their owners read from their worktrees, and what in it is about the person or their team never goes into
 the repository's files, commits or pull requests.
 A plan names each screen it touches by its spec, `design/screens/<slug>.md` (your `design-loop` skill).
+Every plan with user-facing work, and every sprint plan, has a "What will we measure" line per item: the event names
+(your `measure` skill: `<noun>_<past-verb>`, an outcome name like `signup` where it applies) and the one number that
+should move, in plain words. Each build ticket carries "the events fire and show in `query_analytics`" in its acceptance criteria.
