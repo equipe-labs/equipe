@@ -1098,6 +1098,24 @@ kept; it goes on by itself — on the other engine if {name} moves there, or onc
 
     /// Whether run `id` is paused by equipe: it holds its ticket and its
     /// lease meanwhile.
+    /// When the runs paused now go on by themselves on a clock: a retry its
+    /// squad's breaker doesn't hold, an engine's limit at its reset (for
+    /// [`crate::next_wake`]).
+    pub(super) fn parked_dues(&self) -> Vec<u64> {
+        self.sessions
+            .values()
+            .filter(|s| !s.is_working())
+            .filter_map(|s| {
+                let park = s.work.as_ref()?.end.parked.as_ref()?;
+                match park.why {
+                    ParkWhy::Failed { .. } if s.squad.as_deref().is_some_and(|q| self.turn_ends.paused(q)) => None,
+                    ParkWhy::Failed { .. } | ParkWhy::Limit { .. } => park.due,
+                    ParkWhy::SignIn { .. } => None,
+                }
+            })
+            .collect()
+    }
+
     pub(super) fn is_parked(session: &Session) -> bool {
         session.work.as_ref().is_some_and(|w| w.end.parked.is_some())
     }

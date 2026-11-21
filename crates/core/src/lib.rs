@@ -51,6 +51,7 @@ pub mod eta;
 pub mod gateway;
 pub mod growth;
 pub mod sprint;
+pub mod next_wake;
 pub mod i18n;
 pub mod escalation;
 pub mod importance;

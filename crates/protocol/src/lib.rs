@@ -4421,6 +4421,14 @@ pub struct Snapshot {
     /// it reads as on.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub auto_put_away_off: bool,
+    /// When this machine next needs the daemon running (unix seconds) for
+    /// work it starts on its own on a clock — a routine's run, a sprint's
+    /// review or its items starting, a paused run going on — already a few
+    /// minutes early, for whatever wakes the machine and for the daemon's
+    /// start; across every squad on the machine. Left out when nothing is
+    /// scheduled, and by a daemon that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_wake_at: Option<u64>,
 }
 
 #[cfg(test)]
@@ -5021,9 +5029,14 @@ mod tests {
             autonomy: Some(autonomy::State::default()),
             browsers_shown: true,
             disk: None,
+            next_wake_at: Some(1_795_300_800),
         };
         let json = serde_json::to_string(&snapshot).unwrap();
         assert_eq!(serde_json::from_str::<Snapshot>(&json).unwrap(), snapshot);
+        // A top-level number, as the hosted team's agent reads it; left out when nothing is scheduled.
+        assert_eq!(serde_json::to_value(&snapshot).unwrap()["next_wake_at"], json!(1_795_300_800));
+        let none = Snapshot { next_wake_at: None, ..snapshot };
+        assert!(serde_json::to_value(&none).unwrap().get("next_wake_at").is_none());
     }
 
     #[test]
