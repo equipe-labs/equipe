@@ -244,3 +244,16 @@ growth loop's exclusions (equipe's own traffic, `.equipe/growth.json`'s
 `exclude`) apply. Another analytics and flags platform is another
 implementation; a host embedding the daemon registers one per squad with
 `data::register` (tests do the same with `data::Fake`).
+
+## Cloud teams: equipe platform as the data source
+
+A team hosted on the equipe platform has no PostHog connection; its products send page views and events to the platform (`equipe.track`) and run A/B tests through the platform's experiments (`equipe.variant`). The sprint loop reads those numbers as it reads PostHog's.
+
+- **Where from.** The machine's `~/.equipe-platform.env` (`PLATFORM_KEY`, optional `PLATFORM_URL`, default `https://platform.equipe.im`, and `PLATFORM_APP` to pin the product; `EQUIPE_PLATFORM_ENV` names another file). The key stays in the daemon and is only sent as a bearer token; it is never logged or put in a message.
+- **Choice of source.** A source registered in-process first, then the squad's PostHog connection, then the platform when the settings file holds a key. Squads with PostHog, or with neither, behave as before.
+- **Product live.** The platform counts as "live" once `GET /v1/resources` lists an app (checked in the background, cached five minutes), beside the deploys equipe saw itself.
+- **Reads.** `POST /v1/metrics/read` with `{app?, metric, from, to, split?}` (days are inclusive UTC dates). A metric is an event count or a conversion (percent of people who did `from` and then `to` within `days`); with `split.flag` (an experiment key) the answer is one arm per variant, each person counted in the variant of their first exposure. Filters use the same `prop=value`, `prop!=value`, `prop~text` as elsewhere.
+- **The review's glance.** Reviews and plannings add visitors, page views, the product's own key events and day-1/day-7 return (as citable evidence, week against the week before), plus top sources and running experiments in plain lines, from `GET /v1/metrics?days=7`. If the platform can't be reached the review says so and goes on.
+- **What the PM is told.** To test a hypothesis as an A/B, set `split.flag` to a platform experiment key; the engineer creates it with the platform tool `create_experiment` (its `goal_event` is the conversion) and uses `equipe.variant(key)` and `equipe.track(event)` in the product.
+
+Code: `crates/core/src/sprint/platform.rs`; tests in `crates/core/tests/sprint_platform.rs` (a stand-in platform over HTTP).

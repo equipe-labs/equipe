@@ -46,6 +46,7 @@ use crate::i18n::Lang;
 use crate::routines::Clock;
 
 pub mod data;
+pub mod platform;
 
 /// The PM's tool: the next sprint, and the retro of the one ending.
 pub const PLAN: &str = "plan_sprint";
@@ -1133,7 +1134,15 @@ pub struct Review<'a> {
     pub measurable: bool,
     /// Items the person left for later: offered again.
     pub later: Vec<String>,
+    /// The product's numbers come from the equipe platform (a cloud team).
+    pub platform: bool,
+    /// Plain lines about the product beside its numbers (top sources, experiments running).
+    pub notes: Vec<String>,
 }
+
+/// What the PM does to measure with the equipe platform: A/B tests are its
+/// experiments, read back by key.
+const PLATFORM_HOW: &str = "The product's numbers come from the equipe platform. For a hypothesis worth an A/B test set `split.flag` to a platform experiment key; its engineer creates it with the platform tool `create_experiment` (its `goal_event` is the conversion) and uses `equipe.variant(key)` and `equipe.track(event)` in the product. A hypothesis's events are sent with `equipe.track`.";
 
 fn market_words(m: Option<Market>) -> &'static str {
     match m {
@@ -1165,6 +1174,14 @@ fn context_parts(r: &Review<'_>, out: &mut String) {
         for e in r.evidence {
             out.push_str(&format!("\n- {} · `{}` · {}", e.id, e.metric, growth::evidence_line(e)));
         }
+    }
+    if !r.notes.is_empty() {
+        for n in &r.notes {
+            out.push_str(&format!("\n{n}"));
+        }
+    }
+    if r.platform {
+        out.push_str(&format!("\n\n{PLATFORM_HOW}"));
     }
     if !r.tried.is_empty() {
         out.push_str("\n\nTried before (don't repeat what didn't work without a new reason):");

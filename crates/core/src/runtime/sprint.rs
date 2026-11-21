@@ -20,6 +20,7 @@ use equipe_protocol::{Priority, TicketDraft, TicketKind};
 
 use super::*;
 use crate::sprint::data::{self, ProductData};
+use crate::sprint::platform::{self as platform, Platform};
 use crate::sprint::{self as rules, Store};
 
 /// What a review or a planning brought back from off the loop.
@@ -33,6 +34,8 @@ pub(super) struct Gathered {
     pub sprint: Option<u32>,
     /// Hypotheses whose window had passed, judged for the review.
     pub judged: Vec<(u32, Judged)>,
+    /// Plain lines about the product that aren't numbers to cite (top sources, experiments running).
+    pub notes: Vec<String>,
 }
 
 /// The sprint's spend is counted again at most this often.
@@ -56,21 +59,27 @@ impl Runtime {
     }
 
     /// Where the squad's product numbers are read: a source registered
-    /// in-process, else its PostHog connection.
+    /// in-process, else its PostHog connection, else the equipe platform of a cloud team.
     pub(super) fn sprint_data(&mut self, squad: &str) -> Option<Arc<dyn ProductData>> {
         if let Some(d) = data::registered(squad) {
             return Some(d);
         }
         let (config, _, _) = self.growth_config(squad);
-        let connection = self.growth_connection(squad, &config).ok().flatten()?;
-        let exclude = crate::growth::exclusion(&config).unwrap_or_default();
-        Some(Arc::new(data::PostHog { home: self.config.home.clone(), squad: squad.to_owned(), connection, exclude }))
+        if let Some(connection) = self.growth_connection(squad, &config).ok().flatten() {
+            let exclude = crate::growth::exclusion(&config).unwrap_or_default();
+            return Some(Arc::new(data::PostHog { home: self.config.home.clone(), squad: squad.to_owned(), connection, exclude }));
+        }
+        // A cloud team: its products live on the equipe platform, which has the numbers.
+        Platform::discover().map(|p| Arc::new(p) as Arc<dyn ProductData>)
     }
 
     /// Whether the squad has a product live: a deploy seen, or analytics connected.
     fn sprint_live(&mut self, squad: &str) -> bool {
         let deployed = self.journal(squad).is_some_and(|j| !j.deploys().is_empty());
-        deployed || data::registered(squad).is_some() || crate::metrics::connections(&self.config.home).iter().any(|c| c.squad == squad && c.kind == equipe_protocol::metrics::SourceKind::Posthog)
+        deployed
+            || data::registered(squad).is_some()
+            || crate::metrics::connections(&self.config.home).iter().any(|c| c.squad == squad && c.kind == equipe_protocol::metrics::SourceKind::Posthog)
+            || Platform::discover().is_some_and(|p| platform::live_cached(&p))
     }
 
     /// Whether the loop runs for the squad; why not.
@@ -335,6 +344,8 @@ impl Runtime {
         let mut local = self.growth_signals(squad, now);
         local.extend(self.growth_checks(squad, now));
         let data = self.sprint_data(squad);
+        // Without PostHog the product's numbers come from the equipe platform: a short glance for the review.
+        let glance_from = if connection.is_none() { Platform::discover() } else { None };
         let north = store.north_star.as_ref().and_then(|n| n.metric.clone());
         let days = i64::from(rules::length(&store.settings));
         let (home, squad_name, internal, client) = (self.config.home.clone(), squad.to_owned(), self.internal.clone(), self.client.clone());
@@ -346,7 +357,17 @@ impl Runtime {
         crate::daemon_log!("equipe: {squad}: the sprint loop gathers for {}", sprint.map_or_else(|| "a planning".to_owned(), |s| format!("S-{s}'s review")));
         tokio::spawn(async move {
             let growth = super::growth::gather(&home, &squad_name, connection.as_deref(), &asks, &health, &client, now).await;
-            let mut out = Gathered { evidence: growth.evidence, gaps, north: None, sprint, judged: Vec::new() };
+            let mut out = Gathered { evidence: growth.evidence, gaps, north: None, sprint, judged: Vec::new(), notes: Vec::new() };
+            if let Some(p) = &glance_from {
+                match p.snapshot(7).await {
+                    Ok(snap) => {
+                        let (evidence, notes) = platform::glance(&snap);
+                        out.evidence.extend(evidence);
+                        out.notes = notes;
+                    }
+                    Err(why) => out.gaps.push(why),
+                }
+            }
             for x in &due {
                 let judged = match &data {
                     Some(d) => data::judge(d.as_ref(), x, now).await,
@@ -387,7 +408,10 @@ impl Runtime {
             n.value = Some(value);
             n.previous = previous;
         }
-        let measurable = self.sprint_data(squad).is_some();
+        let source = self.sprint_data(squad).map(|d| d.source());
+        let measurable = source.is_some();
+        let platform = source.as_deref() == Some("equipe platform");
+        let notes = g.notes;
         let marketer = self.team(squad).iter().any(|(_, _, role)| role == crate::roles::MARKETING);
         let later: Vec<String> = store.items.iter().filter(|i| i.status == ItemStatus::Later).map(|i| format!("P-{} {} — {}", i.id, i.title, i.expected)).collect();
         let board = self.tickets(squad);
@@ -429,6 +453,8 @@ impl Runtime {
                     marketer,
                     measurable,
                     later,
+                    platform,
+                    notes,
                 };
                 let mut text = rules::review_message(&review);
                 if let Some(line) = self.journal(squad).and_then(|j| j.turn_endings_since(from).ok()).filter(|c| !c.is_empty()) {
@@ -447,7 +473,7 @@ impl Runtime {
             }
             None => {
                 let tried = rules::tried(&store.experiments);
-                let review = rules::Review { to: today, tried, north_star: store.north_star.as_ref(), evidence: &store.evidence, gaps: g.gaps.clone(), market: store.market, marketer, measurable, later, ..rules::Review::default() };
+                let review = rules::Review { to: today, tried, north_star: store.north_star.as_ref(), evidence: &store.evidence, gaps: g.gaps.clone(), market: store.market, marketer, measurable, later, platform, notes, ..rules::Review::default() };
                 let text = rules::planning_message(&review);
                 store.planning_asked = Some(now);
                 crate::daemon_log!("equipe: {squad}: the PM is asked to plan a sprint");
