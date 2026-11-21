@@ -464,6 +464,44 @@ impl Drop for Scratch {
     }
 }
 
+/// How long Chrome may stay once its picture is written whole, before it
+/// is killed: it exits by itself at once when all is well.
+const EXIT_GRACE: Duration = Duration::from_secs(2);
+
+/// How long a Chrome killed may take to be gone.
+const REAP_GRACE: Duration = Duration::from_secs(3);
+
+/// Why nothing is drawn when a killed Chrome stays.
+pub const STUCK: &str = "Chrome didn't exit, even when killed: it is stuck exiting (`ps` shows it in state E or U, \
+its helpers <defunct>), which a restart of this machine clears";
+
+/// Whether the PNG at `path` is there whole: it ends in its `IEND` chunk.
+fn whole_png(path: &Path) -> bool {
+    const IEND: [u8; 12] = [0, 0, 0, 0, b'I', b'E', b'N', b'D', 0xAE, 0x42, 0x60, 0x82];
+    std::fs::read(path).is_ok_and(|bytes| bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.ends_with(&IEND))
+}
+
+/// `child`, just killed, waited for no longer than [`REAP_GRACE`]: false
+/// when it is still there. A process stuck in the kernel on its way out
+/// ignores even SIGKILL, and waiting for it waited for good — a drawing, a
+/// reply and one of the [`CHROMES`] held for ever. Left to a thread of its
+/// own then, which reaps it if it ever goes.
+pub(crate) fn reap(mut child: std::process::Child) -> bool {
+    let until = Instant::now() + REAP_GRACE;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) | Err(_) => return true,
+            Ok(None) if Instant::now() < until => std::thread::sleep(Duration::from_millis(20)),
+            Ok(None) => break,
+        }
+    }
+    crate::daemon_log!("equipe: Chrome {} didn't exit when killed: left to be reaped if it ever does", child.id());
+    let _ = std::thread::Builder::new().name("card-chrome-reaper".into()).spawn(move || {
+        let _ = child.wait();
+    });
+    false
+}
+
 /// `html` photographed by `chrome` in a tone: a PNG at twice its size, as
 /// tall as what it shows (no more than the window), and its size in pixels.
 pub fn render(chrome: &Path, html: &str, dark: bool, limits: &Limits) -> Result<(Vec<u8>, u32, u32), String> {
@@ -492,18 +530,36 @@ pub fn render(chrome: &Path, html: &str, dark: bool, limits: &Limits) -> Result<
     let mut child = command.spawn().map_err(|e| format!("Chrome didn't start: {e}"))?;
     let group = child.id();
     let deadline = Instant::now() + limits.time;
+    // When the picture was there whole while Chrome was still running.
+    let mut drawn_at: Option<Instant> = None;
     let ended = loop {
         match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            Ok(None) => break Err(format!("not drawn in {:?}", limits.time)),
+            Ok(Some(_)) => break Ok(()),
+            Ok(None) => {}
             Err(e) => break Err(e.to_string()),
         }
+        let now = Instant::now();
+        if now >= deadline {
+            break Err(format!("not drawn in {:?}", limits.time));
+        }
+        if drawn_at.is_none() && whole_png(&shot) {
+            drawn_at = Some(now);
+        }
+        // Drawn, and lingering: it is killed below, and whether it goes says
+        // whether this Chrome can be used at all.
+        if drawn_at.is_some_and(|at| now.duration_since(at) >= EXIT_GRACE) {
+            break Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(20));
     };
     // Chrome and its helpers, whatever is left of them: the group it leads.
-    // SAFETY: a signal to a process group of ours; ESRCH when it is gone.
     crate::group::end(group, crate::group::Signal::Kill);
-    let _ = child.wait();
+    if !reap(child) {
+        return Err(match ended {
+            Err(e) => format!("{e}; {STUCK}"),
+            Ok(()) => format!("drawn, but {STUCK}"),
+        });
+    }
     ended?;
     let bytes = std::fs::read(&shot).map_err(|_| "Chrome drew nothing".to_owned())?;
     // It started and drew: whatever it read from disk is read now.

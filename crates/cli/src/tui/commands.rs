@@ -330,17 +330,20 @@ fn folders(typed: &str) -> Vec<String> {
     let Ok(entries) = std::fs::read_dir(&on_disk) else {
         return Vec::new();
     };
-    let mut found: Vec<String> = entries
+    // Picked by name first, and only then looked at: this runs on every key,
+    // and a folder of hundreds of thousands of entries (a temporary folder
+    // nobody empties) took minutes a key when each entry was looked at.
+    let mut found: Vec<(String, std::fs::DirEntry)> = entries
         .flatten()
-        .filter(|e| e.path().is_dir())
-        .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|name| name.starts_with(prefix) && (prefix.starts_with('.') || !name.starts_with('.')))
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e))
+        .filter(|(name, _)| name.starts_with(prefix) && (prefix.starts_with('.') || !name.starts_with('.')))
         .collect();
     // Sorted by name, before the `/`: `equipe` comes ahead of `equipe-site`
     // (`-` sorts before `/`), so the folder typed whole is the first choice.
-    found.sort();
-    found.truncate(30);
-    found.into_iter().map(|name| format!("{dir}{name}/")).collect()
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    // A folder by what the listing says, a link by where it leads.
+    let is_dir = |e: &std::fs::DirEntry| e.file_type().is_ok_and(|t| t.is_dir() || (t.is_symlink() && e.path().is_dir()));
+    found.into_iter().filter(|(_, e)| is_dir(e)).take(30).map(|(name, _)| format!("{dir}{name}/")).collect()
 }
 
 #[cfg(test)]

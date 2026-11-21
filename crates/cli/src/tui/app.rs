@@ -2486,7 +2486,9 @@ impl App {
         }
         // Completion, while it offers something: ↑↓ pick, Tab takes, Enter takes
         // (and runs what is whole), Esc puts it away.
-        let choices = if ctrl || alt { Vec::new() } else { self.choices() };
+        // A character typed takes none of them: not worked out for it (a
+        // folder's completion reads the folder, on every key otherwise).
+        let choices = if ctrl || alt || matches!(key.code, KeyCode::Char(_)) { Vec::new() } else { self.choices() };
         if !choices.is_empty() {
             let picked = self.pick.min(choices.len() - 1);
             match key.code {

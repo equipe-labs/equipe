@@ -61,14 +61,21 @@ fn output_with_input(mut command: Command, timeout: Duration, input: Option<std:
         use std::os::unix::process::CommandExt as _;
         command.process_group(0);
     }
-    let child = command.spawn().map_err(|err| format!("couldn't run {program}: {err}"))?;
+    let mut child = command.spawn().map_err(|err| format!("couldn't run {program}: {err}"))?;
     let pid = child.id();
+    // Read apart from waiting: the command is done when it exits, not when
+    // the last holder of its pipes lets go ([`Captured`]).
+    let stdout = Captured::read(child.stdout.take());
+    let stderr = Captured::read(child.stderr.take());
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(child.wait_with_output());
+        let _ = tx.send(child.wait());
     });
     match rx.recv_timeout(timeout) {
-        Ok(out) => out.map_err(|err| format!("couldn't run {program}: {err}")),
+        Ok(status) => {
+            let status = status.map_err(|err| format!("couldn't run {program}: {err}"))?;
+            Ok(Output { status, stdout: stdout.taken(), stderr: stderr.taken() })
+        }
         Err(_) => {
             // Asked to stop first: git removes the lock files it holds
             // (`index.lock`) when it is terminated, never when it is killed —
@@ -81,6 +88,55 @@ fn output_with_input(mut command: Command, timeout: Duration, input: Option<std:
             let args: Vec<String> = command.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
             Err(format!("{program} {} took more than {}s and was stopped", args.join(" "), timeout.as_secs()))
         }
+    }
+}
+
+/// How long the rest of a command's output may take to arrive once it has
+/// exited. Its pipes close then, unless a process it never meant to share
+/// them with holds them too: see [`Captured`].
+const DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// One of a command's output pipes, read to its end on a thread of its own.
+///
+/// The command is done when it exits, not when its pipe reaches its end: a
+/// process that outlives it while holding the pipe kept the reader waiting
+/// long after git was gone — the ssh master a push leaves behind under
+/// `ControlPersist` holds git's standard error for minutes, and any process
+/// started while the pipe is open can inherit it. Once the command has
+/// exited, what is still to come is waited for [`DRAIN_GRACE`] at most.
+struct Captured {
+    bytes: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    done: std::sync::mpsc::Receiver<()>,
+}
+
+impl Captured {
+    fn read(pipe: Option<impl std::io::Read + Send + 'static>) -> Self {
+        let bytes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (tx, done) = std::sync::mpsc::channel();
+        if let Some(mut pipe) = pipe {
+            let into = bytes.clone();
+            std::thread::spawn(move || {
+                let mut chunk = [0u8; 8192];
+                loop {
+                    match pipe.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => into.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&chunk[..n]),
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
+                    }
+                }
+                let _ = tx.send(());
+            });
+        }
+        // No pipe: dropping `tx` ends it at once.
+        Self { bytes, done }
+    }
+
+    /// What arrived, once the command has exited: all of it when its pipe
+    /// ends within [`DRAIN_GRACE`], what came by then otherwise.
+    fn taken(self) -> Vec<u8> {
+        let _ = self.done.recv_timeout(DRAIN_GRACE);
+        std::mem::take(&mut *self.bytes.lock().unwrap_or_else(|e| e.into_inner()))
     }
 }
 
@@ -2386,6 +2442,28 @@ mod tests {
         let mut quick = Command::new("echo");
         quick.arg("hi");
         assert_eq!(String::from_utf8_lossy(&output_within(quick, Duration::from_secs(10)).unwrap().stdout), "hi\n");
+    }
+
+    /// What another process holds of a command's pipe — an ssh master a push
+    /// left running — doesn't keep the command going once it has exited: here
+    /// its own child in the background, holding standard output open for half
+    /// a minute.
+    #[cfg(unix)]
+    #[test]
+    fn a_command_is_done_when_it_exits_even_if_something_else_holds_its_output_open() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 30 & echo $!"]);
+        let started = std::time::Instant::now();
+        let out = output_within(command, Duration::from_secs(20)).unwrap();
+        let elapsed = started.elapsed();
+        let holder = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+        if let Ok(pid) = holder.parse::<libc::pid_t>() {
+            // SAFETY: a signal to the `sleep` this test started.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
+        assert!(out.status.success());
+        assert!(!holder.is_empty(), "what it printed before it exited is kept");
+        assert!(elapsed < Duration::from_secs(10), "waited on the holder: {elapsed:?}");
     }
 
     #[cfg(unix)]

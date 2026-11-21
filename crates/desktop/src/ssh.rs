@@ -366,6 +366,28 @@ pub fn safe_name(path: &Path) -> String {
     }
 }
 
+/// For tests: a listener on a loopback port that `bind(0)` never hands out —
+/// below every system's ephemeral range (49152 on macOS and Windows, 32768
+/// on Linux) — so that once it is dropped the port stays closed: a port let
+/// go from the ephemeral range was handed straight to another test's
+/// listener, which answered for it. Each call here gets a port of its own.
+#[cfg(test)]
+pub(crate) fn listener_outside_ephemeral_range() -> std::net::TcpListener {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    const FIRST: u32 = 20_000;
+    const SPAN: u32 = 12_000;
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    // Test processes running side by side start apart.
+    let start = std::process::id() % SPAN;
+    for _ in 0..SPAN {
+        let port = FIRST + (start + NEXT.fetch_add(1, Ordering::Relaxed)) % SPAN;
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", port as u16)) {
+            return listener;
+        }
+    }
+    panic!("no free loopback port from {FIRST} to {}", FIRST + SPAN);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,12 +508,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_knock_hears_whether_anything_listens() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listener = listener_outside_ephemeral_range();
         let port = listener.local_addr().unwrap().port();
         let door = Door { host: "127.0.0.1".into(), port, relayed: false };
         assert!(door.knock(Duration::from_secs(2)).await);
         drop(listener);
-        assert!(!door.knock(Duration::from_secs(2)).await, "refused");
+        // Refused, not waited out: the port stays closed once let go.
+        let started = std::time::Instant::now();
+        assert!(!door.knock(Duration::from_secs(10)).await, "refused");
+        assert!(started.elapsed() < Duration::from_secs(5), "waited out, not refused: {:?}", started.elapsed());
     }
 
     #[tokio::test]
