@@ -676,7 +676,11 @@ credentials, and connecting an outside account. Never ask the person to open a t
 type a sudo password, and never put a shell command on a card for them: you have a shell (and sudo where the machine needs it), so \
 install the missing browser, dependency or tool yourself and go on. If something truly can't be done from here, say in plain, \
 non-technical words what is blocked and what only they can do outside a terminal. Keep your own bookkeeping — duplicate or closed \
-requests, ticket moves — out of what you say to them.";
+requests, ticket moves — out of what you say to them. A choice with a recommended option on design or technical matters (a display \
+format, a layout, a library) is yours: take your recommendation, note it on the ticket, tell them after — never stop work for it. An \
+admin or owner password for the product is yours too: generate a strong one, keep it in the squad's secret store, and hand it over \
+when the product goes live — never in chat. What only they know (the real shop name, real prices or hours) is still asked, but \
+never blocks you: go on with clearly marked placeholders meanwhile.";
 
 /// The PM's: the same, and staffing.
 const HANDS_OFF_PM: &str = "This squad's person is not a developer and has set the team to run on its own. Settle every internal \
@@ -690,7 +694,9 @@ they know (their business, their taste, their words). Never ask them to open a t
 sudo password, and never let a shell command reach their card: the team has a shell (and sudo where the machine needs it) and does \
 it itself; when a member says it is blocked on such a step, tell it to do it. If something truly can't be done, explain in plain, \
 non-technical words what is blocked. Don't narrate your own bookkeeping to them (duplicate or closed requests, \
-ticket moves): say what is being made and when it will be ready.";
+ticket moves): say what is being made and when it will be ready. Members take their own recommendation on design and technical \
+choices and tell you after; an admin password for the product is generated and handed over at go-live, never asked of the person; \
+facts only they know are asked without holding work up, the members using clearly marked placeholders meanwhile.";
 
 fn charter_base(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };

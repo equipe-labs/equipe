@@ -57,12 +57,20 @@ fn wants_sudo(lower: &str) -> bool {
     lower.contains("sudo") || mentions(lower, "match.chore_password_words")
 }
 
+/// Whether the text asks the person to choose or give a password for the product's own admin or
+/// owner screen. The team makes a strong one itself, keeps it in the squad's secret store and
+/// hands it over at go-live; it is never the person's to invent, and never typed in chat.
+pub fn is_password_choice(ask: &str) -> bool {
+    let lower = ask.to_lowercase();
+    mentions(&lower, "match.chore_secret_words") && mentions(&lower, "match.chore_admin_words") && mentions(&lower, "match.chore_choose_words")
+}
+
 /// Whether `ask` is an internal step: a command to run, a terminal to open,
 /// something to install, a `sudo` password to type. An ask that also reaches
 /// outward (a credential, a sign-in, a deploy) is not, unless it is for `sudo`.
 pub fn is_chore(ask: &str) -> bool {
     let lower = ask.to_lowercase();
-    if wants_sudo(&lower) {
+    if wants_sudo(&lower) || is_password_choice(ask) {
         return true;
     }
     let internal = spans(&ask.replace("```", "`")).into_iter().any(is_command) || PHRASES.iter().any(|p| lower.contains(p)) || mentions(&lower, "match.chore_terminal_words");
@@ -101,14 +109,24 @@ pub struct Judged {
 /// The line a member is told when it asks the person for an internal step.
 pub fn refusal(refused: &[&str]) -> String {
     let list = refused.iter().map(|r| format!("\"{}\"", r.chars().take(100).collect::<String>())).collect::<Vec<_>>().join(", ");
-    format!(
+    if refused.iter().all(|r| is_password_choice(r)) {
+        return format!("Not put to the person: {list}.{PASSWORD}");
+    }
+    let general = format!(
         "Not put to the person: {list} is an internal step, and this person is not a developer — never ask them to open a terminal, run a \
 command, install anything or type a sudo password. You have a shell, and `sudo` where the machine needs it: do it yourself now (install \
 the browser, dependency or tool with its own installer — for a browser, `npx playwright install --with-deps chrome` — and go on with the \
 ticket). If it truly can't be done from here, put the ticket down with one line in plain, non-technical words on what is blocked and \
 what the person has to do outside a terminal (grant access, issue a key) — no commands."
-    )
+    );
+    if refused.iter().any(|r| is_password_choice(r)) { format!("{general}{PASSWORD}") } else { general }
 }
+
+/// Added when a member asked the person to choose the product's admin password.
+const PASSWORD: &str = " An admin or owner password for the product itself is not theirs to invent: generate a strong one yourself (random, \
+20+ characters), keep it in the squad's secret store (`secret_save`, `secret_write` for the app's git-ignored env file), never write it in \
+chat, a ticket, a comment or a committed file, and put on the go-live hand-in that it is ready for them to take over from the secret store. \
+Go on with the work meanwhile.";
 
 /// Judge what a member put down for the person: refuse the internal steps,
 /// scrub the rest. Errs when nothing is left to ask.
@@ -159,6 +177,20 @@ mod tests {
     #[test]
     fn a_sudo_password_is_never_the_persons_even_beside_a_credential() {
         assert!(is_chore("Sign in to your account, then enter your sudo password."));
+    }
+
+    #[test]
+    fn choosing_the_products_admin_password_is_the_teams_to_do() {
+        assert!(is_chore("Choose an admin password for the owner screen."));
+        assert!(is_chore("What password do you want for the shop's admin dashboard? Please pick one."));
+        assert!(is_chore("사장님 관리자 화면에 쓸 비밀번호를 정해 주세요."));
+        let err = judge(&["Choose an admin password for the owner screen.".into()]).unwrap_err();
+        assert!(err.contains("generate a strong one yourself") && err.contains("secret_save") && err.contains("never write it in chat"), "{err}");
+        assert!(is_chore("Which admin password should the owner screen use?"));
+        assert!(!err.contains("sudo"), "its own words, not the terminal's: {err}");
+        // Not a password to invent, or not the product's own screen: left alone.
+        assert!(!is_chore("Tell me your shop's opening hours."));
+        assert!(!is_chore("Share the password reset email you received."));
     }
 
     #[test]

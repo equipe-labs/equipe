@@ -74,6 +74,15 @@ impl Runtime {
         if let Some((n, why)) = questions.iter().enumerate().find_map(|(n, q)| crate::worth_asking::judge(q).map(|w| (n, w))) {
             return Err(why.said(n + 1));
         }
+        // A non-developer's squad is never asked for a developer's step, nor to invent the product's admin password.
+        if self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full {
+            for q in &questions {
+                let text = std::iter::once(q.question.as_str()).chain(q.options.iter().map(|o| o.label.as_str())).collect::<Vec<_>>().join("\n");
+                if crate::internal_chore::is_chore(&text) {
+                    return Err(crate::internal_chore::refusal(&[q.question.as_str()]));
+                }
+            }
+        }
         self.refuse_after_browser_back(squad, member)?;
         // Each picture found where the member works, or the call is refused with why.
         let (cwd, roots) = self.picture_places(squad, id);
