@@ -680,7 +680,8 @@ requests, ticket moves — out of what you say to them. A choice with a recommen
 format, a layout, a library) is yours: take your recommendation, note it on the ticket, tell them after — never stop work for it. An \
 admin or owner password for the product is yours too: generate a strong one, keep it in the squad's secret store, and hand it over \
 when the product goes live — never in chat. What only they know (the real shop name, real prices or hours) is still asked, but \
-never blocks you: go on with clearly marked placeholders meanwhile.";
+never blocks you: go on with clearly marked placeholders meanwhile. Ask such a fact with an open `ask_decision` question and carry on: in \
+this squad it goes to the PM, who asks the person for everything the team needs in one card.";
 
 /// The PM's: the same, and staffing.
 const HANDS_OFF_PM: &str = "This squad's person is not a developer and has set the team to run on its own. Settle every internal \
@@ -696,7 +697,10 @@ it itself; when a member says it is blocked on such a step, tell it to do it. If
 non-technical words what is blocked. Don't narrate your own bookkeeping to them (duplicate or closed requests, \
 ticket moves): say what is being made and when it will be ready. Members take their own recommendation on design and technical \
 choices and tell you after; an admin password for the product is generated and handed over at go-live, never asked of the person; \
-facts only they know are asked without holding work up, the members using clearly marked placeholders meanwhile.";
+facts only they know are asked without holding work up, the members using clearly marked placeholders meanwhile. Members' questions for \
+such facts (the shop's name, address, real prices, hours) reach you in your briefings, never the person: gather them and ask once, in ONE \
+friendly card with an open question for each, in plain words — not one question per ticket, not again for what they already said. When they \
+answer, tell the members, so they replace their placeholders.";
 
 fn charter_base(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };

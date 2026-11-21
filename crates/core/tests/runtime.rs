@@ -8129,3 +8129,31 @@ async fn a_file_inside_a_members_own_worktree_is_no_credential_and_never_waits_o
     assert_eq!(verdict_of(&handle, "Read", serde_json::json!({ "file_path": shot })).await, "allow");
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn on_full_autonomy_a_members_business_fact_goes_to_the_pm_instead_of_blocking_on_the_person() {
+    use equipe_core::protocol::autonomy::Autonomy;
+    let repo = repo();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&repo])));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "designer")).await;
+    let fact = serde_json::json!({ "questions": [{ "question": "What is the shop's street address?" }] });
+    // As on the desktop: the person is asked.
+    let asked = tool(&handle, "designer", "ask_decision", fact.clone()).await;
+    assert!(asked.text.starts_with("Asked"), "{}", asked.text);
+    until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+
+    handle.send(Command::SetAutonomyMode { squad: "acme".into(), mode: Autonomy::Full });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.mode == Autonomy::Full)).await;
+    let other = serde_json::json!({ "questions": [{ "question": "What are the real repair prices?" }] });
+    let sent = tool(&handle, "designer", "ask_decision", other).await;
+    assert!(!sent.is_error && sent.text.contains("placeholder") && sent.text.contains("PM"), "{}", sent.text);
+    // Nothing reached the person's screen for it.
+    let seen = tokio::time::timeout(std::time::Duration::from_millis(300), until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. }))).await;
+    assert!(seen.is_err(), "no card for a business fact");
+    // The PM's own question is still the person's.
+    let pm = tool(&handle, "pm", "ask_decision", fact).await;
+    assert!(pm.text.starts_with("Asked"), "{}", pm.text);
+    handle.shutdown().await;
+}
