@@ -1024,6 +1024,7 @@ fn snapshot() -> Snapshot {
         words: Some(vec![]),
         words_all: false,
         auto_put_away_off: false,
+        next_wake_at: None,
     }
 }
 
