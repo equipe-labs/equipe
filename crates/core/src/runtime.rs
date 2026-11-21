@@ -9600,7 +9600,16 @@ there, end your turn, and carry on when they say they're done."
         // The squad's own working areas under `.equipe` (a ticket's scratch folder, the
         // build cache, the desk) hold no secrets: only its config, credentials,
         // journals and other squads' folders do.
-        let scratch = permissions::scratch_areas(&self.config.home, &call.squad);
+        let mut scratch = permissions::scratch_areas(&self.config.home, &call.squad);
+        // The member's own checkouts live under `.equipe/worktrees/` too: a file inside one (a screenshot, a page)
+        // is the project's, not equipe's credentials. A key's own name inside it (`.env`) is still a secret.
+        for project in self.projects_cached(&call.squad) {
+            scratch.push(format!("{}/", worktree::worktrees_of(&project, &self.config.home).display()));
+        }
+        if let Some(session) = self.sessions.get(&id) {
+            let own = [Some(&session.cwd), session.work.as_ref().map(|w| &w.cwd), session.work.as_ref().and_then(|w| w.sandbox.as_ref()).map(|s| &s.path)];
+            scratch.extend(own.into_iter().flatten().filter(|d| d.starts_with(self.config.home.join("worktrees"))).map(|d| format!("{}/", d.display())));
+        }
         let kind = crate::autonomy::engine_kind_in(&tool, &action, &scratch);
         let mut ask = crate::protocol::autonomy::Ask { kind, plain: None, standing: None, later: false, op: None };
         if kind == crate::protocol::autonomy::Kind::Other && self.allowed_standing(&call.squad, id, &call.member, ticket, &ask, (&tool, &action)).is_some() {

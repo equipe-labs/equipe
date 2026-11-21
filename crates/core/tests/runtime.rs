@@ -8098,3 +8098,34 @@ async fn on_full_autonomy_a_design_choice_with_a_recommendation_is_taken_at_once
     assert!(blocked.is_error && blocked.text.contains("generate a strong one yourself"), "{}", blocked.text);
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_file_inside_a_members_own_worktree_is_no_credential_and_never_waits_on_the_person() {
+    use equipe_core::protocol::autonomy::{Autonomy, Kind};
+    let site = named("site");
+    let home = scratch("worktree-read").join(".equipe");
+    std::fs::create_dir_all(&home).unwrap();
+    squads::create(&home, "acme", &site).unwrap();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Auto) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+    let shot = home.join("worktrees").join(site.file_name().unwrap()).join("t2-ab12cd34/design/screens/home/built-390.png");
+    // Auto: reading it is no key, so it goes ahead.
+    assert_eq!(verdict_of(&handle, "Read", serde_json::json!({ "file_path": shot })).await, "allow");
+    // A key's own name inside it still asks, and as a key.
+    let env = home.join("worktrees").join(site.file_name().unwrap()).join("t2-ab12cd34/.env");
+    assert_eq!(asked_and_refused(&handle, &mut events, "Read", serde_json::json!({ "file_path": env })).await, Kind::SignIn);
+    // Equipe's own config under the same home is still one.
+    assert_eq!(asked_and_refused(&handle, &mut events, "Read", serde_json::json!({ "file_path": home.join("config.json") })).await, Kind::SignIn);
+
+    // Full autonomy: asking about everything, the same read is still the member's own.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Ask) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+    handle.send(Command::SetAutonomyMode { squad: "acme".into(), mode: Autonomy::Full });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.mode == Autonomy::Full)).await;
+    assert_eq!(verdict_of(&handle, "Read", serde_json::json!({ "file_path": shot })).await, "allow");
+    handle.shutdown().await;
+}
