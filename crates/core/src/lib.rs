@@ -41,6 +41,7 @@ pub mod desktop_gate;
 pub mod deploys;
 pub mod go_live;
 pub mod release_notes;
+pub mod internal_chore;
 pub mod permission_chore;
 pub mod disk;
 pub mod leftovers;

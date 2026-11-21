@@ -176,7 +176,10 @@ impl Runtime {
         }
         let store = self.autonomy_store(squad);
         let kind = policy::set_kind(set, role, declared);
-        let level = store.policy.level(kind);
+        // A squad that runs on its own for a non-developer never waits on a design or technical choice: its
+        // member's recommendation is taken at once and the person told after, whatever level the policy has.
+        let full = self.autonomy_mode(squad) == au::Autonomy::Full;
+        let level = if full && matches!(kind, Kind::Design | Kind::Internal) { Level::JustDo } else { store.policy.level(kind) };
         if !matches!(kind, Kind::Design | Kind::Internal) || level == Level::Ask {
             return PolicyOutcome::Ask;
         }
@@ -187,7 +190,7 @@ impl Runtime {
         // A choice between options with no recommendation marked: the member is asked for one first.
         let choices = set.questions.iter().all(|q| q.options.len() >= 2 && !q.board);
         let Some(answers) = recommended else { return if kind == Kind::Design && choices { PolicyOutcome::Unmarked } else { PolicyOutcome::Ask } };
-        let due = au::due_at(set.asked_at, &store.policy, low_impact || level == Level::JustDo);
+        let due = if full { set.asked_at } else { au::due_at(set.asked_at, &store.policy, low_impact || level == Level::JustDo) };
         if due <= set.asked_at { PolicyOutcome::Now(kind, answers) } else { PolicyOutcome::Later(kind, due) }
     }
 

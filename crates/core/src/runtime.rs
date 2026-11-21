@@ -9608,7 +9608,16 @@ there, end your turn, and carry on when they say they're done."
         // The squad's own working areas under `.equipe` (a ticket's scratch folder, the
         // build cache, the desk) hold no secrets: only its config, credentials,
         // journals and other squads' folders do.
-        let scratch = permissions::scratch_areas(&self.config.home, &call.squad);
+        let mut scratch = permissions::scratch_areas(&self.config.home, &call.squad);
+        // The member's own checkouts live under `.equipe/worktrees/` too: a file inside one (a screenshot, a page)
+        // is the project's, not equipe's credentials. A key's own name inside it (`.env`) is still a secret.
+        for project in self.projects_cached(&call.squad) {
+            scratch.push(format!("{}/", worktree::worktrees_of(&project, &self.config.home).display()));
+        }
+        if let Some(session) = self.sessions.get(&id) {
+            let own = [Some(&session.cwd), session.work.as_ref().map(|w| &w.cwd), session.work.as_ref().and_then(|w| w.sandbox.as_ref()).map(|s| &s.path)];
+            scratch.extend(own.into_iter().flatten().filter(|d| d.starts_with(self.config.home.join("worktrees"))).map(|d| format!("{}/", d.display())));
+        }
         let kind = crate::autonomy::engine_kind_in(&tool, &action, &scratch);
         let mut ask = crate::protocol::autonomy::Ask { kind, plain: None, standing: None, later: false, op: None };
         if kind == crate::protocol::autonomy::Kind::Other && self.allowed_standing(&call.squad, id, &call.member, ticket, &ask, (&tool, &action)).is_some() {
@@ -9773,6 +9782,14 @@ there, end your turn, and carry on when they say they're done."
         let own_deletes = standing.as_ref().is_some_and(|s| s.ops.contains(&crate::protocol::autonomy::Op::Delete) && s.undo_days > 0);
         let declared = crate::protocol::autonomy::Kind::parse(&text("kind"));
         let kind = crate::autonomy::person_kind(declared, &action, own_deletes);
+        // A non-developer's squad is never asked to approve a developer's step: the member runs it itself.
+        if kind == crate::protocol::autonomy::Kind::Other
+            && self.autonomy_mode(&call.squad) == crate::protocol::autonomy::Autonomy::Full
+            && crate::internal_chore::is_chore(&action)
+        {
+            let _ = reply.send(ToolResult { text: crate::internal_chore::refusal(&[action.as_str()]), is_error: true, image: None });
+            return;
+        }
         let ask = crate::protocol::autonomy::Ask {
             kind,
             plain: crate::autonomy::plain_of(&call.arguments),
@@ -11343,6 +11360,14 @@ know, a question without options. `block_on_person` is for what only they can do
                 let ready = self.desktop_auto.as_ref().and_then(desktop::auto::Auto::latest);
                 let judged = crate::permission_chore::judge(&asked, &permissions, ready.as_ref())?;
                 let (asked, chore_told) = (judged.asks, judged.told);
+                // A non-developer's squad is never asked for a developer's step (a terminal, a command, an install, a sudo
+                // password): the member has a shell itself. What stays is shown without raw commands.
+                let (asked, chore_told) = if self.autonomy_mode(&squad) == equipe_protocol::autonomy::Autonomy::Full {
+                    let internal = crate::internal_chore::judge(&asked)?;
+                    (internal.asks, [chore_told, internal.told].into_iter().flatten().reduce(|a, b| format!("{a} {b}")))
+                } else {
+                    (asked, chore_told)
+                };
                 // A permission card is its own headline (one button, no `ask`/`effort_minutes`); every
                 // other waiting ticket needs the one-line ask the person reads in their list.
                 let headline = if asked.iter().any(|a| crate::protocol::asks::permission_kinds(a).is_some()) {
