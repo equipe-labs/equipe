@@ -161,7 +161,9 @@ async fn decide_and_tell(s: &mut Squad, name: &str) {
 async fn a_sprint_due_in_half_an_hour_asks_for_the_machine_then_across_a_restart_and_moves_on_once_started() {
     let name = "wake-sprint";
     let mut s = squad(name, true).await;
-    assert_eq!(wire_wake(&s.handle, name).await, None, "nothing scheduled yet");
+    // At most the planning ask the loop's first look may make, asked again days later.
+    let first = wire_wake(&s.handle, name).await;
+    assert!(first.is_none_or(|at| at > now() + sprint::PLAN_AGAIN - MARGIN - 60), "nothing sooner scheduled yet: {first:?}");
     decide_and_tell(&mut s, name).await;
     let before = now();
     propose(&mut s, name).await;
