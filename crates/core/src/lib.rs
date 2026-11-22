@@ -26,6 +26,7 @@ pub mod command_watch;
 pub mod conversation_title;
 pub mod tidy;
 pub mod controls;
+pub mod cost_levers;
 pub mod design_qa;
 pub mod taste;
 pub mod scratch;
