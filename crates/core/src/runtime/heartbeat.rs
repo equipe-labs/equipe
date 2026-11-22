@@ -94,8 +94,10 @@ don't ask them in words meanwhile."
         let items = crate::escalation::items_of(&crate::importance::waiting_list(&tickets, &asks, pm_accepts), now);
         let notices = self.escalation.entry(squad.to_owned()).or_default().step(now, &items, &settings);
         for notice in notices {
-            if let (Some(pm), Some(line)) = (self.pm_of(squad), crate::escalation::pm_line(&notice)) {
-                self.hand_to_pm(squad, pm, line).await;
+            // Told with its next message, not with a turn of its own: the line says to bring it up
+            // in its next message to the person, and a turn spent reading it does nothing.
+            if let (Some(_), Some(line)) = (self.pm_of(squad), crate::escalation::pm_line(&notice)) {
+                self.brief_pm(squad, line, None);
             }
             self.publish(Event::Escalated { squad: squad.to_owned(), notice });
         }
@@ -124,6 +126,15 @@ don't ask them in words meanwhile."
     /// one whose board is light and whose person kept ideas asks it about them.
     pub(super) async fn wake_idle_pms(&mut self) {
         let squads: Vec<String> = self.journals.keys().cloned().collect();
+        // What this pass hands a PM goes in one wake when it ends, not one turn per notice.
+        self.pm_batch = Some(Vec::new());
+        self.wake_idle_pms_pass(squads).await;
+        for (squad, pm, text) in merge_wakes(self.pm_batch.take().unwrap_or_default()) {
+            self.hand_to_pm_now(&squad, pm, text).await;
+        }
+    }
+
+    async fn wake_idle_pms_pass(&mut self, squads: Vec<String>) {
         for squad in squads {
             self.remind_of_reviews(&squad).await;
             self.tell_escalations(&squad).await;
@@ -211,6 +222,16 @@ don't ask them in words meanwhile."
 
     /// `text` to the PM as a routine's would be: now, or after its turn.
     pub(super) async fn hand_to_pm(&mut self, squad: &str, pm: SessionId, text: String) {
+        // In the heartbeat's pass: kept, to go with the rest of the pass's in one turn.
+        if let Some(batch) = self.pm_batch.as_mut() {
+            batch.push((squad.to_owned(), pm, text));
+            return;
+        }
+        self.hand_to_pm_now(squad, pm, text).await;
+    }
+
+    async fn hand_to_pm_now(&mut self, squad: &str, pm: SessionId, text: String) {
+        self.pm_woken.insert(pm);
         let about = self.hq(squad).map(|hq| board::project_name(&hq));
         self.said_about = Some(about);
         match self.sessions.get(&pm) {
@@ -248,5 +269,34 @@ don't ask them in words meanwhile."
         let text = rules::idle_message(hours, self.routines(squad).len(), &ideas);
         self.hand_to_pm(squad, pm, text).await;
         true
+    }
+}
+
+/// What a pass handed the PMs, one entry per PM: the texts in the order they came, one under another.
+fn merge_wakes(batch: Vec<(String, SessionId, String)>) -> Vec<(String, SessionId, String)> {
+    let mut merged: Vec<(String, SessionId, String)> = Vec::new();
+    for (squad, pm, text) in batch {
+        match merged.iter_mut().find(|(s, p, _)| *s == squad && *p == pm) {
+            Some((_, _, joined)) => {
+                joined.push_str("\n\n");
+                joined.push_str(&text);
+            }
+            None => merged.push((squad, pm, text)),
+        }
+    }
+    merged
+}
+
+#[cfg(test)]
+mod wake_tests {
+    use super::*;
+
+    #[test]
+    fn a_pass_wakes_each_pm_once() {
+        let batch = vec![("a".to_owned(), 1u64, "one".to_owned()), ("b".to_owned(), 2u64, "other".to_owned()), ("a".to_owned(), 1u64, "two".to_owned())];
+        let merged = merge_wakes(batch);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].2, "one\n\ntwo");
+        assert_eq!(merged[1].2, "other");
     }
 }

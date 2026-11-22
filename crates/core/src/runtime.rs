@@ -38,6 +38,7 @@ use tokio::task::JoinHandle;
 
 use crate::board;
 use crate::browser;
+use crate::cost_levers;
 use crate::desktop_gate::{self, Act, Verdict};
 use crate::desktop;
 use crate::eta;
@@ -856,6 +857,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_approval: 1,
         focus: HashMap::new(),
         said_about: None,
+        pm_woken: HashSet::new(),
+        pm_batch: None,
         previews: crate::live_preview::Watched::default(),
         design_sessions: HashMap::new(),
         on_phone: false,
@@ -1554,6 +1557,12 @@ struct Runtime {
     /// that sent it shows (`Some(None)`: the whole squad) — it, not the
     /// focus another screen set last, says what the message is about.
     said_about: Option<Option<String>>,
+    /// PMs equipe itself woke (a notice, a hand-in, a routine) whose turn hasn't started yet:
+    /// that turn is a `pm_wake` in the spend ledger, not the person's conversation.
+    pm_woken: HashSet<SessionId>,
+    /// While the heartbeat's pass runs: what it hands each PM, kept to go in one wake
+    /// when the pass ends (`runtime::heartbeat`).
+    pm_batch: Option<Vec<(String, SessionId, String)>>,
     /// The pages of members' the person's screens have open in a live preview.
     previews: crate::live_preview::Watched,
     /// The design sessions on, by the designer's conversation
@@ -6637,7 +6646,27 @@ runbooks and reports live there, and work across the projects or on running them
                     Some(Err(message)) => return self.error(Some(id), message, None),
                     None => None,
                 };
-                let effort = effort_of(session);
+                // On equipe credits: who this turn is for goes to the gateway's ledger, and the
+                // turn's own tools' answers are kept short (`cost_levers`).
+                let kind = cost_levers::TurnKind::of(
+                    session.member.as_ref().map_or("", |m| m.role.as_str()),
+                    session.work.is_some(),
+                    session.work.as_ref().is_some_and(|w| w.lite),
+                    self.pm_woken.remove(&id),
+                );
+                let mut effort = effort_of(session);
+                if cost_levers::credits_profile() {
+                    if effort.is_none() {
+                        effort = cost_levers::lane_effort(session.member.as_ref().map_or("", |m| m.role.as_str()), kind).map(str::to_owned);
+                    }
+                    if let Some(m) = &session.member {
+                        let added = cost_levers::headers(&m.name, &m.role, ticket.map(u64::from), kind);
+                        let at = env.iter().position(|(k, _)| k == "ANTHROPIC_CUSTOM_HEADERS");
+                        let existing = at.map(|i| env.remove(i).1).or_else(|| std::env::var("ANTHROPIC_CUSTOM_HEADERS").ok());
+                        env.push(("ANTHROPIC_CUSTOM_HEADERS".to_owned(), cost_levers::merged(existing.as_deref(), &added)));
+                    }
+                    env.extend(cost_levers::output_caps());
+                }
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
                 if browses_freely {
@@ -10821,6 +10850,9 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             return;
         }
         let previewing = self.preview_note(id);
+        if self.sessions.get(&id).is_some_and(Session::is_pm) {
+            self.pm_woken.insert(id);
+        }
         let Some(session) = self.sessions.get_mut(&id) else { return };
         // What it missed travels with it, as with the person's own messages.
         let prompt = match std::mem::take(&mut session.briefing) {

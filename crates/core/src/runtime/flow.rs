@@ -279,8 +279,8 @@ the project's checks on that merge where it declares them, the design precheck w
             })
             .collect();
         let _ = journal.set_landed_digest_at(now);
-        let Some(pm) = self.pm_of(squad) else { return };
-        let _ = self.internal.send(Internal::Wake { session: pm, prompt: rules::digest(&lines) });
+        // With its next message, not a turn of its own: the digest itself says there is nothing to do if they're fine.
+        self.brief_pm(squad, rules::digest(&lines), None);
     }
 
     /// `revert_landed`: work a member landed is undone by a revert ticket at
