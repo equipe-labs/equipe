@@ -170,6 +170,9 @@ impl Transcript {
             Event::UserMessage { text, kept, .. } | Event::Steered { text, kept, .. } => Some(Entry::User { text: text.clone(), kept: kept.clone() }),
             Event::Notice { text, undo, .. } => Some(Entry::Note { text: text.clone(), undo: undo.clone() }),
             Event::Thread { project, .. } => Some(Entry::Thread { project: project.clone() }),
+            Event::MemberNote { from, text, choices, ticket, at, source, .. } => {
+                Some(Entry::MemberNote { from: from.clone(), text: text.clone(), choices: choices.clone(), ticket: *ticket, at: *at, session: *source })
+            }
             Event::WorkStarted { ticket, title, workspace, .. } => Some(Entry::Note {
                 undo: None,
                 text: match workspace {
@@ -338,7 +341,7 @@ pub mod scope {
         match entry {
             // The harness's turns (a background task ending) are not said by anyone.
             Entry::User { text, .. } => !crate::harness::only_harness(text),
-            Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
+            Entry::Reply { .. } | Entry::MemberNote { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
             Entry::Note { text, .. } => !text.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
             Entry::Tool { .. } | Entry::Plan { .. } | Entry::Thread { .. } => false,
         }
@@ -375,7 +378,7 @@ pub mod scope {
         // row each, a news line between, read as clutter.
         let news_only = |range: &Range<usize>| lines[range.clone()].iter().all(|(e, _)| match e.borrow() {
             Entry::User { text, .. } => crate::harness::only_harness(text),
-            Entry::Reply { .. } | Entry::Error { .. } | Entry::Landed { .. } => false,
+            Entry::Reply { .. } | Entry::MemberNote { .. } | Entry::Error { .. } | Entry::Landed { .. } => false,
             _ => true,
         });
         let mut merged: Vec<Part> = Vec::with_capacity(parts.len());
@@ -419,6 +422,12 @@ pub fn markdown(entries: &[Entry], heading: &str) -> String {
                 }
             }
             Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
+            Entry::MemberNote { from, text, choices, .. } => {
+                out.push_str(&format!("**{}:** {text}\n\n", from.name));
+                if !choices.is_empty() {
+                    out.push_str(&format!("_{}_\n\n", choices.join(" / ")));
+                }
+            }
             Entry::Tool { tool, target, .. } => {
                 out.push_str(&format!("- {} {}\n", tool_verb(tool), target.as_deref().unwrap_or("")));
             }
@@ -881,6 +890,20 @@ mod tests {
         }
 
         #[test]
+    fn a_members_note_is_a_said_line_of_the_pm_conversation() {
+        let mut t = Transcript::default();
+        let note = Event::MemberNote { session: 1, from: crate::Member { role: "designer".into(), name: "designer".into() }, text: "Two options".into(), choices: vec!["A".into(), "B".into()], ticket: Some(4), at: 9, source: 2 };
+        t.apply(&note);
+        let [entry] = t.entries() else { panic!("{:?}", t.entries()) };
+        assert_eq!(entry, &Entry::MemberNote { from: crate::Member { role: "designer".into(), name: "designer".into() }, text: "Two options".into(), choices: vec!["A".into(), "B".into()], ticket: Some(4), at: 9, session: 2 });
+        assert!(scope::is_said(entry));
+        let json = serde_json::to_value(entry).unwrap();
+        assert_eq!(json["kind"], "member_note");
+        assert_eq!(json["session"], 2);
+        assert_eq!(serde_json::from_value::<Entry>(json).unwrap(), *entry);
+    }
+
+    #[test]
         fn the_latest_lines_carry_their_times_and_the_marker_none() {
             let lines = vec![Entry::Thread { project: Some("app".into()) }, Entry::User { text: "a".into(), kept: Vec::new() }, Entry::Reply { text: "b".into() }];
             let times = vec![Some(1), Some(2), Some(3)];

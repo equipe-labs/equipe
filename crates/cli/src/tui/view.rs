@@ -404,7 +404,7 @@ impl Layouts {
 fn layout_key(agent: &Agent, width: usize, turns: u64) -> LayoutKey {
     let entries = agent.drawn();
     let last = entries.last().map_or(0, |entry| match entry.as_ref() {
-        Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. } => text.len(),
+        Entry::User { text, .. } | Entry::Reply { text } | Entry::Note { text, .. } | Entry::MemberNote { text, .. } => text.len(),
         Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
@@ -1974,6 +1974,13 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
                 }
             }
             // Other projects' talk, folded: one quiet line saying how much.
+            // A member's word to the person, in the PM's conversation: their name, then the words.
+            Entry::MemberNote { from, text, choices, .. } => {
+                begin(Block::Note, &mut lines, &mut last);
+                gap(&mut lines);
+                let said = if choices.is_empty() { text.clone() } else { format!("{text}  [{}]", choices.join(" / ")) };
+                lines.extend(wrapped(Vec::new(), &format!("{}: {said}", from.name), theme.dim(), 0, width));
+            }
             Entry::Note { text, .. } if text.starts_with(super::app::FOLDED) => {
                 let said: usize = text[super::app::FOLDED.len_utf8()..].parse().unwrap_or(0);
                 begin(Block::Note, &mut lines, &mut last);

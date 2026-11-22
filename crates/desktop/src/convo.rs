@@ -1039,6 +1039,7 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
                     blocks.push(Block::User(said.words.into_owned()));
                 }
             }
+            Entry::MemberNote { from, text, .. } => blocks.push(Block::Note(format!("{}: {text}", from.name))),
             Entry::Reply { text } => {
                 dedupe_completion_news(&mut blocks, text);
                 blocks.push(Block::Reply { text: text.clone(), first: !replied, live: false, worked: None });

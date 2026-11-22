@@ -3035,6 +3035,22 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         undo: Option<String>,
     },
+    /// A member's word to the person, mirrored into the PM's conversation
+    /// (`session` is the PM's) so the person talks to the whole team in one
+    /// place. `source` is the member's own session: an answer to `choices`
+    /// goes there ([`Command::Say`] with that session), free text to the PM.
+    MemberNote {
+        session: SessionId,
+        from: Member,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<TicketId>,
+        /// Unix seconds.
+        at: u64,
+        source: SessionId,
+    },
     /// A fragment of the agent's answer.
     TextDelta { session: SessionId, text: String },
     /// The agent is using a tool, e.g. `Edit` on a file.
@@ -3788,6 +3804,7 @@ impl Event {
             | Event::MemoWithdrawn { session, .. }
             | Event::QueueSent { session, .. }
             | Event::Notice { session, .. }
+            | Event::MemberNote { session, .. }
             | Event::TextDelta { session, .. }
             | Event::ToolUse { session, .. }
             | Event::ToolResult { session, .. }
@@ -4100,6 +4117,19 @@ pub enum Entry {
         undo: Option<String>,
     },
     Error { message: String, next: Option<String> },
+    /// A member's word to the person, shown in the PM's conversation
+    /// ([`Event::MemberNote`]); never sent to the PM's engine.
+    MemberNote {
+        from: Member,
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        choices: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<TicketId>,
+        at: u64,
+        /// The member's own session: where an answer to `choices` goes.
+        session: SessionId,
+    },
     Landed { branch: String, stat: String },
     /// The agent's plan, as a checklist ([`Event::Plan`]). A turn keeps one:
     /// a newer plan takes the place of the one before in the same turn.
