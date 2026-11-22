@@ -309,6 +309,8 @@
   "news.design_qa_passed": "{name} passed the screens of T-{id}: it is ready for your review · {title}.",
   "news.design_qa_changes": "{name} sent T-{id} back to {to}: its screens need changes · {title}.",
   "news.design_qa_precheck_passed": "equipe's precheck passed the screens of T-{id} without a designer: no screen changed and nothing new was found. It is ready for your review · {title}.",
+  "news.ui_result": "T-{id} is done — here is how it looks now · {title}",
+  "news.ui_result_link": "See it live: {url}",
   "news.design_qa_precheck_changes": "equipe's precheck sent T-{id} back to {to} without a designer: it found a definite screen or accessibility failure · {title}.",
   "news.design_qa_refused": "equipe's self-check sent T-{id} back to {to} without a designer: it found a definite screen or accessibility failure the change brought · {title}.",
   "news.design_qa_batched": "T-{id}'s screens are low risk by equipe's precheck: no designer turn now, they go into the daily design review. It is ready for your review · {title}.",

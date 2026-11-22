@@ -404,6 +404,33 @@ pub fn scratch_areas(home: &std::path::Path, squad: &str) -> Vec<String> {
     out
 }
 
+/// The daemon's uploads folder, as a prefix a path can start with: where the
+/// files the person sent with a message (`say` attachments, pasted
+/// screenshots) are kept — spelled out, and with `~`.
+pub fn uploads_area(home: &std::path::Path) -> Vec<String> {
+    let dir = crate::gateway::uploads_dir(home);
+    let mut out = vec![format!("{}/", dir.display())];
+    if let Some(rest) = std::env::var_os("HOME").map(std::path::PathBuf::from).and_then(|person| dir.strip_prefix(person).ok().map(std::path::Path::to_path_buf)) {
+        out.push(format!("~/{}/", rest.display()));
+    }
+    out
+}
+
+/// Whether this only reads the files the person sent ([`uploads_area`]):
+/// a look that changes nothing ([`only_reads_in`]) at paths all inside the
+/// uploads folder and climbing out of none. What the person sent is the
+/// squad's to read, in any mode, without asking them again; writing there,
+/// and anything else under equipe's folder, still asks.
+pub fn reads_uploads(tool: &str, action: &str, input: &Value, home: &std::path::Path) -> bool {
+    let area = uploads_area(home);
+    if !only_reads_in(tool, action, input, &area) {
+        return false;
+    }
+    let split = |c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | '&' | '|' | '(' | ')' | '<' | '>' | '=' | ',' | '`' | '{' | '}');
+    let paths: Vec<&str> = action.split(split).filter(|t| t.starts_with('/') || t.starts_with('~')).collect();
+    !paths.is_empty() && paths.iter().all(|p| !p.contains("..") && area.iter().any(|a| p.starts_with(a.as_str())))
+}
+
 /// Whether `text` — a command, a path, a tool's whole input — names something
 /// secret ([`SECRETS`]). Anything inside one of the squad's `scratch` areas is
 /// not secret for lying under `.equipe`, though a key's own name there still is,
@@ -888,6 +915,16 @@ mod tests {
         assert!(!secret("npm install") && !secret("/home/tenki/project/src/main.rs"));
         // Nothing to narrow without scratch (a squad with an odd name has none).
         assert!(touches_secret("/home/tenki/.equipe/tmp/team/t1/shoot.mjs", &[]));
+        // What the person sent with a message is the squad's to read: reading only, there only.
+        let home = std::path::Path::new("/home/tenki/.equipe");
+        let upload = "/home/tenki/.equipe/uploads/1795000000000-attach-test.png";
+        assert!(reads_uploads("Read", upload, &json!({ "file_path": upload }), home));
+        assert!(reads_uploads("Bash", &format!("file {upload}"), &json!({ "command": format!("file {upload}") }), home));
+        assert!(!reads_uploads("Write", upload, &json!({ "file_path": upload, "content": "x" }), home), "writing there still asks");
+        assert!(!reads_uploads("Bash", &format!("cp {upload} /tmp/x"), &json!({ "command": format!("cp {upload} /tmp/x") }), home));
+        assert!(!reads_uploads("Read", "/home/tenki/.equipe/uploads/../config.json", &json!({ "file_path": "/home/tenki/.equipe/uploads/../config.json" }), home));
+        assert!(!reads_uploads("Read", "/home/tenki/.equipe/config.json", &json!({ "file_path": "/home/tenki/.equipe/config.json" }), home));
+        assert!(!reads_uploads("Bash", &format!("cat {upload} /home/tenki/.equipe/keys.json"), &json!({ "command": format!("cat {upload} /home/tenki/.equipe/keys.json") }), home));
         assert!(scratch_areas(home, "../x").is_empty() && scratch_areas(home, "").is_empty());
     }
 

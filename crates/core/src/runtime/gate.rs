@@ -172,6 +172,11 @@ with the output and what to do; main is untouched. Nothing to do about it but ca
                 let _ = journal.ticket_event(ticket, "equipe", "checks passed", &ran.join("; "));
             }
         }
+        // Its result, copied while its worktree is still there (small files only, on the loop).
+        let result = self.find_ticket(squad, ticket).filter(|t| t.status == TicketStatus::Review).and_then(|t| self.ui_inputs(squad, &t)).and_then(|ui| {
+            watchdog::mark("accepting checked work: its result");
+            crate::ui_result::stage(&self.config.home, &ui, false)
+        });
         Box::pin(self.accept(squad, ticket, crate::telemetry::Accepter::Pm)).await;
         let checked_merge = merge.is_some();
         match merge {
@@ -186,6 +191,10 @@ with the output and what to do; main is untouched. Nothing to do about it but ca
             (None, false) => say!(self, "notice.pm_accepted", ids = ids, checked = gate.checked),
         };
         self.publish(Event::Notice { undo: None, session: gate.session, text });
+        if let Some(shown) = result {
+            self.show_ui_result(squad, &shown);
+            self.brief_pm(squad, shown.told(), None);
+        }
     }
 
     /// Land `merge` on main off the loop — worked out again at once should

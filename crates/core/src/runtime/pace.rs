@@ -3,9 +3,13 @@
 //! window is held against its reserve. While more than the reserve is left
 //! nothing is held back; under it, [`Runtime::dispatch_to`] (which asks
 //! [`Runtime::pace_of`]) starts only the PM's work and urgent or high tickets
-//! on that engine. Nothing running is stopped. A change is told once — the
-//! PM's news line and every screen — and counted in the squad's journal for
-//! the usage report.
+//! on that engine. Nothing running is stopped. A change is counted in the
+//! squad's journal for the usage report, shown on every screen as a status
+//! (`Event::PacingChanged`), and told to the PM — never as a line in the
+//! person's conversation: how the plans are paced is equipe's own mechanics.
+//! The PM says it to the person once, plainly, only when it holds up what
+//! they asked for. A hosted team on equipe credits has no weekly plan to
+//! pace: nothing is ever held there.
 
 use super::*;
 use crate::pacing::{self, Budget, Change, State, Until};
@@ -58,6 +62,9 @@ impl Runtime {
 
     /// The weekly window of `engine` for `squad`, as the reserve reads it.
     fn pace_budget(&self, squad: &str, engine: Engine) -> Option<Budget> {
+        if !paces(crate::cost_levers::credits_profile()) {
+            return None;
+        }
         let (week, at) = self.week_window(engine)?;
         Some(Budget { used: f64::from(week.used_percent), resets_at: week.resets_at, other_back: self.engine_out(squad, other_of(engine)), age: now_secs() as i64 - at })
     }
@@ -133,10 +140,40 @@ impl Runtime {
         };
         self.log_engines(squad, format!("reserve on {name}: {text}"));
         self.count_pacing(squad, engine, change.kind());
-        let line = match change {
-            Change::Held { .. } => format!("equipe: {text}. If the person asks why other work isn't starting, say so plainly; the PM's own work and urgent or high tickets still start at once. Don't lower models or effort to get around it."),
-            Change::Lifted { .. } => format!("equipe: {text}."),
-        };
-        self.brief_pm(squad, line, Some(text));
+        self.brief_pm(squad, briefing(&text, matches!(change, Change::Held { .. })), None);
+    }
+}
+
+/// Whether plans are paced at all: not on equipe credits, which have no
+/// weekly plan to keep a reserve of.
+fn paces(credits: bool) -> bool {
+    !credits
+}
+
+/// What the PM is told of a change to the reserve: for it, not for the person.
+fn briefing(text: &str, held: bool) -> String {
+    if held {
+        format!(
+            "equipe (internal, not for the person): {text}. Never add this to your replies. Only if it holds up something the person asked for, \
+say so once, plainly, in a short line of its own — when it starts, not why the plan is paced; the PM's own work and urgent or high \
+tickets still start at once. Don't lower models or effort to get around it."
+        )
+    } else {
+        format!("equipe (internal, not for the person): {text}. Nothing to tell them.")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_reserve_is_never_a_line_for_the_person_and_never_paced_on_credits() {
+        let held = briefing("Claude is under 15% for the week: only the PM and urgent work run until it resets in 28 hours", true);
+        assert!(held.starts_with("equipe (internal, not for the person):") && held.contains("Never add this to your replies"), "{held}");
+        assert!(held.contains("once, plainly, in a short line of its own"), "{held}");
+        assert!(briefing("Claude is back to full speed", false).contains("Nothing to tell them"));
+        assert!(paces(false));
+        assert!(!paces(true), "equipe credits have no weekly plan to hold back for");
     }
 }

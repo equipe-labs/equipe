@@ -77,6 +77,7 @@ pub mod verify;
 pub mod speed;
 pub mod status;
 pub mod kept;
+pub mod ui_result;
 pub mod language;
 pub mod looks;
 pub mod mcp;

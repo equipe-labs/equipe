@@ -301,6 +301,61 @@ async fn the_pm_accepts_its_teams_work_itself_unless_the_person_keeps_that_for_t
     handle.shutdown().await;
 }
 
+/// A 1×1 PNG.
+const PNG: [u8; 67] = [
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
+];
+
+#[tokio::test]
+async fn accepted_screen_work_is_shown_to_the_person_with_its_screenshots_and_link() {
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    handle.send(Command::SetSelfLand { squad: "acme".into(), on: false });
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    // Its screenshots, saved in its worktree and never committed.
+    let worktree = handle.snapshot("acme").await.tickets.iter().find(|t| t.id == 1).and_then(|t| t.worktree.clone()).expect("a worktree");
+    std::fs::create_dir_all(worktree.join("handin-shots")).unwrap();
+    for name in ["hero-1280.png", "hero-390.png", "hero-1280-dark.png"] {
+        std::fs::write(worktree.join("handin-shots").join(name), PNG).unwrap();
+    }
+    let handed = tool(
+        &handle,
+        "frontend",
+        "submit_for_review",
+        json!({ "summary": "Hero done. Preview: https://hero-git-t1-acme.vercel.app/ (PR https://github.com/acme/site/pull/1)", "changes_screens": false,
+                "images": ["handin-shots/hero-1280.png", "handin-shots/hero-390.png", "handin-shots/hero-1280-dark.png"] }),
+    )
+    .await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
+
+    let ok = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "Looked at the screenshots." })).await;
+    assert!(!ok.is_error, "{ok:?}");
+    // The PM hears the person sees it already: no pasting, no extra turn for it.
+    assert!(ok.text.contains("The person sees T-1's result in the team chat now: 3 screenshots, its link (https://hero-git-t1-acme.vercel.app/)"), "{ok:?}");
+    assert!(ok.text.contains("Don't paste them again"), "{ok:?}");
+    // The person sees it: the screenshots as attachment tags in the uploads, and the link.
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.starts_with("T-1 is done"))).await;
+    let text = seen.iter().rev().find_map(|e| if let Event::Notice { text, .. } = e { Some(text.clone()) } else { None }).unwrap();
+    let uploads = home.join("uploads");
+    let tags: Vec<&str> = text.lines().filter(|l| l.starts_with("[image: ")).collect();
+    assert_eq!(tags.len(), 3, "{text}");
+    for tag in &tags {
+        let path = tag.trim_start_matches("[image: ").trim_end_matches(']');
+        assert!(Path::new(path).starts_with(&uploads) && Path::new(path).is_file(), "{tag}");
+    }
+    assert!(text.starts_with("T-1 is done — here is how it looks now · Hero"), "{text}");
+    assert!(text.ends_with("See it live: https://hero-git-t1-acme.vercel.app/"), "{text}");
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn the_persons_words_raise_the_card_a_no_keeps_it_as_it_is_and_the_board_settles_it() {
     let (handle, mut events, _repo) = handed_in().await;

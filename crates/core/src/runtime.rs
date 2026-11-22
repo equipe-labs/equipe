@@ -9724,6 +9724,12 @@ there, end your turn, and carry on when they say they're done."
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
         }
+        // What the person sent with a message (kept in the daemon's uploads) is the
+        // squad's to read, in any mode: never put back to them as a question.
+        if permissions::reads_uploads(&tool, &action, &input, &self.config.home) {
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
         // A standing allowance the person granted for this kind of command
         // ("Allow for this kind"): allowed, and its use logged.
         // The squad's own working areas under `.equipe` (a ticket's scratch folder, the

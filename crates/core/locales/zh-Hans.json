@@ -306,6 +306,8 @@
   "news.design_qa_passed": "{name} 通过了 T-{id} 的界面检查，可以审查了 · {title}。",
   "news.design_qa_changes": "{name} 把 T-{id} 退回给 {to}：界面需要修改 · {title}。",
   "news.design_qa_precheck_passed": "equipe 的预检在没有设计师的情况下通过了 T-{id} 的界面检查：没有界面变化，也没有新问题，可以审查了 · {title}。",
+  "news.ui_result": "T-{id} 已完成，现在的样子是这样 · {title}",
+  "news.ui_result_link": "在线查看：{url}",
   "news.design_qa_precheck_changes": "equipe 的预检在没有设计师的情况下把 T-{id} 退回给 {to}：发现了明确的界面或无障碍问题 · {title}。",
   "news.design_qa_refused": "equipe 的自检未经设计师就把 T-{id} 退回给了 {to}：这次变更带来了明确的界面或无障碍问题 · {title}。",
   "news.design_qa_batched": "按 equipe 的预检，T-{id} 的界面风险低：现在不需要设计师检查，将进入每日设计评审。可以评审了 · {title}。",

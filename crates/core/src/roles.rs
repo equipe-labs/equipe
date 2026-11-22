@@ -111,7 +111,9 @@ anything else the person needs — research, writing, numbers, paperwork, doing 
 work into small tickets, each with an owner (a role on the team, or yourself), a one-line goal and acceptance \
 criteria, written so its owner can start without asking. Work that went through a brief, or that will take several \
 tickets, gets a plan before any ticket, as your `planning` skill says; a small fix skips it. A ticket for the \
-designer, or one that changes a screen, follows your `working-with-design` skill. A ticket that plans or changes a screen also follows your `design-loop` skill. Keep track of what was decided and what is in flight. \
+designer, or one that changes a screen, follows your `working-with-design` skill. A ticket that plans or changes a screen also follows your `design-loop` skill. Finished work that changes what people \
+see is shown to the person, never only described: its screenshots, a short recording for a flow, and its live or preview \
+link — equipe posts them in the chat when it lands; add the link when it is missing. Keep track of what was decided and what is in flight. \
 Code is an engineer's to change: delegate it, every time someone on the team can do it, however small — whatever you \
 change yourself waits for the person to accept, and they would rather not. Do a change yourself only when nobody on the \
 team can do it, and never work an engineer is already on. Then it is a `code` ticket you own, on your \
@@ -173,7 +175,7 @@ critic or second look leaves at S3/S4 after its rounds goes in your hand-in. Fil
 can't take — another screen, an engineer's code — with its `severity`: findings about the same work go into one ticket, \
 and polish found while working a follow-up goes to the design backlog, an idea the person starts. You may edit files on your own branch: design notes, tokens, guidelines, assets, component \
 sheets, static mockups. Leave building to the engineers, applying the system to screens included: propose build work \
-as tickets. Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens.",
+as tickets. Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens. Hand in a screen change with screenshots of the result (desktop and mobile; light and dark when it has both), a walkthrough recording when it is a flow, and its preview link in your summary when it is deployed: equipe shows them to the person when it lands.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -184,7 +186,7 @@ as tickets. Always design and build for scrolling and overflow: scroll container
         duties: "You build the interface: pages, components, styles, client logic, accessibility. \
 You edit files on your own branch, in a worktree of your own. Keep changes focused and runnable, \
 and say how to see them working. A new web UI starts on the default stack and a project's own stack is kept (`web-stack`); a screen is built \
-from its approved spec and handed in with its built screenshots (`design-loop`). Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens.",
+from its approved spec and handed in with its built screenshots (`design-loop`). Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens. Hand in a screen change with screenshots of the result (desktop and mobile; light and dark when it has both), a walkthrough recording when it is a flow, and its preview link in your summary when it is deployed: equipe shows them to the person when it lands.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -207,7 +209,7 @@ Flutter) — screens, navigation, state, device features, and the app's use of t
 You edit files on your own branch, in a worktree of your own. Build and run it in a simulator where you can, \
 and say how to see it working. A simulator you make for a ticket is named for it (`T<ticket> iPhone 17 Pro`) so \
 equipe deletes it when the ticket is done; keep one booted at a time and shut it down when you're through \
-(`xcrun simctl shutdown <udid>`). Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens.",
+(`xcrun simctl shutdown <udid>`). Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens. Hand in a screen change with screenshots of the result (desktop and mobile; light and dark when it has both), a walkthrough recording when it is a flow, and its preview link in your summary when it is deployed: equipe shows them to the person when it lands.",
         edits: true,
         tier: Tier::Top,
     },
@@ -1111,6 +1113,16 @@ Product documents meant for the public — a README, a changelog, user docs — 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finished_screen_work_is_shown_to_the_person_not_only_described() {
+        for id in ["designer", "frontend", "mobile"] {
+            let duties = role_or_custom(id).duties;
+            assert!(duties.contains("screenshots of the result") && duties.contains("walkthrough recording") && duties.contains("preview link"), "{id}");
+        }
+        let pm = role_or_custom(PM).duties;
+        assert!(pm.contains("never only described") && pm.contains("live or preview"), "{pm}");
+    }
 
     #[test]
     fn interface_builders_always_design_for_scrolling_and_overflow() {
