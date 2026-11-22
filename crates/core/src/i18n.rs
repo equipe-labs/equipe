@@ -1050,6 +1050,131 @@ mod tests {
         assert!(problems(&english).contains(&"en: missing t.other".to_owned()), "{:?}", problems(&english));
     }
 
+    /// Every `news.*` line, in every language, with a value for each of its
+    /// placeholders — as the daemon fills it, a plural by its count — has no
+    /// `{name}` left: the person never reads a literal `{count}`.
+    #[test]
+    fn no_news_line_is_left_with_a_placeholder_once_filled() {
+        let mut found = Vec::new();
+        for lang in Lang::ALL {
+            let catalog = core(lang);
+            let english = core(Lang::En);
+            let keys: Vec<&str> = english.english.keys().map(String::as_str).filter(|k| k.starts_with("news.")).collect();
+            assert!(keys.len() > 20, "the news keys are found: {}", keys.len());
+            for key in keys {
+                let names = placeholders(english.get(key));
+                // Plural forms are filled by their base key and a count, as `say!` does.
+                let (asked, counts): (&str, Vec<u64>) = match plural_form(key) {
+                    Some((base, _)) => (base, vec![1, 2, 5]),
+                    None => (key, vec![0]),
+                };
+                for n in counts {
+                    let mut args: Vec<(&str, String)> = names.iter().map(|name| (name.as_str(), "7".to_owned())).collect();
+                    if asked != key && !args.iter().any(|(name, _)| *name == "count") {
+                        args.push(("count", n.to_string()));
+                    }
+                    for (_, value) in args.iter_mut().filter(|(name, _)| *name == "count") {
+                        *value = n.to_string();
+                    }
+                    // A key named by its form (`news.decision.other`) is filled by its own text.
+                    let said = if asked == key { catalog.fill(key, &args) } else { catalog.fill(asked, &args) };
+                    if !placeholders(&said).is_empty() {
+                        found.push(format!("{} {key} (count {n}): {said}", lang.code()));
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "placeholders left in:\n{}", found.join("\n"));
+    }
+
+    /// Each `say!(…, "news.key", name = …)` in the daemon's sources gives a
+    /// value for every placeholder its line has, and a plural line (`news.k.one`
+    /// / `.other`) is said by a `count` — else the person reads `{count}`.
+    #[test]
+    fn every_news_line_the_daemon_says_is_given_what_it_takes() {
+        fn sources(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    sources(&path, out);
+                } else if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("i18n.rs") {
+                    out.push(path);
+                }
+            }
+        }
+        let mut files = Vec::new();
+        sources(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"), &mut files);
+        let english = core(Lang::En);
+        let mut wrong = Vec::new();
+        let mut checked = 0;
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            let mut rest = text.as_str();
+            while let Some(at) = rest.find("say!(") {
+                rest = &rest[at + 5..];
+                // The call's arguments, to its closing parenthesis.
+                let (mut depth, mut end) = (1usize, 0usize);
+                let mut in_str = false;
+                let mut prev = ' ';
+                for (i, c) in rest.char_indices() {
+                    match c {
+                        '"' if prev != '\\' => in_str = !in_str,
+                        '(' | '[' | '{' if !in_str => depth += 1,
+                        ')' | ']' | '}' if !in_str => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = i;
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    prev = c;
+                }
+                let call = &rest[..end];
+                let Some(q) = call.find("\"news.") else { continue };
+                let key_end = call[q + 1..].find('"').map(|n| q + 1 + n).unwrap();
+                let key = &call[q + 1..key_end];
+                // Top-level `name = value` pairs after the key.
+                let (mut depth, mut in_str, mut prev, mut start, mut given) = (0i32, false, ' ', key_end + 1, Vec::new());
+                let tail = &call[key_end + 1..];
+                let mut pieces = Vec::new();
+                for (i, c) in tail.char_indices() {
+                    match c {
+                        '"' if prev != '\\' => in_str = !in_str,
+                        '(' | '[' | '{' if !in_str => depth += 1,
+                        ')' | ']' | '}' if !in_str => depth -= 1,
+                        ',' if !in_str && depth == 0 => {
+                            pieces.push(&call[start..key_end + 1 + i]);
+                            start = key_end + 1 + i + 1;
+                        }
+                        _ => {}
+                    }
+                    prev = c;
+                }
+                pieces.push(&call[start..]);
+                for piece in pieces {
+                    if let Some((name, _)) = piece.split_once('=') {
+                        let name = name.trim();
+                        if !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+                            given.push(name.to_owned());
+                        }
+                    }
+                }
+                checked += 1;
+                let template = english.get(key);
+                let needs = placeholders(template);
+                let missing: Vec<&String> = needs.iter().filter(|n| !given.contains(n)).collect();
+                let plural = plural_form(key).is_some() && !given.contains(&"count".to_owned()) && english.english.contains_key(key) && key.ends_with(".other");
+                if !missing.is_empty() || plural && needs.contains(&"count".to_owned()) {
+                    wrong.push(format!("{}: {key} takes {needs:?}, given {given:?}", file.display()));
+                }
+            }
+        }
+        assert!(checked > 20, "the say! calls are found: {checked}");
+        assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+    }
+
     #[test]
     fn words_switch_language_while_running() {
         static FILES: &[(&str, &str)] = &[("ko", r#"{"hi": "안녕"}"#), ("en", r#"{"hi": "Hi"}"#), ("ja", r#"{"hi": "やあ"}"#)];

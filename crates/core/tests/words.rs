@@ -144,7 +144,7 @@ async fn status(handle: &Handle, id: u32) -> TicketStatus {
 /// The person's own message, typed into the PM's conversation. `all`: what
 /// a screen may claim of "all by words" — never what decides it.
 fn say(text: &str, all: bool) -> Command {
-    Command::Say { squad: "acme".into(), session: 1, text: text.into(), via: Via::Typed, all, later: false, pasted: false, about: None, device: None, nonce: None }
+    Command::Say { squad: "acme".into(), session: 1, text: text.into(), via: Via::Typed, all, later: false, pasted: false, about: None, device: None, nonce: None, attachments: Vec::new(), system: false }
 }
 
 /// "All by words", turned on at the Mac.
@@ -272,7 +272,7 @@ async fn all_by_words_reads_back_on_the_card_and_only_the_persons_next_clear_yes
     assert_eq!(status(&handle, 1).await, TicketStatus::Review);
     // An older screen's `submit` and a pasted yes: not the person's answer.
     handle.send(Command::Submit { session: 1, text: "yes".into(), about: None });
-    handle.send(Command::Say { squad: "acme".into(), session: 1, text: "yes".into(), via: Via::Typed, all: true, later: false, pasted: true, about: None, device: None, nonce: None });
+    handle.send(Command::Say { squad: "acme".into(), session: 1, text: "yes".into(), via: Via::Typed, all: true, later: false, pasted: true, about: None, device: None, nonce: None, attachments: Vec::new(), system: false });
     let after = within(&mut events, 1_000).await;
     assert!(!after.iter().any(|e| matches!(e, Event::WordsClosed { .. })), "{after:#?}");
     // A quoted yes, or anything that isn't an answer: on to the PM as it is, the read-back still waiting.
@@ -317,7 +317,7 @@ async fn a_no_holds_it_on_its_card_and_an_outward_yes_waits_out_its_cancel_windo
     let seen = until(&mut events, |e| matches!(e, Event::WordsLive { .. })).await;
     assert_eq!((live(&seen).tier, live(&seen).read_back.as_str()), (Tier::Outward, "Merge T-1 into main and push main to origin"));
     // Said aloud, a yes to something outward is short and on its own: asked again.
-    handle.send(Command::Say { squad: "acme".into(), session: 1, text: "yes go ahead please now".into(), via: Via::Voice, all: false, later: false, pasted: false, about: None, device: None, nonce: None });
+    handle.send(Command::Say { squad: "acme".into(), session: 1, text: "yes go ahead please now".into(), via: Via::Voice, all: false, later: false, pasted: false, about: None, device: None, nonce: None, attachments: Vec::new(), system: false });
     let seen = until(&mut events, |e| matches!(e, Event::WordsLive { .. })).await;
     assert_eq!((live(&seen).stage, live(&seen).asked_again), (Stage::ReadBack, 1));
     handle.send(say("ok", false));
@@ -423,7 +423,7 @@ async fn what_waited_in_words_when_the_daemon_stopped_is_logged_as_dropped() {
 
 /// The person's own message in conversation `session`, under the screen's key `nonce`.
 fn say_in(session: u64, text: &str, nonce: Option<u64>) -> Command {
-    Command::Say { squad: "acme".into(), session, text: text.into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce }
+    Command::Say { squad: "acme".into(), session, text: text.into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce, attachments: Vec::new(), system: false }
 }
 
 #[tokio::test]
@@ -481,4 +481,65 @@ async fn a_message_sent_again_under_its_key_is_acted_on_once_and_a_conversation_
     let after = within(&mut events, 1_500).await;
     assert!(passed(&after, "and the board?"), "{after:#?}");
     handle.shutdown().await;
+}
+
+fn say_with(text: &str, attachments: Vec<equipe_core::protocol::Attachment>, system: bool) -> Command {
+    Command::Say { squad: "acme".into(), session: 1, text: text.into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce: None, attachments, system }
+}
+
+#[tokio::test]
+async fn what_the_platform_says_is_recorded_as_system_and_still_reaches_the_pm() {
+    let (handle, mut events, _repo, _home) = handed_in(true).await;
+    let nudge = "[equipe monitor] Sprint S-1 closed: put it in the retro.";
+    // Flagged: the PM's turn runs on it, the conversation records it as the platform's.
+    handle.send(say_with("The site is down, look into it.", Vec::new(), true));
+    let seen = until(&mut events, |e| matches!(e, Event::SystemMessage { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SystemMessage { text, .. } if text == "The site is down, look into it.")), "{seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } | Event::MessageQueued { text, .. } if text.contains("site is down"))), "{seen:#?}");
+    // The monitor's mark alone is enough (a sender that doesn't say), and it is no decision in words.
+    handle.send(say_with(nudge, Vec::new(), false));
+    let seen = until(&mut events, |e| matches!(e, Event::SystemMessage { .. })).await;
+    assert!(seen.iter().any(|e| matches!(e, Event::SystemMessage { text, .. } if text == nudge)), "{seen:#?}");
+    assert!(!seen.iter().any(|e| matches!(e, Event::UserMessage { text, .. } if text == nudge)), "{seen:#?}");
+    // The person's own words stay theirs.
+    handle.send(say_with("thanks", Vec::new(), false));
+    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::UserMessage { text, .. }) if text == "thanks"), "{seen:#?}");
+    // The stored line carries its own kind.
+    let mut transcript = equipe_core::protocol::transcript::Transcript::default();
+    let lines = transcript.apply(&Event::SystemMessage { session: 1, text: "x".into() });
+    assert_eq!(serde_json::to_value(&lines).unwrap(), json!([{ "kind": "system", "text": "x" }]));
+}
+
+#[tokio::test]
+async fn files_sent_with_a_say_are_kept_safely_and_named_to_the_pm() {
+    use equipe_core::protocol::Attachment;
+    use base64::Engine as _;
+    let b64 = |bytes: &[u8]| base64::engine::general_purpose::STANDARD.encode(bytes);
+    let (handle, mut events, _repo, home) = handed_in(true).await;
+    let shot = Attachment { name: "../../etc/shot.png".into(), mime: "image/png".into(), data_base64: b64(b"\x89PNG fake") };
+    let notes = Attachment { name: "notes.txt".into(), mime: "text/plain".into(), data_base64: b64(b"hello") };
+    handle.send(say_with("see these", vec![shot, notes], false));
+    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { .. })).await;
+    let Some(Event::UserMessage { text, .. }) = seen.last() else { panic!("{seen:#?}") };
+    assert!(text.starts_with("see these\n\n[image: "), "{text}");
+    let uploads = home.join("uploads");
+    let paths: Vec<PathBuf> = text.lines().filter_map(|l| l.strip_prefix("[image: ").or_else(|| l.strip_prefix("[file: "))).map(|p| PathBuf::from(p.trim_end_matches(']'))).collect();
+    assert_eq!(paths.len(), 2, "{text}");
+    for path in &paths {
+        assert_eq!(path.parent(), Some(uploads.as_path()), "kept inside the uploads, whatever the name said: {path:?}");
+        assert!(path.exists());
+    }
+    assert!(paths[0].extension().is_some_and(|e| e == "png"));
+    // Over the count, or a file over the size: nothing is sent, the screen is told.
+    let one = |n: usize| Attachment { name: format!("{n}.txt"), mime: "text/plain".into(), data_base64: b64(b"x") };
+    handle.send(say_with("too many", (0..6).map(one).collect(), false));
+    let seen = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Error { message, .. }) if message.contains("at most 5")), "{seen:#?}");
+    let big = Attachment { name: "big.bin".into(), mime: "application/octet-stream".into(), data_base64: b64(&vec![0u8; (10 << 20) + 1]) };
+    handle.send(say_with("too big", vec![big], false));
+    let seen = until(&mut events, |e| matches!(e, Event::Error { .. })).await;
+    assert!(matches!(seen.last(), Some(Event::Error { message, .. }) if message.contains("10 MB")), "{seen:#?}");
+    let after = within(&mut events, 500).await;
+    assert!(!passed(&after, "too many") && !passed(&after, "too big"), "{after:#?}");
 }

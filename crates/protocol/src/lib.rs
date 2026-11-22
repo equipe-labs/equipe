@@ -976,6 +976,25 @@ mod about {
     }
 }
 
+/// A file sent inline with [`Command::Say`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attachment {
+    /// The file's name where it came from; only its extension and a tidied
+    /// stem are kept, never a folder.
+    pub name: String,
+    /// Its media type (`image/png`, `application/pdf`, …): what kind of
+    /// attachment it is to the member.
+    #[serde(default)]
+    pub mime: String,
+    /// The bytes, base64 (standard alphabet, padded).
+    pub data_base64: String,
+}
+
+/// The most files one [`Command::Say`] carries.
+pub const ATTACHMENTS_MAX: usize = 5;
+/// The most one inline attachment holds, in bytes once decoded.
+pub const ATTACHMENT_MAX_BYTES: usize = 10 << 20;
+
 /// Screen → core: "do this".
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1192,6 +1211,19 @@ pub enum Command {
         device: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         nonce: Option<u64>,
+        /// Files sent with the message, inline: the daemon keeps each in its
+        /// uploads and tells the member where it is (`[image: path]`, …).
+        /// At most [`ATTACHMENTS_MAX`], each at most [`ATTACHMENT_MAX_BYTES`];
+        /// a message over either is refused with an [`Event::Error`].
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<Attachment>,
+        /// Not the person's words but the platform's (a monitor's nudge, a
+        /// system notice): the member gets it as it would any message, but
+        /// it is recorded as [`Event::SystemMessage`] — [`Entry::System`] —
+        /// which a screen for the person leaves out. Never read for a
+        /// decision in words, never counted as the person being active.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        system: bool,
     },
     /// The undo (or, counting down, the cancel) on a words request: nothing
     /// of it happens. Answered by [`Event::WordsClosed`].
@@ -3007,6 +3039,13 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         kept: Vec<tags::Kept>,
     },
+    /// What the platform told the session — a monitor's nudge, a system
+    /// notice ([`Command::Say`]'s `system`) — in the conversation of the one
+    /// it went to. The member got it as a message; it is not the person's, so
+    /// a screen for the person doesn't show it (wire: `{"type":
+    /// "system_message", "session": n, "text": "…"}`; stored as
+    /// [`Entry::System`], `{"kind": "system", "text": "…"}`).
+    SystemMessage { session: SessionId, text: String },
     /// A message left while the agent works. It becomes a [`Event::UserMessage`]
     /// when the turn ends; memos left in the meantime arrive together.
     MessageQueued {
@@ -3800,6 +3839,7 @@ impl Event {
         match self {
             Event::SessionStarted { session, .. }
             | Event::UserMessage { session, .. }
+            | Event::SystemMessage { session, .. }
             | Event::MessageQueued { session, .. }
             | Event::MemoWithdrawn { session, .. }
             | Event::QueueSent { session, .. }
@@ -4097,6 +4137,10 @@ pub enum Entry {
         kept: Vec<tags::Kept>,
     },
     Reply { text: String },
+    /// What the platform told the member ([`Event::SystemMessage`]): in the
+    /// conversation as the member had it, never the person's — a screen for
+    /// the person doesn't show it.
+    System { text: String },
     Tool {
         tool: String,
         target: Option<String>,
@@ -5151,12 +5195,12 @@ mod tests {
         assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), confirmed);
         // A message said: only what it has.
         let say: Command = serde_json::from_value(json!({ "type": "say", "squad": "acme", "session": 3, "text": "merge T-12" })).unwrap();
-        assert_eq!(say, Command::Say { squad: "acme".into(), session: 3, text: "merge T-12".into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce: None });
-        let all = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None, nonce: None };
+        assert_eq!(say, Command::Say { squad: "acme".into(), session: 3, text: "merge T-12".into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce: None, attachments: Vec::new(), system: false });
+        let all = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None, nonce: None, attachments: Vec::new(), system: false };
         assert_eq!(serde_json::to_value(&all).unwrap(), json!({ "type": "say", "squad": "acme", "session": 3, "text": "ㄱㄱ", "via": "dictated", "all": true, "about": null }));
         assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&all).unwrap()).unwrap(), all);
         // Its key, for a message sent again: on the wire only when there is one.
-        let keyed = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None, nonce: Some(42) };
+        let keyed = Command::Say { squad: "acme".into(), session: 3, text: "ㄱㄱ".into(), via: Via::Dictated, all: true, later: false, pasted: false, about: Some(None), device: None, nonce: Some(42), attachments: Vec::new(), system: false };
         assert_eq!(serde_json::to_value(&keyed).unwrap()["nonce"], json!(42));
         assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&keyed).unwrap()).unwrap(), keyed);
         // A daemon from before has no words in its snapshot: the screen sends `submit`.

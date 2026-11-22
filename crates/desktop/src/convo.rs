@@ -1082,7 +1082,8 @@ pub fn build_blocks_at(entries: &[Cow<'_, Entry>], times: &[Option<u64>], base: 
                 let stale = entries[ix + 1..].iter().any(|e| matches!(e.as_ref(), Entry::User { text, .. } if !harness::only_harness(text)));
                 blocks.push(Block::Plan { steps: steps.clone(), stale, working: false });
             }
-            Entry::Tool { .. } | Entry::Thread { .. } => {}
+            // The platform's word to the member: never shown to the person.
+            Entry::Tool { .. } | Entry::Thread { .. } | Entry::System { .. } => {}
         }
     }
     at.resize(blocks.len(), said);

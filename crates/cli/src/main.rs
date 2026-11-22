@@ -9,6 +9,7 @@
 
 mod attach;
 mod brief;
+mod say;
 mod call_sim;
 mod clip;
 mod context;
@@ -136,6 +137,19 @@ enum Command {
         /// Let the agent edit files — on a new branch, in an isolated worktree
         #[arg(long)]
         edit: bool,
+    },
+    /// Say something to a squad's PM, as the person would: `--attach <file>` (up to 5, 10 MB each) sends files along
+    Say {
+        text: Vec<String>,
+        /// The squad (default: the last one used)
+        #[arg(long)]
+        squad: Option<String>,
+        /// A file to send with it (repeat for more)
+        #[arg(long = "attach")]
+        attach: Vec<std::path::PathBuf>,
+        /// The platform's word, not the person's: recorded as a system message
+        #[arg(long)]
+        system: bool,
     },
     /// Review this repository's changes with an NVIDIA Nemotron model on Nebius
     /// Token Factory (needs only NEBIUS_API_KEY): the working tree and what is
@@ -695,6 +709,12 @@ async fn run(cli: Cli) -> ExitCode {
         Command::Logout => app.logout(),
         Command::Status => app.status().await,
         Command::Try { prompt, engine, model, edit } => app.run_try(&prompt, engine, model.as_deref(), edit).await,
+        Command::Say { text, squad, attach, system } => {
+            match squad.or_else(|| equipe_core::squads::default_squad(&equipe_providers::credentials::equipe_home())) {
+                Some(squad) => say::command(say::Say { squad, text: text.join(" "), attach, system }).await.map_err(Failure::new),
+                None => Err(Failure::new(t!("say.no_squad"))),
+            }
+        }
         Command::Review { base, models, goal } => review::command(base, models, goal).await,
         Command::Daemon { action } => daemon_command(action).await,
         Command::Design { action } => design::command(action).await.map_err(Failure::new),
@@ -2005,7 +2025,7 @@ impl App {
                 }
                 Event::TextDelta { text, .. } => printer.text(&text),
                 Event::ToolUse { tool, target, .. } => printer.tool(&tool, target),
-                Event::ModelKnown { .. } | Event::UserMessage { .. } | Event::Thread { .. } => {}
+                Event::ModelKnown { .. } | Event::UserMessage { .. } | Event::SystemMessage { .. } | Event::Thread { .. } => {}
                 // Work handed to a subagent shows as it starts and as it hands back.
                 Event::SubagentStarted { what, .. } => eprintln!("{}", e.dim(&format!("  ↳ {what}"))),
                 Event::SubagentEnded { .. } => eprintln!("{}", e.dim(&format!("  ↳ {}", t!("main.handed_back")))),

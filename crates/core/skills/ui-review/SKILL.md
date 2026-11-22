@@ -76,3 +76,7 @@ primary action within thumb reach, safe areas and the keyboard respected, the pl
 
 Sources: the job walk, the five-moves cap and the "nearest sibling" rules adapt Mobbin's `redesign-screen` skill
 (MIT, github.com/mobbin/skills); the full list of sources and licences is in `references/sources.md`.
+
+## Scroll and overflow (always)
+
+Check and screenshot, not only the happy path: scroll containers (no double scrollbars, sticky headers, scroll restoration); long or many content (long titles/URLs/names wrap or truncate with full text on hover; 0, 1 and very many items; empty and error states); 375px and wide screens. Include these states in the screenshots and findings.

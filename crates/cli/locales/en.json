@@ -1640,5 +1640,13 @@
   "sprint.next": "Next sprint (proposed)",
   "sprint.waits": "Waiting on your answer on its card.",
   "sprint.learned": "What we learned",
-  "sprint.none": "No sprint in {squad} yet."
+  "sprint.none": "No sprint in {squad} yet.",
+  "say.needs_text": "say needs some words or a file",
+  "say.too_many": "at most {max} files can go with a message",
+  "say.unreadable": "{file} can't be read: {why}",
+  "say.too_big": "{file} is bigger than {mb} MB",
+  "say.no_pm": "{squad} has no PM to say it to",
+  "say.no_answer": "the daemon didn't take the message in time",
+  "say.sent": "Sent to {squad}'s PM.",
+  "say.no_squad": "no squad to say it to; name one with --squad"
 }

@@ -857,6 +857,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         next_approval: 1,
         focus: HashMap::new(),
         said_about: None,
+        system_said: Vec::new(),
         pm_woken: HashSet::new(),
         pm_batch: None,
         previews: crate::live_preview::Watched::default(),
@@ -992,6 +993,45 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         handle.send(Command::Submit { session, text, about: None });
     }
     (handle, evt_rx)
+}
+
+/// `text` as it was said to a member, cut into what the platform said (one of
+/// `system`, whole, set apart by blank lines) and what the person did — in
+/// order. Memos and steers delivered together are joined by blank lines.
+fn split_said(text: &str, system: &[String]) -> Vec<(bool, String)> {
+    let mut out: Vec<(bool, String)> = Vec::new();
+    let mut rest = text;
+    while !rest.is_empty() {
+        let mut best: Option<(usize, usize)> = None;
+        for told in system.iter().filter(|t| !t.is_empty()) {
+            let mut from = 0;
+            while let Some(found) = rest[from..].find(told.as_str()) {
+                let (pos, end) = (from + found, from + found + told.len());
+                if (pos == 0 || rest[..pos].ends_with("\n\n")) && (end == rest.len() || rest[end..].starts_with("\n\n")) {
+                    if best.is_none_or(|(at, _)| pos < at) {
+                        best = Some((pos, told.len()));
+                    }
+                    break;
+                }
+                from = pos + rest[pos..].chars().next().map_or(1, char::len_utf8);
+            }
+        }
+        match best {
+            None => {
+                out.push((false, rest.to_owned()));
+                break;
+            }
+            Some((pos, len)) => {
+                let before = rest[..pos].trim_end_matches('\n');
+                if !before.trim().is_empty() {
+                    out.push((false, before.to_owned()));
+                }
+                out.push((true, rest[pos..pos + len].to_owned()));
+                rest = rest[pos + len..].trim_start_matches('\n');
+            }
+        }
+    }
+    out
 }
 
 tokio::task_local! {
@@ -1557,6 +1597,11 @@ struct Runtime {
     /// that sent it shows (`Some(None)`: the whole squad) — it, not the
     /// focus another screen set last, says what the message is about.
     said_about: Option<Option<String>>,
+    /// Texts the platform said to a member ([`Command::Say`]'s `system`) that
+    /// haven't reached its conversation yet: where one does (as a message sent,
+    /// a steer read, memos delivered together) it is recorded as
+    /// [`Event::SystemMessage`], not as the person's. See [`split_said`].
+    system_said: Vec<String>,
     /// PMs equipe itself woke (a notice, a hand-in, a routine) whose turn hasn't started yet:
     /// that turn is a `pm_wake` in the spend ledger, not the person's conversation.
     pm_woken: HashSet<SessionId>,
@@ -3448,7 +3493,9 @@ impl Runtime {
             Command::ProposeAccept { squad, session, verdict, tickets, note } => self.propose_accept_from_words(&squad, session, verdict, &tickets, &note),
             Command::ConfirmAccept { squad, id, tickets, said } => self.confirm_accept(&squad, id, tickets, said).await,
             Command::DeclineAccept { squad, id } => self.decline_accept(&squad, id),
-            Command::Say { squad, session, text, via, all, later, pasted, about, device, nonce } => self.say(squad, session, text, via, all, later, pasted, about, device, nonce).await,
+            Command::Say { squad, session, text, via, all, later, pasted, about, device, nonce, attachments, system } => {
+                self.say(squad, session, text, via, all, later, pasted, about, device, nonce, attachments, system).await
+            }
             Command::UndoWords { squad, id } => self.undo_words(&squad, id),
             Command::WordsLog { squad } => self.words_log(squad),
             Command::ClearWordsLog { squad } => self.clear_words_log(squad),
@@ -5179,12 +5226,53 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                     self.save_waiting(id);
                     self.tell_the_pm(id, |name| format!("The person told {name}, mid-work: {text}"), Some(&text));
+                    if self.is_system_said(&text) {
+                        return;
+                    }
                     return self.publish(Event::SteerQueued { session: id, text, project });
                 }
             }
             return self.leave_memo(id, text);
         }
         self.submit_now(id, text).await;
+    }
+
+    /// Whether `text` is, all of it, what the platform said to a member.
+    fn is_system_said(&self, text: &str) -> bool {
+        let parts = split_said(text, &self.system_said);
+        !parts.is_empty() && parts.iter().all(|(system, _)| *system)
+    }
+
+    /// Put what was said to `id` into its conversation: the person's words as
+    /// they were said (`steered`: read mid-turn), what the platform said
+    /// ([`Command::Say`]'s `system`) as [`Event::SystemMessage`], each in its
+    /// order. A text the platform said is taken off the list once it is in.
+    fn publish_said(&mut self, id: SessionId, text: &str, steered: bool) {
+        let mut parts = split_said(text, &self.system_said);
+        if parts.is_empty() {
+            parts.push((false, text.to_owned()));
+        }
+        for (system, part) in parts {
+            if system {
+                if let Some(at) = self.system_said.iter().position(|t| *t == part) {
+                    self.system_said.remove(at);
+                }
+                if steered
+                    && let Some(session) = self.sessions.get_mut(&id)
+                    && let Some(at) = session.steering.iter().position(|t| *t == part)
+                {
+                    session.steering.remove(at);
+                    if at < session.steer_threads.len() {
+                        session.steer_threads.remove(at);
+                    }
+                }
+                self.publish(Event::SystemMessage { session: id, text: part });
+            } else if steered {
+                self.publish(Event::Steered { session: id, text: part, kept: Vec::new() });
+            } else {
+                self.publish(Event::UserMessage { session: id, text: part, kept: Vec::new() });
+            }
+        }
     }
 
     /// A memo: it waits for the turn to end rather than cutting in, and belongs
@@ -5202,7 +5290,10 @@ runbooks and reports live there, and work across the projects or on running them
         session.queued.push(text.clone());
         session.memo_threads.push(project.clone());
         self.save_waiting(id);
-        self.publish(Event::MessageQueued { session: id, text, project });
+        // What the platform said isn't the person's memo: not listed as one.
+        if !self.is_system_said(&text) {
+            self.publish(Event::MessageQueued { session: id, text, project });
+        }
     }
 
     /// The project what is said to `id` now is about: its ticket's, at work
@@ -5265,7 +5356,7 @@ runbooks and reports live there, and work across the projects or on running them
             if elsewhere {
                 self.publish(Event::Thread { session: id, project: about });
             }
-            self.publish(Event::Steered { session: id, text, kept: Vec::new() });
+            self.publish_said(id, &text, true);
             if elsewhere {
                 self.publish(Event::Thread { session: id, project: now });
             }
@@ -5438,7 +5529,7 @@ runbooks and reports live there, and work across the projects or on running them
         {
             self.publish(Event::Thread { session: id, project: about.clone() });
         }
-        self.publish(Event::UserMessage { session: id, text: text.clone(), kept: Vec::new() });
+        self.publish_said(id, &text, false);
         // What the person writes in is what the squad writes for them.
         if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
             && let Some(journal) = self.journal(&squad)
@@ -11839,6 +11930,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                     .iter()
                     .filter_map(|entry| match entry {
                         Entry::User { text, kept } => harness::words(text).map(|text| responses::Message { role: responses::Role::User, text: tags::read_back(&text, kept).into_owned() }),
+                        // What the platform told the member, it read as a message.
+                        Entry::System { text } => Some(responses::Message { role: responses::Role::User, text: text.clone() }),
                         Entry::Reply { text } => {
                             Some(responses::Message { role: responses::Role::Assistant, text: text.clone() })
                         }
@@ -12090,6 +12183,7 @@ check what is already done in your worktree first."
             .iter()
             .filter_map(|e| match e {
                 Entry::User { text, kept } => harness::words(text).map(|text| format!("- the person: {}", clip(&tags::read_back(&text, kept), 600))),
+                Entry::System { text } => Some(format!("- equipe: {}", clip(text, 600))),
                 Entry::Reply { text } => Some(format!("- you: {}", clip(text, 600))),
                 _ => None,
             })

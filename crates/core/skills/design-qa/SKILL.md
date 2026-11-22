@@ -87,3 +87,7 @@ every S1/S2 you find there is counted as a miss of the routing, and enough misse
 Renders and screenshots you make under `design/` (`qa/`, `checks/` and the rest) are never committed: leave them on
 disk and never `git add` them — equipe keeps them out of git and lists them in `design/captures.json`. Commit the
 report itself.
+
+## Scroll and overflow (always)
+
+Check and screenshot, not only the happy path: scroll containers (no double scrollbars, sticky headers, scroll restoration); long or many content (long titles/URLs/names wrap or truncate with full text on hover; 0, 1 and very many items; empty and error states); 375px and wide screens. Include these states in the screenshots and findings.

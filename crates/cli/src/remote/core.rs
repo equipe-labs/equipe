@@ -262,7 +262,7 @@ pub fn allowed(command: Command) -> Option<Command> {
 /// (not yet there: the security review comes first).
 pub fn from_device(device: &str, command: Command) -> Command {
     match command {
-        Command::Say { squad, session, text, via, later, pasted, about, nonce, .. } => Command::Say { squad, session, text, via, all: false, later, pasted, about, device: Some(device.to_owned()), nonce },
+        Command::Say { squad, session, text, via, later, pasted, about, nonce, .. } => Command::Say { squad, session, text, via, all: false, later, pasted, about, device: Some(device.to_owned()), nonce, attachments: Vec::new(), system: false },
         other => other,
     }
 }
@@ -1311,7 +1311,7 @@ pub(crate) mod tests {
         // A message said on a phone: the device the link knows, and all by words off, whatever the phone claims.
         let said = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "say", "squad": "acme", "session": 1, "text": "ㄱㄱ", "via": "voice", "all": true, "device": "someone-else" } });
         let out = core.on_relay(&phone.send(&c, Some("acme"), said, now), now);
-        let heard = Command::Say { squad: "acme".into(), session: 1, text: "ㄱㄱ".into(), via: equipe_core::protocol::by_words::Via::Voice, all: false, later: false, pasted: false, about: None, device: Some(phone.id.clone()), nonce: None };
+        let heard = Command::Say { squad: "acme".into(), session: 1, text: "ㄱㄱ".into(), via: equipe_core::protocol::by_words::Via::Voice, all: false, later: false, pasted: false, about: None, device: Some(phone.id.clone()), nonce: None, attachments: Vec::new(), system: false };
         assert_eq!(out, vec![Action::Command { device: phone.id.clone(), squad: "acme".into(), command: heard }]);
         let undo = json!({ "jsonrpc": "2.0", "method": "command", "params": { "type": "undo_words", "squad": "acme", "id": 4 } });
         assert!(matches!(&core.on_relay(&phone.send(&c, Some("acme"), undo, now), now)[..], [Action::Command { command: Command::UndoWords { id: 4, .. }, .. }]));

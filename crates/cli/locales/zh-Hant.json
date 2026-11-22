@@ -1617,5 +1617,13 @@
   "sprint.next": "下一個衝刺（提議）",
   "sprint.waits": "等你在卡片上回答。",
   "sprint.learned": "我們學到了什麼",
-  "sprint.none": "{squad} 還沒有衝刺。"
+  "sprint.none": "{squad} 還沒有衝刺。",
+  "say.needs_text": "say 需要文字或檔案",
+  "say.too_many": "一則訊息最多附帶 {max} 個檔案",
+  "say.unreadable": "無法讀取 {file}：{why}",
+  "say.too_big": "{file} 超過 {mb} MB",
+  "say.no_pm": "{squad} 沒有可以對話的 PM",
+  "say.no_answer": "常駐程式沒有及時收到訊息",
+  "say.sent": "已傳送給 {squad} 的 PM。",
+  "say.no_squad": "沒有可對話的 squad；請用 --squad 指定"
 }

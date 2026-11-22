@@ -3755,6 +3755,7 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
             Entry::Landed { branch, stat } => out.push_str(&format!("{}\n\n```\n{stat}\n```\n\n", t!("app.md_landed", branch = branch))),
             // The plan's one line is already in the export, as its tool step.
             Entry::Plan { .. } => {}
+            Entry::System { .. } => {}
         }
     }
     out

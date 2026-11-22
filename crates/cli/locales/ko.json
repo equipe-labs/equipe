@@ -1617,5 +1617,13 @@
   "sprint.next": "다음 스프린트 (제안)",
   "sprint.waits": "카드에서 답해 주시길 기다려요.",
   "sprint.learned": "배운 것",
-  "sprint.none": "{squad}에는 아직 스프린트가 없어요."
+  "sprint.none": "{squad}에는 아직 스프린트가 없어요.",
+  "say.needs_text": "say에는 말이나 파일이 필요해요",
+  "say.too_many": "메시지에는 파일을 최대 {max}개까지 붙일 수 있어요",
+  "say.unreadable": "{file}을(를) 읽을 수 없어요: {why}",
+  "say.too_big": "{file}이(가) {mb}MB보다 커요",
+  "say.no_pm": "{squad}에는 말을 걸 PM이 없어요",
+  "say.no_answer": "데몬이 메시지를 제때 받지 못했어요",
+  "say.sent": "{squad}의 PM에게 보냈어요.",
+  "say.no_squad": "말을 걸 squad가 없어요. --squad로 지정해 주세요"
 }

@@ -1617,5 +1617,13 @@
   "sprint.next": "下一个冲刺（提议）",
   "sprint.waits": "等你在卡片上回答。",
   "sprint.learned": "我们学到了什么",
-  "sprint.none": "{squad} 还没有冲刺。"
+  "sprint.none": "{squad} 还没有冲刺。",
+  "say.needs_text": "say 需要文字或文件",
+  "say.too_many": "一条消息最多附带 {max} 个文件",
+  "say.unreadable": "无法读取 {file}：{why}",
+  "say.too_big": "{file} 超过 {mb} MB",
+  "say.no_pm": "{squad} 没有可以对话的 PM",
+  "say.no_answer": "守护进程没有及时收到消息",
+  "say.sent": "已发送给 {squad} 的 PM。",
+  "say.no_squad": "没有可对话的 squad；请用 --squad 指定"
 }
