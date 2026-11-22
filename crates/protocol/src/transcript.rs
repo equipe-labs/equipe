@@ -52,7 +52,7 @@ pub fn fold_plans(entries: Vec<Entry>, times: Vec<Option<u64>>) -> (Vec<Entry>, 
     let mut plan_at: Option<usize> = None;
     for (entry, at) in entries.into_iter().zip(times) {
         match &entry {
-            Entry::User { .. } => plan_at = None,
+            Entry::User { .. } | Entry::System { .. } => plan_at = None,
             Entry::Plan { .. } => {
                 if let Some(ix) = plan_at {
                     out[ix] = entry;
@@ -168,6 +168,7 @@ impl Transcript {
             }
             // A message sent while it worked, where it was read.
             Event::UserMessage { text, kept, .. } | Event::Steered { text, kept, .. } => Some(Entry::User { text: text.clone(), kept: kept.clone() }),
+            Event::SystemMessage { text, .. } => Some(Entry::System { text: text.clone() }),
             Event::Notice { text, undo, .. } => Some(Entry::Note { text: text.clone(), undo: undo.clone() }),
             Event::Thread { project, .. } => Some(Entry::Thread { project: project.clone() }),
             Event::MemberNote { from, text, choices, ticket, at, source, .. } => {
@@ -210,7 +211,7 @@ impl Transcript {
             // A plan takes the place of the one before it in the same turn (the
             // journal keeps each as it came; a replay folds them the same way,
             // `fold_plans`).
-            let turn_start = self.entries.iter().rposition(|e| matches!(e, Entry::User { .. })).map_or(0, |ix| ix + 1);
+            let turn_start = self.entries.iter().rposition(|e| matches!(e, Entry::User { .. } | Entry::System { .. })).map_or(0, |ix| ix + 1);
             let earlier = match entry {
                 Entry::Plan { .. } => self.entries[turn_start..].iter().rposition(|e| matches!(e, Entry::Plan { .. })).map(|at| turn_start + at),
                 _ => None,
@@ -343,7 +344,8 @@ pub mod scope {
             Entry::User { text, .. } => !crate::harness::only_harness(text),
             Entry::Reply { .. } | Entry::MemberNote { .. } | Entry::Error { .. } | Entry::Landed { .. } => true,
             Entry::Note { text, .. } => !text.chars().next().is_some_and(|c| ('\u{E000}'..='\u{F8FF}').contains(&c)),
-            Entry::Tool { .. } | Entry::Plan { .. } | Entry::Thread { .. } => false,
+            // What the platform told the member: nobody's words to the person.
+            Entry::System { .. } | Entry::Tool { .. } | Entry::Plan { .. } | Entry::Thread { .. } => false,
         }
     }
 
@@ -422,6 +424,8 @@ pub fn markdown(entries: &[Entry], heading: &str) -> String {
                 }
             }
             Entry::Reply { text } => out.push_str(&format!("{text}\n\n")),
+            // Not the person's, not for them: left out of what they keep.
+            Entry::System { .. } => {}
             Entry::MemberNote { from, text, choices, .. } => {
                 out.push_str(&format!("**{}:** {text}\n\n", from.name));
                 if !choices.is_empty() {

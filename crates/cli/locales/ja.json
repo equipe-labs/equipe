@@ -1617,5 +1617,13 @@
   "sprint.next": "次のスプリント（提案）",
   "sprint.waits": "カードでの回答を待っています。",
   "sprint.learned": "わかったこと",
-  "sprint.none": "{squad} にはまだスプリントがありません。"
+  "sprint.none": "{squad} にはまだスプリントがありません。",
+  "say.needs_text": "say には言葉かファイルが必要です",
+  "say.too_many": "メッセージに付けられるファイルは最大 {max} 個です",
+  "say.unreadable": "{file} を読めません: {why}",
+  "say.too_big": "{file} は {mb} MB を超えています",
+  "say.no_pm": "{squad} には話しかける PM がいません",
+  "say.no_answer": "デーモンがメッセージを時間内に受け取りませんでした",
+  "say.sent": "{squad} の PM に送りました。",
+  "say.no_squad": "話しかける squad がありません。--squad で指定してください"
 }

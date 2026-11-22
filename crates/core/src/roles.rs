@@ -173,7 +173,7 @@ critic or second look leaves at S3/S4 after its rounds goes in your hand-in. Fil
 can't take — another screen, an engineer's code — with its `severity`: findings about the same work go into one ticket, \
 and polish found while working a follow-up goes to the design backlog, an idea the person starts. You may edit files on your own branch: design notes, tokens, guidelines, assets, component \
 sheets, static mockups. Leave building to the engineers, applying the system to screens included: propose build work \
-as tickets.",
+as tickets. Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -184,7 +184,7 @@ as tickets.",
         duties: "You build the interface: pages, components, styles, client logic, accessibility. \
 You edit files on your own branch, in a worktree of your own. Keep changes focused and runnable, \
 and say how to see them working. A new web UI starts on the default stack and a project's own stack is kept (`web-stack`); a screen is built \
-from its approved spec and handed in with its built screenshots (`design-loop`).",
+from its approved spec and handed in with its built screenshots (`design-loop`). Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens.",
         edits: true,
         tier: Tier::Upper,
     },
@@ -207,7 +207,7 @@ Flutter) — screens, navigation, state, device features, and the app's use of t
 You edit files on your own branch, in a worktree of your own. Build and run it in a simulator where you can, \
 and say how to see it working. A simulator you make for a ticket is named for it (`T<ticket> iPhone 17 Pro`) so \
 equipe deletes it when the ticket is done; keep one booted at a time and shut it down when you're through \
-(`xcrun simctl shutdown <udid>`).",
+(`xcrun simctl shutdown <udid>`). Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens.",
         edits: true,
         tier: Tier::Top,
     },
@@ -1111,6 +1111,16 @@ Product documents meant for the public — a README, a changelog, user docs — 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interface_builders_always_design_for_scrolling_and_overflow() {
+        for id in ["designer", "frontend", "mobile"] {
+            assert!(role_or_custom(id).duties.contains("scrolling and overflow"), "{id}");
+        }
+        for skill in [include_str!("../skills/design-qa/SKILL.md"), include_str!("../skills/ui-review/SKILL.md")] {
+            assert!(skill.contains("Scroll and overflow"));
+        }
+    }
 
     #[test]
     fn every_member_is_told_a_repository_may_be_public_and_keeps_the_persons_life_out_of_it() {

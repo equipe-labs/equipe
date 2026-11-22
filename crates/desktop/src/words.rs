@@ -98,7 +98,7 @@ pub fn commands(commands: Vec<Command>, squad: &str, read: bool, said: Said) -> 
         return commands;
     }
     let via = if said.dictated { Via::Dictated } else { Via::Typed };
-    let say = |session, text, later, about| Command::Say { squad: squad.to_owned(), session, text, via, all: false, later, pasted: said.pasted, about, device: None, nonce: None };
+    let say = |session, text, later, about| Command::Say { squad: squad.to_owned(), session, text, via, all: false, later, pasted: said.pasted, about, device: None, nonce: None, attachments: Vec::new(), system: false };
     commands
         .into_iter()
         .filter(|c| !matches!(c, Command::ProposeAccept { .. }))
@@ -319,8 +319,8 @@ mod tests {
             commands(vec![new.clone(), raise, submit, memo], "acme", true, said),
             vec![
                 new,
-                Command::Say { squad: "acme".into(), session: 1, text: "T-1 수락".into(), via: Via::Dictated, all: false, later: false, pasted: false, about: Some(None), device: None, nonce: None },
-                Command::Say { squad: "acme".into(), session: 2, text: "ㄱㄱ".into(), via: Via::Dictated, all: false, later: true, pasted: false, about: None, device: None, nonce: None },
+                Command::Say { squad: "acme".into(), session: 1, text: "T-1 수락".into(), via: Via::Dictated, all: false, later: false, pasted: false, about: Some(None), device: None, nonce: None, attachments: Vec::new(), system: false },
+                Command::Say { squad: "acme".into(), session: 2, text: "ㄱㄱ".into(), via: Via::Dictated, all: false, later: true, pasted: false, about: None, device: None, nonce: None, attachments: Vec::new(), system: false },
             ],
             "no card raised here: the daemon does, from the words; all by words is the daemon's to know"
         );

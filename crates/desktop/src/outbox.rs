@@ -242,7 +242,7 @@ mod tests {
     use equipe_core::protocol::SessionInfo;
 
     fn say(session: SessionId, text: &str) -> Command {
-        Command::Say { squad: "acme".into(), session, text: text.into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce: None }
+        Command::Say { squad: "acme".into(), session, text: text.into(), via: Via::Typed, all: false, later: false, pasted: false, about: None, device: None, nonce: None, attachments: Vec::new(), system: false }
     }
 
     fn new(session: SessionId) -> Command {

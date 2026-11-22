@@ -408,7 +408,7 @@ fn layout_key(agent: &Agent, width: usize, turns: u64) -> LayoutKey {
         Entry::Tool { tool, target, .. } => tool.len() + target.as_ref().map_or(0, String::len),
         Entry::Error { message, .. } => message.len(),
         Entry::Landed { stat, .. } => stat.len(),
-        Entry::Thread { .. } | Entry::Plan { .. } => 0,
+        Entry::Thread { .. } | Entry::Plan { .. } | Entry::System { .. } => 0,
     });
     (width, entries.len(), last, agent.queued.len(), agent.expanded, agent.showing, turns, agent.thread_view.clone())
 }
@@ -1910,7 +1910,8 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
     for entry in agent.drawn() {
         let entry = entry.as_ref();
         match entry {
-            Entry::Thread { .. } => {}
+            // Not the person's: the platform's word to the member.
+            Entry::Thread { .. } | Entry::System { .. } => {}
             // Claude Code loading tool descriptions: its business, not the person's.
             Entry::Tool { tool, .. } if tool == "ToolSearch" => {}
             Entry::Tool { tool, target, .. } => {
@@ -1941,7 +1942,7 @@ fn transcript_lines(agent: &Agent, looks: &Looks, turns: &Turns, theme: Theme, w
             _ => flush(&mut run, &mut lines, &mut last),
         }
         match entry {
-            Entry::Thread { .. } => {}
+            Entry::Thread { .. } | Entry::System { .. } => {}
             // The person's answers to a member's questions: one line.
             Entry::User { text, .. } if decide::decided_line(text, theme, width).is_some() => {
                 begin(Block::User, &mut lines, &mut last);

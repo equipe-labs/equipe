@@ -699,7 +699,7 @@ mod tests {
             Command::Unpair { device: "d".into() },
             Command::DiskScan,
             Command::PlanUse { engine: Engine::Claude, span: equipe_core::protocol::plan_use::Span::Week },
-            Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None, nonce: None },
+            Command::Say { squad: s(), session: 1, text: "x".into(), via: Default::default(), all: false, later: false, pasted: false, about: None, device: None, nonce: None, attachments: Vec::new(), system: false },
             Command::CallStart { squad: s() },
             Command::CallUtterance { squad: s(), call: "c".into(), text: "x".into(), via: Default::default() },
             Command::CallEnd { squad: s(), call: "c".into() },

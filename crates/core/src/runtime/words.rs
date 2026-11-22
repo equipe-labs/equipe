@@ -15,6 +15,7 @@
 //! [`Runtime::handle`] — the person's own commands. Nothing a member says
 //! reaches here: only `Say`, from a screen.
 
+use equipe_protocol::Attachment;
 use equipe_protocol::by_words::{self as rules, Entry, Heard, Kind, Live, Outcome, Reply, Said, Stage, Tier, Tongues, Via};
 
 use super::*;
@@ -69,6 +70,11 @@ impl Owned {
         }
     }
 }
+
+/// How a platform monitor's message opens.
+const MONITOR_MARK: &str = "[equipe monitor]";
+/// The most platform messages kept waiting to be recorded as such.
+const SYSTEM_SAID_KEPT: usize = 32;
 
 fn now_ms() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
@@ -151,7 +157,7 @@ impl Runtime {
     /// more) goes no further. An answer stays in the conversation as a line
     /// saying what it was taken as, so the person never wonders where it went.
     #[allow(clippy::too_many_arguments)]
-    pub(super) async fn say(&mut self, squad: String, session: SessionId, text: String, via: Via, _all: bool, later: bool, pasted: bool, about: Option<Option<String>>, device: Option<String>, nonce: Option<u64>) {
+    pub(super) async fn say(&mut self, squad: String, session: SessionId, text: String, via: Via, _all: bool, later: bool, pasted: bool, about: Option<Option<String>>, device: Option<String>, nonce: Option<u64>, attachments: Vec<Attachment>, system: bool) {
         if let Some(nonce) = nonce {
             if self.words.taken.contains(&nonce) {
                 crate::daemon_log!("equipe: {squad}: a message sent again was taken already; not again");
@@ -162,6 +168,28 @@ impl Runtime {
                 self.words.taken.pop_front();
             }
         }
+        // What the platform says (a monitor's nudge, a notice): the member gets it,
+        // the conversation records it as the platform's, and it is neither a
+        // decision in words nor the person being at work. A line that opens with
+        // the monitor's mark is one whichever sender forgot to say so.
+        let system = system || text.starts_with(MONITOR_MARK);
+        if system {
+            if self.sessions.get(&session).is_some_and(|s| s.squad.as_deref() == Some(squad.as_str())) {
+                self.say_as_system(session, text).await;
+            }
+            return;
+        }
+        // Files sent with it are kept in the uploads and named in the message,
+        // as a screen that uploaded them first would have.
+        let text = if attachments.is_empty() {
+            text
+        } else {
+            match self.keep_attachments(&text, &attachments).await {
+                Ok(text) => text,
+                Err(why) => return self.error(Some(session), why, None),
+            }
+        };
+        let pasted = pasted || !attachments.is_empty();
         let ours = self.sessions.get(&session).is_some_and(|s| s.squad.as_deref() == Some(squad.as_str()));
         let passes = if ours && !pasted { self.words_heard(&squad, session, &text, via, device.as_deref()).await } else { true };
         if passes {
@@ -171,6 +199,32 @@ impl Runtime {
             let text = say!(self, "words.taken_as_answer", said = text.trim());
             self.publish(Event::Notice { undo: None, session, text });
         }
+    }
+
+    /// `text` to the member as the platform's word, not the person's.
+    async fn say_as_system(&mut self, session: SessionId, text: String) {
+        self.system_said.push(text.clone());
+        if self.system_said.len() > SYSTEM_SAID_KEPT {
+            self.system_said.remove(0);
+        }
+        let session = self.route(session);
+        self.submit(session, text).await;
+    }
+
+    /// `text` with a tag for each of `attachments`, which are kept in the
+    /// uploads first — or why they weren't (nothing is sent then).
+    async fn keep_attachments(&mut self, text: &str, attachments: &[Attachment]) -> Result<String, String> {
+        let home = self.config.home.clone();
+        let owned = attachments.to_vec();
+        let tags = tokio::task::spawn_blocking(move || crate::gateway::keep_attachments(&home, &owned)).await.map_err(|_| "the files couldn't be kept".to_owned())??;
+        let mut said = text.trim_end().to_owned();
+        for (n, tag) in tags.iter().enumerate() {
+            if !said.is_empty() {
+                said.push_str(if n == 0 { "\n\n" } else { "\n" });
+            }
+            said.push_str(tag);
+        }
+        Ok(said)
     }
 
     /// Read the person's words for a decision. Whether they go on to the member.

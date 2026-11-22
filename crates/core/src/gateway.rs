@@ -1214,6 +1214,101 @@ fn save_upload(home: &Path, upload: &rpc::Upload) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The tag a kept attachment goes into a message as: `[image: p]`, `[pdf: p]`,
+/// `[video: p]`, `[audio: p]`, `[file: p]`.
+fn attachment_tag(kind: rpc::UploadKind, mime: &str, path: &Path) -> String {
+    let word = match kind {
+        rpc::UploadKind::Image => "image",
+        rpc::UploadKind::Pdf => "pdf",
+        rpc::UploadKind::Video => "video",
+        rpc::UploadKind::File if mime.starts_with("audio/") => "audio",
+        rpc::UploadKind::File => "file",
+    };
+    format!("[{word}: {}]", path.display())
+}
+
+/// What an inline attachment is kept as: its kind, and the name it is kept
+/// under (an image or PDF whose name doesn't say so gets the extension its
+/// media type has). Only the name's last part counts — never a folder.
+fn attachment_kind(name: &str, mime: &str) -> (rpc::UploadKind, String) {
+    use rpc::UploadKind as K;
+    let mime = mime.trim().to_ascii_lowercase();
+    let base = name.rsplit(['/', '\\']).next().unwrap_or(name).trim();
+    let base = if base.is_empty() || base == "." || base == ".." { "attachment" } else { base };
+    let ext = Path::new(base).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+    let image_ext = match mime.as_str() {
+        "image/png" => Some("png"),
+        "image/jpeg" | "image/jpg" => Some("jpg"),
+        "image/gif" => Some("gif"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    };
+    if IMAGE_KINDS.contains(&ext.as_str()) && (mime.is_empty() || mime.starts_with("image/")) {
+        return (K::Image, base.to_owned());
+    }
+    if let Some(want) = image_ext {
+        return (K::Image, format!("{base}.{want}"));
+    }
+    if mime == "application/pdf" || (mime.is_empty() && ext == "pdf") {
+        return (K::Pdf, if ext == "pdf" { base.to_owned() } else { format!("{base}.pdf") });
+    }
+    if mime.starts_with("video/") {
+        return (K::Video, base.to_owned());
+    }
+    (K::File, base.to_owned())
+}
+
+/// Keep what a `say` carried inline, each under `<home>/uploads` by the same
+/// rules as an `upload`; the tag of each, for the message to name it by. At
+/// most [`equipe_protocol::ATTACHMENTS_MAX`] files of at most
+/// [`equipe_protocol::ATTACHMENT_MAX_BYTES`] — more, or one too big or not
+/// base64, keeps nothing.
+pub fn keep_attachments(home: &Path, attachments: &[equipe_protocol::Attachment]) -> Result<Vec<String>, String> {
+    use base64::Engine as _;
+    use std::io::Write as _;
+    use equipe_protocol::{ATTACHMENTS_MAX, ATTACHMENT_MAX_BYTES};
+    if attachments.len() > ATTACHMENTS_MAX {
+        return Err(format!("at most {ATTACHMENTS_MAX} files can go with a message"));
+    }
+    let mut decoded = Vec::with_capacity(attachments.len());
+    for a in attachments {
+        let label = if a.name.trim().is_empty() { "a file" } else { a.name.trim() };
+        if a.data_base64.len() > ATTACHMENT_MAX_BYTES / 3 * 4 + 8 {
+            return Err(format!("{label} is bigger than {} MB", ATTACHMENT_MAX_BYTES >> 20));
+        }
+        let bytes = base64::engine::general_purpose::STANDARD.decode(a.data_base64.trim()).map_err(|_| format!("{label} isn't base64"))?;
+        if bytes.len() > ATTACHMENT_MAX_BYTES {
+            return Err(format!("{label} is bigger than {} MB", ATTACHMENT_MAX_BYTES >> 20));
+        }
+        decoded.push(bytes);
+    }
+    let mut saved: Vec<PathBuf> = Vec::new();
+    let mut tags = Vec::new();
+    for (a, bytes) in attachments.iter().zip(decoded) {
+        let (kind, name) = attachment_kind(&a.name, &a.mime);
+        let kept = create_upload(home, &name, Some(kind)).and_then(|(mut file, path)| match file.write_all(&bytes) {
+            Ok(()) => Ok(path),
+            Err(e) => {
+                let _ = std::fs::remove_file(&path);
+                Err(e.to_string())
+            }
+        });
+        match kept {
+            Ok(path) => {
+                tags.push(attachment_tag(kind, &a.mime.to_ascii_lowercase(), &path));
+                saved.push(path);
+            }
+            Err(why) => {
+                for path in saved {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(why);
+            }
+        }
+    }
+    Ok(tags)
+}
+
 /// Keep exactly `size` bytes read from `from` (`equipe receive`, a big file
 /// streamed over SSH). Anything short of `size` keeps nothing.
 pub fn receive_upload(home: &Path, name: &str, kind: Option<rpc::UploadKind>, size: u64, from: impl io::Read) -> Result<PathBuf, String> {
