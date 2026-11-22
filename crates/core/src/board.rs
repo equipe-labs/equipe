@@ -518,6 +518,9 @@ pub const UNBLOCK: &str = "unblock";
 pub const CLOSE_REQUEST: &str = "close_request";
 /// A member asks the person's yes before something done in their name.
 pub const ASK_PERSON: &str = "ask_person";
+/// A member says something to the person, which shows in the PM's
+/// conversation: the one place the person talks to the whole team.
+pub const TELL_PERSON: &str = "tell_person";
 /// A member puts a decision to the person: questions with options to pick.
 pub const ASK_DECISION: &str = "ask_decision";
 /// A member takes back its own open decision cards: `withdraw_card` before it took every kind of card: still answered, for conversations started then.
@@ -753,6 +756,10 @@ pub fn tools_for(role: &str) -> Vec<Value> {
     if !builds_from_system(role) {
         tools.retain(|t| t["name"] != SYSTEM_TOOLS);
     }
+    // The PM talks to the person itself; every other member's word reaches them through it.
+    if role != crate::roles::PM {
+        tools.push(tell_person_tool());
+    }
     if !crate::references::offered(role) {
         tools.retain(|t| t["name"] != crate::references::TOOL);
     }
@@ -776,6 +783,29 @@ couldn't confirm: its severity (required when filed from design QA, a review or 
 layout broken at a major width, a WCAG A/AA failure, a clear difference from the spec — is a ticket now. S3/S4 is polish: \
 findings about the same work go into one ticket, and polish found while working a follow-up goes to the design backlog for \
 the person, not a ticket of its own.";
+
+/// What a non-PM member's `tell_person` is: a short word to the person, with
+/// the options they may tap to answer, shown in the PM's conversation.
+pub fn tell_person_tool() -> Value {
+    json!({
+        "name": TELL_PERSON,
+        "description": "Say something to the person in the team conversation, where they talk to the whole team in one place: \
+a finished piece of work and where to see it (\"The booking page is done\" with its preview link), a short update they would \
+want, or a quick choice where a tap answers. Plain words in the person's language, 1 to 4 short sentences, no tool \
+logs, no ticket jargon, nothing meant for another member (that goes through the board). It doesn't wait and holds nothing \
+up. With `choices` (2 to 4 short labels) they answer with one tap, and the answer comes to you as their next message; \
+a real decision with pictures, aspects or a recommendation is `ask_decision`, and a yes before acting in their name is \
+`ask_person` — never use this for either. Never put a password, key or token in it.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "text": { "type": "string", "description": "What you tell them, in their language." },
+                "choices": { "type": "array", "minItems": 2, "maxItems": 4, "items": { "type": "string", "description": "One option in 1 to 4 words." }, "description": "Quick answers to tap, when you ask something." },
+            },
+            "required": ["text"],
+        },
+    })
+}
 
 pub fn tools(is_pm: bool) -> Vec<Value> {
     let create_doc = if is_pm {

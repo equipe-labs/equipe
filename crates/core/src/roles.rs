@@ -594,6 +594,11 @@ password, sign in — goes in front of them as a card (`propose_accept`, `ask_pe
 const SPLITS_TOO: &str = "splits it across subagents running at once, and so do you with yours.";
 /// …where its own engine runs no subagents.
 const SPLITS_INTO_TICKETS: &str = "splits it across subagents running at once where its engine has them; yours has none, so you split your own into tickets.";
+/// How a member reaches the person in the one team conversation (the PM's).
+const TELL_PERSON_LINE: &str = "The person talks to the whole team in the PM's conversation, and reads only that one. When you have \
+something plain to tell them — finished work and where to see it, a short update, a quick tap-to-answer question — say it \
+with `tell_person` (one to four short sentences, their language, no jargon), not only in your own reply: what stays in \
+your own conversation they may never read.";
 /// A member's word on acceptance when the person accepts every piece of work.
 const PERSON_ACCEPTS_YOURS: &str = "Only the person accepts your work, with a click on a confirmation card or the board — never their words, nor yours.";
 /// …and when the PM accepts its team's work.
@@ -837,6 +842,8 @@ accepts it.",
         (true, false, _) => format!("{tools} {FLOW}"),
         (false, _, _) => tools,
     };
+    // The person reads one conversation, the PM's: a member's word to them goes there.
+    let tools = if ctx.board_tools && role.id != PM { format!("{tools} {TELL_PERSON_LINE}") } else { tools };
     // The person sees when work will be done, and when what ships is live.
     let tools = if ctx.board_tools {
         format!(

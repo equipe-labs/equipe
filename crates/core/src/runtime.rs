@@ -75,6 +75,7 @@ macro_rules! say {
 mod blocked_on;
 mod decide;
 mod glance;
+mod member_note;
 mod room;
 mod machine;
 mod engines;
@@ -11400,6 +11401,8 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
+            board::TELL_PERSON if !is_pm => self.tell_person(&squad, id, &args),
+            board::TELL_PERSON => Err("You are the PM: say it in your reply, the person is already talking to you.".into()),
             crate::growth::PROPOSE => self.propose_growth(&squad, &member, id, &args),
             crate::sprint::DEFINE => self.define_experiment(&squad, &member, id, &args),
             crate::withdraw::WITHDRAW_CARD => self.withdraw_card(&squad, &member, id, &args, is_pm, false),

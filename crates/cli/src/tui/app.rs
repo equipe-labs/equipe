@@ -3747,6 +3747,7 @@ pub fn transcript_markdown(agent: &Agent, squad: &str) -> String {
                 out.push_str(&format!("- {} {}\n", super::view::verb_word(tool_verb(tool)), target.as_deref().unwrap_or("")));
             }
             Entry::Note { text, .. } => out.push_str(&format!("_{text}_\n\n")),
+            Entry::MemberNote { from, text, .. } => out.push_str(&format!("**{}:** {text}\n\n", from.name)),
             Entry::Thread { project } => out.push_str(&format!("## {}\n\n", project.as_deref().unwrap_or(t!("app.md_whole_squad")))),
             Entry::Error { message, next } => {
                 out.push_str(&format!("> ✗ {message}{}\n\n", next.as_ref().map(|n| format!(" → `{n}`")).unwrap_or_default()))

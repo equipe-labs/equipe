@@ -2040,6 +2040,7 @@ impl App {
                 | Event::DesktopReady { .. }
                 | Event::Output { .. }
                 | Event::Notice { .. }
+                | Event::MemberNote { .. }
                 | Event::WorkStarted { .. }
                 | Event::WorkEnded { .. }
                 | Event::TicketChanged { .. }
