@@ -309,6 +309,8 @@
   "news.design_qa_passed": "{name} aprobó las pantallas de T-{id}: ya puedes revisarlo · {title}.",
   "news.design_qa_changes": "{name} devolvió T-{id} a {to}: sus pantallas necesitan cambios · {title}.",
   "news.design_qa_precheck_passed": "La revisión previa de equipe aprobó las pantallas de T-{id} sin diseñador: ninguna pantalla cambió y no encontró nada nuevo. Ya puedes revisarlo · {title}.",
+  "news.ui_result": "T-{id} está terminado: así se ve ahora · {title}",
+  "news.ui_result_link": "Verlo en vivo: {url}",
   "news.design_qa_precheck_changes": "La revisión previa de equipe devolvió T-{id} a {to} sin diseñador: encontró un fallo claro de pantalla o de accesibilidad · {title}.",
   "news.design_qa_refused": "El autocontrol de equipe devolvió T-{id} a {to} sin diseñador: el cambio introdujo un fallo claro de pantalla o accesibilidad · {title}.",
   "news.design_qa_batched": "Las pantallas de T-{id} son de bajo riesgo según la precomprobación de equipe: sin turno de diseñador ahora, pasan a la revisión de diseño diaria. Lista para tu revisión · {title}.",

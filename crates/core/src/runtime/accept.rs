@@ -49,6 +49,26 @@ impl Runtime {
         self.merge(squad, ticket, push);
     }
 
+    /// What `ticket`'s result would be shown with once accepted, when it
+    /// changed what users see (`crate::ui_result`).
+    pub(super) fn ui_inputs(&mut self, squad: &str, ticket: &Ticket) -> Option<crate::ui_result::Inputs> {
+        let journal = self.journal(squad)?;
+        let rounds = journal.design_qa_rounds(ticket.id).unwrap_or(0);
+        let site = ticket.project.as_ref().and_then(|p| journal.deploy_watch().remove(&p.to_string_lossy().into_owned())).and_then(|w| w.site);
+        crate::ui_result::Inputs::of(squad, ticket, rounds, site.as_deref())
+    }
+
+    /// Show the person a finished change's result in the team's
+    /// conversation: its screenshots, its recording, its link.
+    pub(super) fn show_ui_result(&mut self, squad: &str, shown: &crate::ui_result::Shown) {
+        let Some(pm) = self.pm_of(squad) else { return };
+        let headline = say!(self, "news.ui_result", id = shown.ticket, title = shown.title);
+        let link = shown.link.as_ref().map(|url| say!(self, "news.ui_result_link", url = url));
+        let text = shown.message(&headline, link.as_deref());
+        crate::daemon_log!("equipe: {squad}: T-{}'s result shown to the person ({} files{})", shown.ticket, shown.tags.len(), if shown.link.is_some() { ", a link" } else { "" });
+        self.show_news(pm, text);
+    }
+
     /// `propose_accept`: checked against the board and what already waits,
     /// kept, and shown; the PM told the person confirms on a card.
     pub(super) fn propose_accept(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
@@ -267,7 +287,8 @@ If its landing stopped (you were told so), `accept_work` lands it.",
                 None
             };
             self.accepting.insert((squad.to_owned(), ticket));
-            plan.push(Plan::Look(Look { ticket: Box::new(t), code, close }));
+            let ui = self.ui_inputs(squad, &t).map(Box::new);
+            plan.push(Plan::Look(Look { ticket: Box::new(t), code, close, ui }));
         }
         Ok((checked, push, plan, landing))
     }
@@ -281,6 +302,8 @@ If its landing stopped (you were told so), `accept_work` lands it.",
         let (mut accepted, mut left) = (Vec::new(), Vec::new());
         // What a designer made, to put in front of the person with the acceptance.
         let mut made: Vec<String> = Vec::new();
+        // Results of work that changed what users see, shown to the person by equipe.
+        let mut results: Vec<crate::ui_result::Shown> = Vec::new();
         // Code merged with no checks run (the project declares none), and code
         // whose checks run first.
         let (mut unchecked, mut checking) = (Vec::new(), Vec::new());
@@ -324,7 +347,7 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
                 }
                 // A checks file that can't be read holds the merge back: never guessed past.
                 Found::Unreadable(err) => left.push(format!("T-{ticket} wasn't accepted: {err}. Get that file fixed on main, then accept it again")),
-                Found::Accept { made: work, unchecked: no_checks, closed } => {
+                Found::Accept { made: work, unchecked: no_checks, closed, shown } => {
                     // Moved meanwhile (the person accepted or cancelled it on the board): nothing more.
                     let status = self.journal(squad).and_then(|j| j.ticket(ticket).ok().flatten()).map(|t| t.status);
                     if status != Some(TicketStatus::Review) {
@@ -353,6 +376,7 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
                         self.merge(squad, ticket, push);
                     }
                     accepted.push(ticket);
+                    results.extend(shown.map(|s| *s));
                 }
             }
         }
@@ -372,6 +396,9 @@ main; no rebase needed), resolve each conflict keeping what both sides meant, ru
         if !unchecked_now.is_empty() && !self_land {
             let text = say!(self, "notice.pm_accepted_unchecked", ids = list(&unchecked_now), checked = checked, file = crate::checks::FILE);
             self.publish(Event::Notice { undo: None, session: id, text });
+        }
+        for shown in &results {
+            self.show_ui_result(squad, shown);
         }
         let ids = list(&accepted);
         let mut text = if accepted.is_empty() && checking.is_empty() && !landing.is_empty() {
@@ -406,6 +433,9 @@ carry on meanwhile.",
         let mut text = text.trim_start().to_owned();
         if !left.is_empty() {
             text.push_str(&format!(" Left: {}.", left.join("; ")));
+        }
+        for shown in &results {
+            text.push_str(&format!("\n\n{}", shown.told()));
         }
         if !made.is_empty() {
             text.push_str(&format!("\n\nThe person has not seen what the designer made. Put these pictures in your message to them as they are, one to a line, before you describe anything:\n{}", made.join("\n")));
@@ -658,6 +688,8 @@ struct Look {
     code: bool,
     /// What closing it does in git, done off the loop once it is fit to accept.
     close: Option<CloseGit>,
+    /// What its result is shown with, when it changed what users see.
+    ui: Option<Box<crate::ui_result::Inputs>>,
 }
 
 /// A ticket `accept_work` named, once looked at.
@@ -676,7 +708,7 @@ enum Found {
     Unreadable(String),
     /// Fit to accept: what a designer made, to show; whether its code merges
     /// with no checks run; and its closing git work, done.
-    Accept { made: Option<String>, unchecked: bool, closed: Option<Closed> },
+    Accept { made: Option<String>, unchecked: bool, closed: Option<Closed>, shown: Option<Box<crate::ui_result::Shown>> },
     /// The look itself died: nothing was done.
     Failed,
 }
@@ -702,7 +734,7 @@ fn look_off_loop(home: &Path, squad: &str, member: &str, plan: Vec<Plan>) -> Vec
             }
             Plan::Look(look) => look,
         };
-        let Look { ticket, code, close } = look;
+        let Look { ticket, code, close, ui } = look;
         let id = ticket.id;
         let mut unchecked = false;
         let found = 'found: {
@@ -728,10 +760,13 @@ fn look_off_loop(home: &Path, squad: &str, member: &str, plan: Vec<Plan>) -> Vec
             // Read before it is closed: the worktree is still there to say what it made.
             let made = crate::design::results::for_ticket(home, squad, id).filter(|w| w.hero.is_some()).map(|w| crate::design::results::embed(&w));
             lap(format!("T-{id} design work read"));
+            // Its result, copied while its worktree is still there; a designer's work shows its own way.
+            let shown = ui.as_ref().filter(|_| made.is_none()).and_then(|ui| crate::ui_result::stage(home, ui, true)).map(Box::new);
+            lap(format!("T-{id} result put together"));
             let in_home = ticket.kind.in_home();
             let closed = close.and_then(CloseGit::run);
             lap(format!("T-{id} {}", if in_home { "landed in the squad's folder" } else { "worktree released" }));
-            Found::Accept { made, unchecked, closed }
+            Found::Accept { made, unchecked, closed, shown }
         };
         out.push(Named::Worked { ticket, code, found });
     }

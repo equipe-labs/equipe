@@ -309,6 +309,8 @@
   "news.design_qa_passed": "{name} a validé les écrans de T-{id} : il est prêt pour votre revue · {title}.",
   "news.design_qa_changes": "{name} a renvoyé T-{id} à {to} : ses écrans sont à corriger · {title}.",
   "news.design_qa_precheck_passed": "La pré-vérification d’equipe a validé les écrans de T-{id} sans designer : aucun écran n’a changé et rien de nouveau n’a été trouvé. Il est prêt pour votre revue · {title}.",
+  "news.ui_result": "T-{id} est terminé — voici à quoi ça ressemble maintenant · {title}",
+  "news.ui_result_link": "Le voir en ligne : {url}",
   "news.design_qa_precheck_changes": "La pré-vérification d’equipe a renvoyé T-{id} à {to} sans designer : elle a trouvé un défaut certain d’écran ou d’accessibilité · {title}.",
   "news.design_qa_refused": "L'autocontrôle d'equipe a renvoyé T-{id} à {to} sans designer : le changement a introduit un défaut net d'écran ou d'accessibilité · {title}.",
   "news.design_qa_batched": "Les écrans de T-{id} sont à faible risque selon le précontrôle d'equipe : pas de passage designer maintenant, ils vont dans la revue design quotidienne. Prêt pour ta revue · {title}.",

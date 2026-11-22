@@ -2500,6 +2500,31 @@ async fn the_squads_own_scratch_under_dot_equipe_is_not_a_secret_while_keys_and_
 }
 
 #[tokio::test]
+async fn a_file_the_person_sent_is_read_without_asking_them_while_the_rest_of_dot_equipe_still_asks() {
+    use equipe_core::protocol::autonomy::Kind;
+    let site = named("site");
+    let home = scratch("uploads").join(".equipe");
+    std::fs::create_dir_all(home.join("uploads")).unwrap();
+    squads::create(&home, "acme", &site).unwrap();
+    let claude = fake_claude(true, "exec sleep 30");
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    add(&handle, &mut events, 1, member(&site, "pm")).await;
+    add(&handle, &mut events, 2, member(&site, "frontend")).await;
+    // Asked about everything: still, what the person sent isn't put back to them.
+    handle.send(Command::SetMode { squad: "acme".into(), member: None, mode: Some(Mode::Ask) });
+    until(&mut events, |e| matches!(e, Event::ModeChanged { .. })).await;
+    let sent = home.join("uploads/1795000000000-attach-test.png");
+    std::fs::write(&sent, b"png").unwrap();
+    assert_eq!(verdict_of(&handle, "Read", serde_json::json!({ "file_path": sent })).await, "allow");
+    assert_eq!(verdict_of(&handle, "Bash", serde_json::json!({ "command": format!("file {}", sent.display()) })).await, "allow");
+    // Writing there, climbing out of it, and the rest of equipe's folder keep asking.
+    assert_eq!(asked_and_refused(&handle, &mut events, "Write", serde_json::json!({ "file_path": sent })).await, Kind::SignIn);
+    assert_eq!(asked_and_refused(&handle, &mut events, "Read", serde_json::json!({ "file_path": home.join("uploads/../config.json") })).await, Kind::SignIn);
+    assert_eq!(asked_and_refused(&handle, &mut events, "Read", serde_json::json!({ "file_path": home.join("config.json") })).await, Kind::SignIn);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn on_full_autonomy_internal_work_goes_ahead_and_outward_or_irreversible_things_still_ask() {
     use equipe_core::protocol::autonomy::{Autonomy, Kind};
     let site = named("site");

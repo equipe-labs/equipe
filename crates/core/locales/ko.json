@@ -306,6 +306,8 @@
   "news.design_qa_passed": "{name}이(가) T-{id}의 화면 검수를 통과시켰어요. 이제 리뷰하실 수 있어요 · {title}.",
   "news.design_qa_changes": "{name}이(가) T-{id}을(를) {to}에게 돌려보냈어요. 화면을 고쳐야 해요 · {title}.",
   "news.design_qa_precheck_passed": "equipe 사전 점검이 디자이너 없이 T-{id}의 화면 검수를 통과시켰어요. 바뀐 화면도, 새로 생긴 문제도 없어요. 이제 리뷰하실 수 있어요 · {title}.",
+  "news.ui_result": "T-{id} 작업이 끝났어요. 지금 이렇게 보여요 · {title}",
+  "news.ui_result_link": "직접 확인하기: {url}",
   "news.design_qa_precheck_changes": "equipe 사전 점검이 디자이너 없이 T-{id}을(를) {to}에게 돌려보냈어요. 화면이나 접근성에 분명한 문제가 있어요 · {title}.",
   "news.design_qa_refused": "equipe 자가 점검이 디자이너 없이 T-{id}을(를) {to}에게 돌려보냈어요. 이번 변경이 만든 분명한 화면·접근성 문제가 있어요 · {title}.",
   "news.design_qa_batched": "equipe 사전 점검 결과 T-{id}의 화면은 위험도가 낮아요. 지금 디자이너 검수 없이 일일 디자인 검토로 넘어가요. 이제 리뷰하실 수 있어요 · {title}.",
