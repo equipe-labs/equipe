@@ -481,7 +481,7 @@ async fn a_requests_ticket_isnt_chained_behind_other_work_and_a_member_unblocks_
     // qa isn't here; the designer's own ticket (T-2, owner qa) isn't its own: asking goes to the PM, now.
     let asked = tool(&handle, "designer", "unblock", json!({ "id": 2, "why": "The prototype is only in design/directions/" })).await;
     assert!(!asked.is_error && asked.text.contains("Asked the PM"), "{asked:?}");
-    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } if text.starts_with("[Unblock · designer]"))).await;
+    until(&mut events, |e| matches!(e, Event::SystemMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } if text.starts_with("[Unblock · designer]"))).await;
 
     // Its own ticket, not started: it drops the dependency itself, logged, and the PM is told.
     tool(&handle, "pm", "create_ticket", json!({ "title": "Prototype motion notes", "body": "design/directions/notes.md", "owner": "designer", "kind": "task", "depends_on": [1], "depends_why": "test" })).await;

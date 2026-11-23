@@ -100,7 +100,7 @@ fn signal_wakes(events: &[Event]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } => Some(text.clone()),
+            Event::SystemMessage { session: 1, text } | Event::MessageQueued { session: 1, text, .. } | Event::SteerQueued { session: 1, text, .. } => Some(text.clone()),
             _ => None,
         })
         .filter(|t| t.starts_with("[Signal · "))
@@ -150,8 +150,23 @@ async fn the_squads_signals_go_on_by_card_and_a_failure_wakes_the_pm_once() {
 
     // Both broken ones reach the PM, told what to do about them; the stars don't.
     let mut seen = Vec::new();
-    until(&mut events, &mut seen, |s| signal_wakes(s).len() >= 2).await;
-    let wakes = signal_wakes(&seen);
+    until(&mut events, &mut seen, |s| !signal_wakes(s).is_empty()).await;
+    // One wakes the PM; one that comes while its turn runs waits for it (equipe's word, so no
+    // screen lists it as the person's queued message): read where it waits.
+    let mut wakes = Vec::new();
+    for _ in 0..100 {
+        while let Ok(event) = events.try_recv() {
+            seen.push(event);
+        }
+        wakes = signal_wakes(&seen);
+        if let Some(pm) = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 1) {
+            wakes.extend(pm.queued.into_iter().chain(pm.steering).filter(|t| t.starts_with("[Signal · ")));
+        }
+        if wakes.len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let analytics_wake = wakes.iter().find(|t| t.starts_with("[Signal · site-analytics · failing]")).expect("analytics");
     assert!(analytics_wake.contains("0 < 1") && analytics_wake.contains("`create_ticket`") && analytics_wake.contains("`block_on_person`"), "{analytics_wake}");
     let traffic_wake = wakes.iter().find(|t| t.starts_with("[Signal · traffic-workflow · failing]")).expect("traffic");

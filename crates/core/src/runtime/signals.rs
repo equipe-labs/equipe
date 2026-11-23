@@ -114,10 +114,7 @@ impl Runtime {
                 self.show_news(pm, shown);
                 let text = rules::failing_message(&signal, &reading, passed_before);
                 self.said_about = Some(Some(project));
-                match self.sessions.get(&pm) {
-                    Some(s) if s.is_working() => self.leave_memo(pm, text),
-                    _ => self.submit(pm, text).await,
-                }
+                self.hand_as_platform(pm, text).await;
                 self.said_about = None;
             }
             Alert::Recovered => {

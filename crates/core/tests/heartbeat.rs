@@ -108,7 +108,7 @@ fn proposed(events: &[Event]) -> RoutineProposal {
 }
 
 fn idle_wakes(events: &[Event]) -> usize {
-    events.iter().filter(|e| matches!(e, Event::UserMessage { text, .. } if text.starts_with("[Idle · "))).count()
+    events.iter().filter(|e| matches!(e, Event::SystemMessage { text, .. } if text.starts_with("[Idle · "))).count()
 }
 
 #[tokio::test]
@@ -193,7 +193,7 @@ async fn an_empty_quiet_board_wakes_the_pm_once_and_not_again_within_the_day() {
     handle.send(Command::SetIdleWake { squad: "acme".into(), hours: 24 });
     let seen = until(&mut events, |e| matches!(e, Event::IdleWakeChanged { hours: 24, .. })).await;
     assert_eq!(idle_wakes(&seen), 1, "{seen:#?}");
-    let woke = seen.iter().find_map(|e| if let Event::UserMessage { session: 1, text, .. } = e { Some(text.clone()) } else { None }).expect("the PM's");
+    let woke = seen.iter().find_map(|e| if let Event::SystemMessage { session: 1, text, .. } = e { Some(text.clone()) } else { None }).expect("the PM's");
     assert!(woke.starts_with("[Idle · 24h]") && woke.contains("propose what's next"), "{woke}");
     assert_eq!(handle.snapshot("acme").await.idle_wake_hours, Some(24));
 
@@ -307,7 +307,7 @@ fn set_up_design(project: &Path) {
 /// What `to` was told, at once or left for after its turn.
 fn said_to(events: &[Event], to: u64) -> Option<String> {
     events.iter().find_map(|e| match e {
-        Event::UserMessage { session, text, .. } | Event::MessageQueued { session, text, .. } if *session == to => Some(text.clone()),
+        Event::SystemMessage { session, text } | Event::MessageQueued { session, text, .. } if *session == to => Some(text.clone()),
         _ => None,
     })
 }
@@ -327,12 +327,11 @@ async fn a_designer_brings_a_weekly_review_that_waits_for_the_setup_and_comes_to
     assert_eq!((review.id, review.title.as_str(), review.when, review.on), (3, named, Schedule::Weekly { weekday: 1, hour: 10, minute: 0 }, true));
     assert!(review.next_run.is_some_and(|at| at > now() && at <= now() + 7 * DAY), "{review:?}");
 
-    // No design folder yet: the designer is nudged on with the brief, not reviewed; the PM hears nothing.
+    // No design folder yet: no review, and the routine never sets the designer on the
+    // setup (costly work only the PM or the person starts); the PM hears nothing either.
     handle.send(Command::RunRoutine { squad: "acme".into(), id: 3 });
     let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
-    let nudge = said_to(&seen, 2).expect("the designer is nudged");
-    let brief = equipe_core::i18n::core(lang).get("routine.design_review.step_brief");
-    assert!(nudge.starts_with(&format!("[Routine · {named}]")) && nudge.contains(brief) && !nudge.contains("flows check"), "{nudge}");
+    assert_eq!(said_to(&seen, 2), None, "the designer isn't set on the setup");
     assert_eq!(said_to(&seen, 1), None, "not the PM's");
     // A decision put now is no review.
     let asked = |text: &str| json!({ "questions": [{ "question": text, "options": ["A (Recommended)", "B"] }] });
@@ -344,7 +343,9 @@ async fn a_designer_brings_a_weekly_review_that_waits_for_the_setup_and_comes_to
     set_up_design(&project);
     handle.send(Command::RunRoutine { squad: "acme".into(), id: 3 });
     let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
-    let handed = said_to(&seen, 2).expect("the review is handed to the designer");
+    // The designer is still at its turn: the review waits as its memo (equipe's, so no screen lists it as the person's).
+    let queued = handle.snapshot("acme").await.sessions.into_iter().find(|s| s.session == 2).and_then(|s| s.queued.last().cloned());
+    let handed = said_to(&seen, 2).or(queued).expect("the review is handed to the designer");
     assert!(handed.starts_with(&format!("[Routine · {named}]")) && handed.contains("equipe design flows check"), "{handed}");
     assert!(handed.contains(&format!("(Design folders: {}.)", project.join("design").display())), "{handed}");
     tool(&handle, "designer", "ask_decision", asked("Which header?")).await;

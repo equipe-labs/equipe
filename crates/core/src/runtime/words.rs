@@ -201,12 +201,23 @@ impl Runtime {
         }
     }
 
-    /// `text` to the member as the platform's word, not the person's.
-    async fn say_as_system(&mut self, session: SessionId, text: String) {
-        self.system_said.push(text.clone());
+    /// `text`, about to reach a member, is the platform's word: where it lands
+    /// it is recorded as [`Event::SystemMessage`], not as the person's.
+    pub(super) fn mark_platform_said(&mut self, text: &str) {
+        self.system_said.push(text.to_owned());
         if self.system_said.len() > SYSTEM_SAID_KEPT {
             self.system_said.remove(0);
         }
+    }
+
+    /// Whether `text` is, all of it or in part, what the platform said to a member.
+    pub(super) fn has_platform_said(&self, text: &str) -> bool {
+        split_said(text, &self.system_said).iter().any(|(system, _)| *system)
+    }
+
+    /// `text` to the member as the platform's word, not the person's.
+    async fn say_as_system(&mut self, session: SessionId, text: String) {
+        self.mark_platform_said(&text);
         let session = self.route(session);
         self.submit(session, text).await;
     }

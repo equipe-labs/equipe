@@ -483,10 +483,7 @@ impl Runtime {
         };
         store.count_turn(now, crate::growth::estimate(&message));
         self.keep_sprint(squad, &store);
-        match self.sessions.get(&pm) {
-            Some(s) if s.is_working() => self.leave_memo(pm, message),
-            _ => self.submit(pm, message).await,
-        }
+        self.hand_as_platform(pm, message).await;
     }
 
     /// The retro's facts of `from..to`, from the squad's journal.

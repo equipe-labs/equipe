@@ -171,10 +171,7 @@ impl Runtime {
         self.keep_growth(squad, &store);
         crate::daemon_log!("equipe: {squad}: growth run handed to the PM ({count} numbers, ~{estimate} tokens)");
         self.show_news(pm, say!(self, "news.growth_run", count = count));
-        match self.sessions.get(&pm) {
-            Some(s) if s.is_working() => self.leave_memo(pm, message),
-            _ => self.submit(pm, message).await,
-        }
+        self.hand_as_platform(pm, message).await;
     }
 
     /// `propose_growth`: the PM's cards checked ([`rules::cards`]) and put to

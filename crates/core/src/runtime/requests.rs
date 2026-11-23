@@ -21,6 +21,24 @@ use equipe_protocol::requests::{Link, Request, RequestId};
 use super::*;
 use crate::requests::{self as rules, NO_REQUEST, Row};
 
+/// How equipe's and the platform's own messages to a member begin: never the person's words.
+const PLATFORM_HEADS: [&str; 6] = ["[equipe monitor]", "[equipe:", "[Routine · ", "[Idle · ", "[Signal · ", crate::retro::FACTS_HEAD];
+
+/// The person's own words in `text`: without a hosted team's leading
+/// "[@handle · Name · role]" mark; `None` when nothing is left, or when it is
+/// one of equipe's or the platform's own messages.
+fn persons_words(text: &str) -> Option<&str> {
+    let mut words = text.trim_start();
+    if let Some(rest) = words.strip_prefix("[@")
+        && let Some(end) = rest.find(']')
+        && !rest[..end].contains('\n')
+    {
+        words = rest[end + 1..].trim_start();
+    }
+    let words = words.trim_end();
+    (!words.is_empty() && !PLATFORM_HEADS.iter().any(|head| words.starts_with(head))).then_some(words)
+}
+
 /// What the person last said in a conversation.
 #[derive(Debug, Clone)]
 pub(super) struct Said {
@@ -40,11 +58,16 @@ impl Runtime {
     /// one, nor is an acknowledgement or chit-chat ([`rules::small_talk`]);
     /// anything else they ask there is, from now on — so two things asked
     /// minutes apart are two requests, each a ticket must serve.
+    ///
+    /// What equipe or the platform said (a nudge, a routine, a monitor's
+    /// line) is never the person's request; a hosted team's "[@who · Name ·
+    /// role]" mark is the platform's, kept off the request's words.
     pub(super) fn person_said(&mut self, session: SessionId, text: &str) {
         let Some(squad) = self.sessions.get(&session).filter(|s| s.member.is_some()).and_then(|s| s.squad.clone()) else { return };
-        if text.trim().is_empty() {
+        if self.has_platform_said(text) {
             return;
         }
+        let Some(text) = persons_words(text) else { return };
         let now = now_secs();
         let asks_after = !rules::asked_after(text, &self.requests_in(&squad, session)).is_empty();
         // "ok", "thanks!", an emoji: heard, but nothing to put on the board — no request for the PM to close.
@@ -589,3 +612,20 @@ first: if the work overlaps nothing there, drop the dependency now (update_ticke
     }
 }
 
+
+#[cfg(test)]
+mod said_tests {
+    use super::persons_words;
+
+    #[test]
+    fn the_platforms_mark_and_its_own_nudges_are_never_the_persons_request() {
+        assert_eq!(persons_words("[@dana · Dana Kim · admin] add dark mode"), Some("add dark mode"));
+        assert_eq!(persons_words("  add dark mode \n"), Some("add dark mode"));
+        assert_eq!(persons_words("[@dana · Dana Kim · admin]   "), None);
+        assert_eq!(persons_words("[Routine · Weekly report]\n\nSum up the week"), None);
+        assert_eq!(persons_words("[Idle · 24h]\n\nThe board is empty"), None);
+        assert_eq!(persons_words("[equipe monitor] the team looks stuck"), None);
+        assert_eq!(persons_words("[@dana · Dana Kim · admin] [Signal · uptime] down"), None, "a mark can't make a nudge the person's");
+        assert_eq!(persons_words("[link](https://x.y) looks broken"), Some("[link](https://x.y) looks broken"));
+    }
+}

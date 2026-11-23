@@ -508,6 +508,9 @@ pub fn describe_in(lang: crate::i18n::Lang, tool: &str, input: &Value) -> (Strin
     let field = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_owned);
     let action = match tool {
         "Bash" => field("command"),
+        // A wait: what it waits on, not its whole input.
+        "Monitor" => field("command").or_else(|| field("description")),
+        "BashOutput" | "TaskOutput" => field("bash_id").or_else(|| field("task_id")).or_else(|| field("shell_id")),
         "Write" | "Edit" | "MultiEdit" | "Read" | "NotebookEdit" => field("file_path").or_else(|| field("notebook_path")),
         "Glob" | "Grep" | "LS" => field("path").or_else(|| field("pattern")),
         "WebFetch" => field("url"),
@@ -588,8 +591,17 @@ pub fn touches_system(action: &str) -> bool {
 /// Whether a shell command will run inside the sandbox — it didn't ask to leave
 /// it. Claude Code asks about some such commands anyway (long chains, heredocs);
 /// allowing them changes nothing, since the operating system still fences them in.
+/// (See [`only_waits`] for the engine's own waits.)
 pub fn stays_in_sandbox(tool: &str, input: &Value) -> bool {
     tool == "Bash" && input.get("dangerouslyDisableSandbox").and_then(Value::as_bool) != Some(true)
+}
+
+/// Whether this is the engine's own wait for work already under way — a
+/// `Monitor` watching a background step, reading a background command's
+/// output — so never a question for the person, in any mode: waiting changes
+/// nothing. A wait whose check touches credentials still asks.
+pub fn only_waits(tool: &str, action: &str, scratch: &[String]) -> bool {
+    matches!(tool, "Monitor" | "BashOutput" | "TaskOutput") && !touches_secret(action, scratch)
 }
 
 /// Whether this only looks — reads a file, lists or searches a folder, or runs
@@ -1281,5 +1293,22 @@ mod tests {
         assert!(matches("WebFetch(domain:docs.rs)", "WebFetch", "https://docs.rs/serde"));
         assert!(!matches("WebFetch(domain:docs.rs)", "WebFetch", "https://docs.rs.evil.com/"));
         assert!(matches("WebSearch", "WebSearch", "anything"));
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn the_engines_own_waits_never_ask_the_person() {
+        let input = json!({ "command": "until [ -f /tmp/build.done ]; do sleep 2; done", "description": "wait for the build token refresh step" });
+        let (action, _) = describe("Monitor", &input);
+        assert_eq!(action, "until [ -f /tmp/build.done ]; do sleep 2; done", "its command, not its whole input");
+        assert!(only_waits("Monitor", &action, &[]));
+        assert!(only_waits("BashOutput", "bash_3", &[]) && only_waits("TaskOutput", "t1", &[]));
+        assert!(!only_waits("Bash", &action, &[]), "a command of its own is no wait");
+        assert!(!only_waits("Monitor", "until grep -q x ~/.ssh/id_rsa; do sleep 2; done", &[]), "a wait that reads a key still asks");
     }
 }

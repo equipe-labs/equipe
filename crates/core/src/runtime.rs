@@ -4481,10 +4481,7 @@ runbooks and reports live there, and work across the projects or on running them
                 text.push_str(&format!("\n\n(The squad keeps {signals} signal(s): read them with `signals` — what fails, what moved.)"));
             }
             self.said_about = Some(about);
-            match self.sessions.get(&pm) {
-                Some(s) if s.is_working() => self.leave_memo(pm, text),
-                _ => self.submit(pm, text).await,
-            }
+            self.hand_as_platform(pm, text).await;
             self.said_about = None;
         }
         if let Some(r) = all.iter_mut().find(|r| r.id == id) {
@@ -9617,6 +9614,16 @@ and hand it back you get a message and carry on by yourself — don't ask them t
                 });
                 return;
             }
+            // A machine with no screen (a hosted team's): nobody would ever see a window come up there.
+            if no_screen_here() {
+                crate::daemon_log!("equipe: {}: {} asked to show its browser on a machine with no screen; told to send a link", call.squad, call.member);
+                let _ = reply.send(ToolResult::error(
+                    "The person can't see your browser: equipe runs on a machine with no screen, and no browser panel is open for them. \
+Don't say it is on their screen. Send them a link to open themselves instead (the page's URL, or a preview link of what you built), \
+say in one line what to do there, and carry on when they answer.",
+                ));
+                return;
+            }
             if let Some(url) = url {
                 self.show_url.insert((call.squad.clone(), call.member.clone()), url);
             }
@@ -9779,6 +9786,12 @@ there, end your turn, and carry on when they say they're done."
         if let Some(session) = self.sessions.get(&id) {
             let own = [Some(&session.cwd), session.work.as_ref().map(|w| &w.cwd), session.work.as_ref().and_then(|w| w.sandbox.as_ref()).map(|s| &s.path)];
             scratch.extend(own.into_iter().flatten().filter(|d| d.starts_with(self.config.home.join("worktrees"))).map(|d| format!("{}/", d.display())));
+        }
+        // The engine waiting on a step already under way (`Monitor`, a background command's
+        // output): nothing for the person to approve — never a card, in any mode.
+        if permissions::only_waits(&tool, &action, &scratch) {
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
         }
         let kind = crate::autonomy::engine_kind_in(&tool, &action, &scratch);
         let mut ask = crate::protocol::autonomy::Ask { kind, plain: None, standing: None, later: false, op: None };
@@ -13840,6 +13853,22 @@ fn provider_claude_failure(err: equipe_providers::Error, provider: &str, lang: c
     (claude_failure(err).0, None)
 }
 
+/// Whether no person ever looks at this machine's own screen: a hosted
+/// team's machine (on equipe credits, or Linux with no display at all).
+/// `EQUIPE_SCREEN=yes` or `none` says so outright.
+fn no_screen_here() -> bool {
+    let said = std::env::var("EQUIPE_SCREEN").ok();
+    screenless(said.as_deref(), cost_levers::credits_profile(), cfg!(target_os = "linux"), |k| std::env::var_os(k).is_some_and(|v| !v.is_empty()))
+}
+
+fn screenless(said: Option<&str>, credits: bool, linux: bool, set: impl Fn(&str) -> bool) -> bool {
+    match said.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("yes" | "1" | "true") => false,
+        Some("none" | "no" | "0" | "false") => true,
+        _ => credits || (linux && !set("DISPLAY") && !set("WAYLAND_DISPLAY")),
+    }
+}
+
 /// Whether this machine's Claude Code talks to an endpoint other than
 /// Claude's own sign-in: equipe credits (`EQUIPE_AI=credits`, its calls go
 /// through the platform's gateway) or an `ANTHROPIC_BASE_URL` set for the
@@ -14158,6 +14187,15 @@ mod tests {
         // Anything else is told as it is.
         let err = equipe_providers::Error::Backend { message: "API Error: 529 Overloaded".into(), code: None };
         assert_eq!(gateway_claude_failure(err, crate::i18n::Lang::En), ("API Error: 529 Overloaded".to_owned(), None));
+    }
+
+    #[test]
+    fn a_hosted_or_displayless_linux_machine_has_no_screen_to_show_a_browser_on() {
+        assert!(screenless(None, true, false, |_| true), "on equipe credits");
+        assert!(screenless(None, false, true, |_| false), "Linux with no display");
+        assert!(!screenless(None, false, true, |k| k == "WAYLAND_DISPLAY"), "a Linux desktop");
+        assert!(!screenless(None, false, false, |_| false), "a Mac");
+        assert!(!screenless(Some("yes"), true, true, |_| false) && screenless(Some("none"), false, false, |_| true), "said outright");
     }
 
     #[test]

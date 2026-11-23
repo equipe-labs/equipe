@@ -101,7 +101,7 @@ fn now() -> u64 {
 
 fn said(seen: &[Event], words: &str) -> Option<String> {
     seen.iter().find_map(|e| match e {
-        Event::UserMessage { text, .. } if text.contains(words) => Some(text.clone()),
+        Event::SystemMessage { text, .. } if text.contains(words) => Some(text.clone()),
         _ => None,
     })
 }
@@ -152,7 +152,7 @@ async fn a_sprint_is_planned_started_measured_reviewed_and_the_next_proposed() {
     // Asked for one: the PM is handed a planning, then proposes.
     let ended = handle.sprint(wire::END, json!({ "squad": "orbit" })).await.unwrap();
     assert_eq!(ended["started"], true, "{ended}");
-    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { text, .. } if text.contains("[Sprint planning"))).await;
+    let seen = until(&mut events, |e| matches!(e, Event::SystemMessage { text, .. } if text.contains("[Sprint planning"))).await;
     let planning = said(&seen, "[Sprint planning").unwrap();
     assert!(planning.contains("Go-to-market: not said yet") && !planning.contains("No product analytics"), "{planning}");
 
@@ -205,7 +205,7 @@ async fn a_sprint_is_planned_started_measured_reviewed_and_the_next_proposed() {
     journal.set_deploys(&[deploy]).unwrap();
     let ended = handle.sprint(wire::END, json!({ "squad": "orbit" })).await.unwrap();
     assert_eq!(ended["started"], true, "{ended}");
-    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { text, .. } if text.contains("[Sprint review · S-1"))).await;
+    let seen = until(&mut events, |e| matches!(e, Event::SystemMessage { text, .. } if text.contains("[Sprint review · S-1"))).await;
     let review = said(&seen, "[Sprint review · S-1").unwrap();
     for must in ["Goal: More people finish signing up", "Tickets: 0 of 2 done", "H-1 \"Fewer fields get more people to sign up\"", "worked — moved +50%", "Go-to-market: sold to people (B2C)", "propose adding the marketing role"] {
         assert!(review.contains(must), "{must}\n---\n{review}");

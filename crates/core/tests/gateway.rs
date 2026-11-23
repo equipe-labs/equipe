@@ -428,6 +428,9 @@ fn member_stand_in() {
 /// daemon's screen, for as long as it stays attached.
 #[tokio::test]
 async fn while_the_app_is_attached_a_handed_over_browser_goes_to_its_panel_not_this_macs_screen() {
+    // The screen this test puts the browser on exists, also on a Linux runner with no display.
+    // SAFETY: the same value from every test that sets it.
+    unsafe { std::env::set_var("EQUIPE_SCREEN", "yes") };
     use equipe_core::protocol::rpc::{self, HelloParams, Message};
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _};
     let (home, project) = squad();

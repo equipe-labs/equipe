@@ -234,11 +234,20 @@ don't ask them in words meanwhile."
         self.pm_woken.insert(pm);
         let about = self.hq(squad).map(|hq| board::project_name(&hq));
         self.said_about = Some(about);
-        match self.sessions.get(&pm) {
-            Some(s) if s.is_working() => self.leave_memo(pm, text),
-            _ => self.submit(pm, text).await,
-        }
+        self.hand_as_platform(pm, text).await;
         self.said_about = None;
+    }
+
+    /// `text` to member `id` as equipe's own word (a nudge, a routine, a
+    /// reminder): after its turn if one runs, else now. Its conversation
+    /// records it as a system message — never as the person's, so no screen
+    /// shows it as theirs and it is never kept as their request.
+    pub(super) async fn hand_as_platform(&mut self, id: SessionId, text: String) {
+        self.mark_platform_said(&text);
+        match self.sessions.get(&id) {
+            Some(s) if s.is_working() => self.leave_memo(id, text),
+            _ => self.submit(id, text).await,
+        }
     }
 
     /// The PM woken once over an empty, quiet board — as a routine is handed

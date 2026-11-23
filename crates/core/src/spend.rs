@@ -29,6 +29,20 @@ use crate::usage::amount;
 
 /// Tokens one ticket's turns may use before it goes to the PM.
 pub const DEFAULT_TICKET_BUDGET: u64 = 30_000_000;
+/// The same on a hosted team paying in equipe credits (`EQUIPE_AI=credits`),
+/// where every token is billed: about $7–8 of Opus turns (mostly cache
+/// reads), in line with the platform's $5–10 check-in before a big task.
+pub const CREDITS_TICKET_BUDGET: u64 = 8_000_000;
+
+/// The budget a squad that set none has: [`CREDITS_TICKET_BUDGET`] on equipe
+/// credits, else [`DEFAULT_TICKET_BUDGET`].
+pub fn default_ticket_budget() -> u64 {
+    budget_for(crate::cost_levers::credits_profile())
+}
+
+fn budget_for(credits: bool) -> u64 {
+    if credits { CREDITS_TICKET_BUDGET } else { DEFAULT_TICKET_BUDGET }
+}
 /// Turns in a row by the same member on one ticket, with no new commit on
 /// its branch, that stop it before its budget.
 pub const DEFAULT_REPEAT_TURNS: u32 = 6;
@@ -66,7 +80,7 @@ pub struct Settings {
 }
 
 fn default_budget() -> u64 {
-    DEFAULT_TICKET_BUDGET
+    default_ticket_budget()
 }
 
 fn default_repeats() -> u32 {
@@ -75,7 +89,7 @@ fn default_repeats() -> u32 {
 
 impl Default for Settings {
     fn default() -> Self {
-        Settings { ticket_budget: DEFAULT_TICKET_BUDGET, repeat_turns: DEFAULT_REPEAT_TURNS }
+        Settings { ticket_budget: default_ticket_budget(), repeat_turns: DEFAULT_REPEAT_TURNS }
     }
 }
 
@@ -340,6 +354,13 @@ pub fn headroom_step(told: &mut u8, level: Option<u8>) -> Option<u8> {
 mod tests {
     use super::*;
     use equipe_protocol::{PlanWindow, TicketKind, TicketStatus};
+
+    #[test]
+    fn a_ticket_on_equipe_credits_goes_to_the_pm_long_before_one_on_the_persons_own_plan() {
+        assert_eq!(budget_for(true), CREDITS_TICKET_BUDGET);
+        assert_eq!(budget_for(false), DEFAULT_TICKET_BUDGET);
+        const { assert!(CREDITS_TICKET_BUDGET * 3 < DEFAULT_TICKET_BUDGET, "a few dollars, not ~$28") };
+    }
 
     fn entry(kind: &str, text: &str) -> TicketEntry {
         TicketEntry { at: 0, by: "equipe".into(), kind: kind.into(), text: text.into() }

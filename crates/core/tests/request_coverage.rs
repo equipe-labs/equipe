@@ -221,9 +221,9 @@ async fn three_requests_in_a_row_each_get_their_own_work_none_is_dropped_nor_clo
     tokio::time::sleep(Duration::from_millis(2_100)).await;
     drain(&mut events);
     handle.minute_now().await;
-    let seen = until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } if text.starts_with("[Uncovered requests]"))).await;
+    let seen = until(&mut events, |e| matches!(e, Event::SystemMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } if text.starts_with("[Uncovered requests]"))).await;
     let told = seen.iter().find_map(|e| match e {
-        Event::UserMessage { text, .. } | Event::MessageQueued { text, .. } if text.starts_with("[Uncovered requests]") => Some(text.clone()),
+        Event::SystemMessage { text, .. } | Event::MessageQueued { text, .. } if text.starts_with("[Uncovered requests]") => Some(text.clone()),
         _ => None,
     });
     let told = told.unwrap();
@@ -236,7 +236,7 @@ async fn three_requests_in_a_row_each_get_their_own_work_none_is_dropped_nor_clo
     assert!(!request(&listed, 1).status.uncovered && !request(&listed, 2).status.uncovered);
     handle.minute_now().await;
     let again = drain(&mut events);
-    assert!(!again.iter().any(|e| matches!(e, Event::MessageQueued { text, .. } | Event::UserMessage { text, .. } if text.starts_with("[Uncovered requests]"))), "told once");
+    assert!(!again.iter().any(|e| matches!(e, Event::MessageQueued { text, .. } | Event::SystemMessage { text, .. } if text.starts_with("[Uncovered requests]"))), "told once");
 
     // The PM's next turn lists it as such, until a ticket covers it.
     handle.send(Command::Interrupt { session: 1 });

@@ -4656,6 +4656,9 @@ async fn two_members_at_the_screen_take_turns_and_desktop_stop_refuses_both() {
 
 #[tokio::test]
 async fn one_browser_at_a_time_comes_on_screen_and_a_member_can_call_for_it() {
+    // The screen this test puts the browser on exists, also on a Linux runner with no display.
+    // SAFETY: the same value from every test that sets it.
+    unsafe { std::env::set_var("EQUIPE_SCREEN", "yes") };
     let repo = repo();
     let (claude, _) = recording_claude(&answering("ok"));
     let home = squad_home(&[&repo]);
@@ -4755,6 +4758,9 @@ for line in sys.stdin:
 
 #[tokio::test]
 async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_carries_on_when_it_comes_back() {
+    // The screen this test puts the browser on exists, also on a Linux runner with no display.
+    // SAFETY: the same value from every test that sets it.
+    unsafe { std::env::set_var("EQUIPE_SCREEN", "yes") };
     let repo = repo();
     let (claude, recorded) = recording_claude(&answering("ok"));
     let home = squad_home(&[&repo]);

@@ -1,6 +1,7 @@
 //! The designer's weekly review (`crate::design::review`) handed over: to
 //! the designer, not the PM — the review itself once every design folder's
-//! setup is done, else a nudge to go on with the step it is at — and the
+//! setup is done; while a setup is unfinished nothing (the setup is the PM's
+//! or the person's to propose, never started by a routine) — and the
 //! decision the designer puts next marked as the review's proposal, so
 //! screens show it as the review.
 
@@ -18,8 +19,11 @@ impl Runtime {
             .map(|(&id, _)| id)
     }
 
-    /// The review, or the setup's nudge, handed to the designer as the
-    /// person's message — after its turn if one runs. No designer: nothing.
+    /// The review handed to the designer as equipe's message — after its turn
+    /// if one runs. No designer, or a design setup not finished: nothing. A
+    /// routine never sets the designer on the setup: that is several tickets
+    /// of costly work, often not needed (a small, finished site), so only the
+    /// PM or the person starts it.
     pub(super) async fn run_design_review(&mut self, squad: &str, routine: &Routine, now: u64) {
         let Some(designer) = self.designer_of(squad) else {
             crate::daemon_log!("equipe: {squad}: no designer for the design review");
@@ -33,16 +37,12 @@ impl Runtime {
                 self.design_reviews.insert(designer, now);
                 review::message(routine, &places)
             }
-            Gate::Setup { project, dir, step } => {
-                crate::daemon_log!("equipe: {squad}: design review waits for the setup ({step:?})");
-                let lang = crate::i18n::Lang::resolve_in(&self.config.home, crate::i18n::Front::App);
-                review::nudge(lang, routine, project.as_deref(), dir.as_deref(), step)
+            Gate::Setup { step, .. } => {
+                crate::daemon_log!("equipe: {squad}: design review skipped: the design setup isn't done ({step:?}), and a routine doesn't start it");
+                return;
             }
         };
-        match self.sessions.get(&designer) {
-            Some(s) if s.is_working() => self.leave_memo(designer, text),
-            _ => self.submit(designer, text).await,
-        }
+        self.hand_as_platform(designer, text).await;
     }
 
     /// Whether the decision `id` puts now is its review's proposal — once.
