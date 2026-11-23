@@ -31,10 +31,13 @@ const MB: u64 = 1_000_000;
 /// Under this much free, the disk is low — or under a tenth of it, if smaller.
 pub const LOW_BELOW: u64 = 15 * GB;
 pub const LOW_FRACTION: u64 = 10;
-/// Under this much, builds fail soon: new build work waits.
+/// Under this much, builds fail soon: new build work waits — or under this
+/// share of the disk, in percent, if smaller (a hosted team's 4 GB volume).
 pub const CRITICAL_BELOW: u64 = 5 * GB;
-/// Under this much, the disk is full.
+pub const CRITICAL_PERCENT: u64 = 15;
+/// Under this much, the disk is full — or under this share of it, in percent, if smaller.
 pub const FULL_BELOW: u64 = GB;
+pub const FULL_PERCENT: u64 = 5;
 /// A level is left only past its threshold and this much more, in percent.
 const LEAVE_MARGIN: u64 = 20;
 
@@ -97,10 +100,14 @@ impl BuildDebug {
 /// times `percent`/100.
 fn level_at(free: u64, total: u64, percent: u64) -> DiskLevel {
     let at = |threshold: u64| threshold / 100 * percent;
-    let low = if total == 0 { LOW_BELOW } else { LOW_BELOW.min(total / LOW_FRACTION) };
-    if free < at(FULL_BELOW) {
+    // Each threshold scales down on a small disk, so a small volume isn't held for good.
+    let share = |cap: u64, percent: u64| if total == 0 { cap } else { cap.min(total / 100 * percent) };
+    let full = share(FULL_BELOW, FULL_PERCENT);
+    let critical = share(CRITICAL_BELOW, CRITICAL_PERCENT);
+    let low = if total == 0 { LOW_BELOW } else { LOW_BELOW.min(total / LOW_FRACTION) }.max(critical);
+    if free < at(full) {
         DiskLevel::Full
-    } else if free < at(CRITICAL_BELOW) {
+    } else if free < at(critical) {
         DiskLevel::Critical
     } else if free < at(low) {
         DiskLevel::Low
@@ -2219,6 +2226,18 @@ mod tests {
         // A small disk is low at a tenth of it.
         assert_eq!(next_level(DiskLevel::Ok, 9 * G, 100 * G, false), DiskLevel::Low);
         assert_eq!(next_level(DiskLevel::Ok, 11 * G, 100 * G, false), DiskLevel::Ok);
+    }
+
+    #[test]
+    fn a_small_volume_builds_with_what_it_has() {
+        // A hosted team's 4 GB volume: critical under 600 MB, full under 200 MB — not 5 GB and 1 GB.
+        let total = 4 * G;
+        assert_eq!(next_level(DiskLevel::Ok, 2 * G, total, false), DiskLevel::Ok);
+        assert_eq!(next_level(DiskLevel::Ok, 500 * MB, total, false), DiskLevel::Critical);
+        assert_eq!(next_level(DiskLevel::Ok, 150 * MB, total, false), DiskLevel::Full);
+        assert_eq!(next_level(DiskLevel::Critical, 3 * G, total, false), DiskLevel::Ok, "a clean clears it");
+        // A big disk keeps the fixed thresholds.
+        assert_eq!(next_level(DiskLevel::Ok, 4 * G, 500 * G, false), DiskLevel::Critical);
     }
 
     #[test]

@@ -763,7 +763,9 @@ filed in {hq}, and what you learn about the whole goes in its files, not only in
             "{projects} A message that starts with [Routine · …], [Idle · …] or [Signal · …], or a routine that \
 carries [Retro facts · …], comes from equipe on the person's behalf: before you act on it, open your \
 `routines-and-signals` skill. Routines and signals are the person's to turn on, never yours: only their click on \
-its card turns one on."
+its card turns one on. Such a message, or a [Sprint planning · …] or [Sprint review · …] one, is equipe's, not the \
+person's: when it leaves nothing to do or propose, end your turn without a word — never tell the person \
+\"nothing to plan yet\" or the like; they didn't ask."
         )
     } else {
         projects
@@ -1989,6 +1991,8 @@ invent one."), "{id}: true numbers");
         // Messages that come on the person's behalf send the PM to its skill; turning one on is the person's.
         assert!(pm.contains("[Routine · …], [Idle · …] or [Signal · …]") && pm.contains("[Retro facts · …]") && pm.contains("open your `routines-and-signals` skill"), "{pm}");
         assert!(pm.contains("only their click on its card turns one on"), "{pm}");
+        // equipe's own nudges leave the person alone when there is nothing to do.
+        assert!(pm.contains("end your turn without a word") && pm.contains("[Sprint planning · …]"), "{pm}");
         let pm = skill(PM, &Context { hq: Some("atinum-hq"), ..ctx(&team, &projects, true) }, "routines-and-signals");
         assert!(pm.contains("[Routine · …]") && pm.contains("found again — in atinum-hq."), "{pm}");
         assert!(pm.contains("[Signal · …]") && pm.contains("`propose_signal`"), "{pm}");
