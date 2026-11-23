@@ -695,6 +695,7 @@
   "control.parallel_auto": "Régler de nouveau le travail en parallèle sur l’utilisation du forfait (Équilibré)",
   "control.model_choice_quality": "Laisser equipe relever le modèle et l’effort d’un ticket là où le travail le demande, jamais sous ceux du membre (Qualité d’abord)",
   "control.model_choice_off": "Faire tourner chaque ticket sur le modèle et l’effort de son membre (Choix du modèle désactivé)",
+  "control.model_choice_best": "Faire tourner chaque ticket au moins sur un modèle fort : le travail le plus soigné, à un coût plus élevé (Le plus soigné)",
   "control.ticket_model": "Faire tourner T-{ticket} seul sur {model} (le membre et les autres tickets gardent le leur)",
   "control.ticket_model_premium": "Faire tourner T-{ticket} seul sur {model}, la famille premium, à plusieurs fois le coût d’Opus ; cela prend fin à la clôture du ticket",
   "control.ticket_model_off": "Abandonner le modèle choisi pour T-{ticket} : son niveau décide de nouveau",

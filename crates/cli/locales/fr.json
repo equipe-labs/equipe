@@ -407,6 +407,8 @@
   "model_choice.heading": "Choix du modèle",
   "model_choice.quality": "qualité d’abord",
   "model_choice.off": "désactivé",
+  "model_choice.best": "le plus soigné",
+  "model_choice.best_about": "chaque ticket au moins sur un modèle fort, à un coût plus élevé",
   "model_choice.quality_about": "un modèle plus fort ou plus de réflexion là où un ticket le demande, jamais sous ceux du membre",
   "model_choice.off_about": "chaque ticket sur le modèle et l’effort de son membre",
   "model_choice.now": "Choix du modèle : {mode} — {about} · /model-choice quality|off",

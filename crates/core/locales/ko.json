@@ -691,6 +691,7 @@
   "control.parallel_auto": "병렬 작업을 다시 플랜 사용량에 맞춰요 (균형)",
   "control.model_choice_quality": "티켓마다 일에 필요하면 모델과 effort를 올려요. 멤버 자신의 설정보다 낮추지는 않아요 (품질 우선)",
   "control.model_choice_off": "모든 티켓을 멤버 자신의 모델과 effort로 돌려요 (모델 선택 끔)",
+  "control.model_choice_best": "모든 티켓을 적어도 강한 모델로 돌려요. 가장 꼼꼼하지만 비용이 더 들어요 (가장 꼼꼼하게)",
   "control.ticket_model": "T-{ticket}만 {model}(으)로 돌려요 (멤버와 다른 티켓은 그대로예요)",
   "control.ticket_model_premium": "T-{ticket}만 프리미엄 모델 {model}(으)로 돌려요. Opus보다 비용이 몇 배 들고, 티켓이 닫히면 끝나요",
   "control.ticket_model_off": "T-{ticket}에 고른 모델을 풀어요. 다시 단계에 따라 정해져요",

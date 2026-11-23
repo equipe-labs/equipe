@@ -691,6 +691,7 @@
   "control.parallel_auto": "並行工作重新依方案用量調整（均衡）",
   "control.model_choice_quality": "依工作需要為每張工單調高模型和 effort，絕不低於成員自己的設定（品質優先）",
   "control.model_choice_off": "所有工單都用成員自己的模型和 effort 執行（模型選擇關閉）",
+  "control.model_choice_best": "所有工單至少用強模型執行：最細緻的工作，成本更高（最細緻）",
   "control.ticket_model": "僅讓 T-{ticket} 使用 {model}（成員和其他工單維持不變）",
   "control.ticket_model_premium": "僅讓 T-{ticket} 使用高階模型 {model}，成本是 Opus 的數倍；工單關閉後即結束",
   "control.ticket_model_off": "取消為 T-{ticket} 選定的模型：重新由其檔位決定",

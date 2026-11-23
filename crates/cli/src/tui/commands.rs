@@ -49,7 +49,7 @@ pub fn commands() -> [Spec; 40] {
         Spec { name: "suggest", args: "[on|off]", about: t!("commands.suggest") },
         Spec { name: "engines", args: "[auto|suggest|off|setup]", about: t!("commands.engines") },
         Spec { name: "parallel", args: "[auto|max [per member] [per engine]]", about: t!("commands.parallel") },
-        Spec { name: "model-choice", args: "[quality|off]", about: t!("commands.model_choice") },
+        Spec { name: "model-choice", args: "[quality|best|off]", about: t!("commands.model_choice") },
         Spec { name: "wake", args: "[on|off]", about: t!("commands.wake") },
         Spec { name: "export", args: "", about: t!("commands.export") },
         Spec { name: "mouse", args: "", about: t!("commands.mouse") },
@@ -283,7 +283,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
             .collect(),
-        ("model-choice", 1) => [("quality", t!("model_choice.quality_about")), ("off", t!("model_choice.off_about"))]
+        ("model-choice", 1) => [("quality", t!("model_choice.quality_about")), ("best", t!("model_choice.best_about")), ("off", t!("model_choice.off_about"))]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))

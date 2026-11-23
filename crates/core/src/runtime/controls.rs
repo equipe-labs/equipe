@@ -95,6 +95,7 @@ impl Runtime {
             crate::protocol::tiers::ModelChoice::QualityFirst => {
                 "Model choice (model_choice): quality — each ticket's lane starts on the cheapest model and effort that does its work well (an everyday model for routine changes, a strong one for features, the hardest thinking for real risk), never below a model the person chose for its member; work sent back for correctness goes up a step.".to_owned()
             }
+            crate::protocol::tiers::ModelChoice::Best => "Model choice (model_choice): best — as quality, but no ticket's lane runs below the strong tier: the most careful work, at its cost.".to_owned(),
             crate::protocol::tiers::ModelChoice::Off => "Model choice (model_choice): off — every ticket runs on its member's own model and effort.".to_owned(),
         });
         out.push(format!(
@@ -488,6 +489,7 @@ impl Runtime {
             Change::EngineSwitching(m) => say!(self, "control.engine_switching", mode = format!("{m:?}").to_lowercase()),
             Change::ModelChoice(crate::protocol::tiers::ModelChoice::QualityFirst) => say!(self, "control.model_choice_quality"),
             Change::ModelChoice(crate::protocol::tiers::ModelChoice::Off) => say!(self, "control.model_choice_off"),
+            Change::ModelChoice(crate::protocol::tiers::ModelChoice::Best) => say!(self, "control.model_choice_best"),
             Change::TicketModel { ticket, model: None } => say!(self, "control.ticket_model_off", ticket = ticket),
             Change::TicketModel { ticket, model: Some(model) } if crate::tiers::is_premium(Engine::Claude, model) => say!(self, "control.ticket_model_premium", ticket = ticket, model = self.model_label(model)),
             Change::TicketModel { ticket, model: Some(model) } => say!(self, "control.ticket_model", ticket = ticket, model = self.model_label(model)),

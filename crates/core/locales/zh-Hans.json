@@ -691,6 +691,7 @@
   "control.parallel_auto": "并行工作重新按套餐用量调整（均衡）",
   "control.model_choice_quality": "按工作需要为每个工单调高模型和 effort，绝不低于成员自己的设置（质量优先）",
   "control.model_choice_off": "所有工单都用成员自己的模型和 effort 运行（模型选择关闭）",
+  "control.model_choice_best": "所有工单至少用强模型运行：最细致的工作，成本更高（最细致）",
   "control.ticket_model": "仅让 T-{ticket} 使用 {model}（成员和其他工单保持不变）",
   "control.ticket_model_premium": "仅让 T-{ticket} 使用高级模型 {model}，成本是 Opus 的数倍；工单关闭后即结束",
   "control.ticket_model_off": "取消为 T-{ticket} 选定的模型：重新由其档位决定",

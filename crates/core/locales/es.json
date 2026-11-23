@@ -695,6 +695,7 @@
   "control.parallel_auto": "Volver a ajustar el trabajo en paralelo al uso del plan (Equilibrado)",
   "control.model_choice_quality": "Dejar que equipe suba el modelo y el esfuerzo de cada ticket donde el trabajo lo pida, nunca por debajo de los del miembro (Calidad primero)",
   "control.model_choice_off": "Ejecutar cada ticket con el modelo y el esfuerzo de su miembro (Elección de modelo desactivada)",
+  "control.model_choice_best": "Ejecutar cada ticket al menos con un modelo fuerte: el trabajo más cuidadoso, a mayor coste (Lo más cuidadoso)",
   "control.ticket_model": "Ejecutar solo T-{ticket} en {model} (el miembro y los demás tickets conservan el suyo)",
   "control.ticket_model_premium": "Ejecutar solo T-{ticket} en {model}, la familia premium, a varias veces el coste de Opus; termina al cerrarse el ticket",
   "control.ticket_model_off": "Soltar el modelo elegido para T-{ticket}: vuelve a decidir su nivel",

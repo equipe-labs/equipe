@@ -122,7 +122,7 @@ impl Change {
             // Max spends the plan faster than it would on its own: the person's.
             Change::Parallel { mode, .. } => *mode == ParallelMode::Max,
             // Stronger models spend the plan faster: the person's. Off only narrows.
-            Change::ModelChoice(choice) => *choice == crate::protocol::tiers::ModelChoice::QualityFirst,
+            Change::ModelChoice(choice) => *choice != crate::protocol::tiers::ModelChoice::Off,
             // A model picked for a ticket spends the plan as the person decided, the premium one several times over:
             // theirs, on a card. Letting a pick go only narrows.
             Change::TicketModel { model, .. } => model.is_some(),
@@ -231,7 +231,7 @@ impl Change {
                 Change::Parallel { mode, per_member: cap("per_member", MOST_PER_MEMBER)?, per_engine: cap("per_engine", MOST_PER_ENGINE)? }
             }
             "model_choice" => Change::ModelChoice(
-                crate::protocol::tiers::ModelChoice::parse(&value()?).ok_or("Model choice is quality (each ticket on the cheapest model that does it well, up a step when its work comes back wrong, never below a model the person chose) or off (members' own models).")?,
+                crate::protocol::tiers::ModelChoice::parse(&value()?).ok_or("Model choice is quality (each ticket on the cheapest model that does it well, up a step when its work comes back wrong, never below a model the person chose), best (the same, never below the strong tier) or off (members' own models).")?,
             ),
             "ticket_model" => {
                 let text = value()?;

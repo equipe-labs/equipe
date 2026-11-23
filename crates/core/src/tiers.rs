@@ -34,6 +34,15 @@
 //! | Other tasks | strong | Opus · medium | Sol · medium |
 //! | Actions in an app or the browser | strong | Opus · medium | Sol · medium |
 //!
+//! A hosted squad (on equipe credits, [`Work::hosted`]) differs in a few
+//! cells ([`hosted`]): a faithful copy (an imported site) and server-side
+//! work that is not a foundation run standard, deployed or not; a few words
+//! or a link run light. Screens a person sees keep the table's tiers. Its role defaults are
+//! equipe's, not the person's, so they are no floor.
+//!
+//! The squad's choice [`ModelChoice::Best`] puts every lane on strong at
+//! least — the person's "most careful" setting.
+//!
 //! Max is reached only by escalation or the person. The person sets a
 //! ticket's tier whenever they like ([`TierBy::Person`]; `SetTicketTier`),
 //! lower than anything included, and pins it against escalation.
@@ -81,6 +90,10 @@ pub struct Work<'a> {
     pub qa_tier: Option<QaTier>,
     /// The member changes files on its tickets.
     pub edits: bool,
+    /// The squad runs hosted, on equipe credits
+    /// ([`crate::cost_levers::credits_profile`]): every step is paid per
+    /// call, so routine building runs on the standard tier ([`hosted`]).
+    pub hosted: bool,
 }
 
 /// The tier design QA's policy picked for a design QA ticket.
@@ -115,6 +128,11 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
     let risk = risk_tags(&text);
     let checked = checkable(w.body);
     let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: risk.clone(), never_lower: never_lower || !risk.is_empty(), below_floor: false };
+    if w.hosted
+        && let Some((tier, reason)) = hosted(w, &text, &risk)
+    {
+        return Some(at(tier, reason, false));
+    }
     Some(if let (true, Some(q)) = (w.design_qa, w.qa_tier) {
         // Kept at the member's own where the person set it, the policy's tier recorded beside it.
         Rule { tier: q.tier, reason: TierReason::DesignQa, risk: risk.clone(), never_lower: q.below_floor, below_floor: q.below_floor }
@@ -155,6 +173,78 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
             TicketKind::Action => at(ModelTier::Strong, TierReason::Action, true),
         }
     })
+}
+
+/// A hosted squad's own cells, where they differ from the table above;
+/// `None` where the table holds. Hosted products are built on a known stack
+/// (equipe's app scaffold, the platform's deploy tool), and an A/B of real
+/// first-run tickets (2026-11-24) showed where a cheaper tier holds:
+///
+/// - a faithful copy (an imported site put live as it is) and server-side
+///   work with nothing on screen that is not a foundation ([`foundation`])
+///   run standard: as good for a fraction of the cost;
+/// - shipping a copy or server work through the platform's deploy tool is a
+///   step, not a release engineering job: standard, never lower;
+/// - a few words, a link, a status check run light, checked or not.
+///
+/// Screens a person sees keep the table's tiers: on standard, and on strong
+/// at medium effort, the first versions came out plainer in a blind review,
+/// and the first screen is what the person judges.
+/// Reviews, design, broad changes and every other risk keep the table's
+/// tier, and escalation stays the safety net: work that comes back wrong
+/// runs one tier up.
+fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, TierReason)> {
+    if w.design_qa || REVIEWERS.contains(&w.role) || w.role == "designer" || w.kind == TicketKind::Action || wide_scope(text) {
+        return None;
+    }
+    let release_only = !risk.is_empty() && risk.iter().all(|r| *r == RiskTag::Release);
+    if !risk.is_empty() && !release_only {
+        return None;
+    }
+    let code = w.kind == TicketKind::Code;
+    // Work a cheaper tier does as well: copying what exists, or the server side of a known stack.
+    let standard = code && !foundation(text) && (faithful_copy(text) || (SERVER_ROLES.contains(&w.role) && !on_screen(text)));
+    if release_only {
+        // A screen shipped live keeps the table's deep tier: on strong or standard the first versions came out plainer.
+        return standard.then_some((ModelTier::Standard, TierReason::Risk));
+    }
+    if (trivial(w.title) || few_words(w.title)) && !read_only(w) {
+        return Some((ModelTier::Light, TierReason::Small));
+    }
+    if read_only(w) && trivial(w.title) {
+        return Some((ModelTier::Light, TierReason::ReadOnly));
+    }
+    standard.then_some((ModelTier::Standard, TierReason::Code))
+}
+
+/// The roles whose code no person looks at directly.
+const SERVER_ROLES: [&str; 2] = ["backend", "data"];
+
+/// Something a person sees, as the ticket says: a page, a screen, a form.
+fn on_screen(text: &str) -> bool {
+    has_word(text, &["page", "site", "screen", "landing", "homepage", "ui", "layout", "hero", "section", "component", "form", "button", "look", "style", "design"])
+}
+
+/// Copying what exists as it is: an imported site put live, a port with no redesign.
+fn faithful_copy(text: &str) -> bool {
+    has_word(text, &["as it is", "exactly like the original", "looks and reads exactly", "reference copy", "do not redesign", "don't redesign", "same look, same words"])
+}
+
+/// A few words changed, as the title says: a typo, a label, a line of copy.
+fn few_words(title: &str) -> bool {
+    has_word(title, &["typo", "wording", "microcopy", "label", "button text", "fix link", "fix links", "broken link", "update link", "change the text", "change text", "copy tweak", "copy change", "update copy", "update the copy"])
+}
+
+/// What the rest of a product stands on: its design system, data model,
+/// API or architecture — worth the strong tier on any stack.
+fn foundation(text: &str) -> bool {
+    has_word(
+        text,
+        &[
+            "design system", "architecture", "data model", "schema", "api design", "database design", "state management", "real-time", "realtime", "offline", "sync engine", "monorepo", "framework", "from scratch", "set up the project",
+            "project setup",
+        ],
+    )
 }
 
 /// Whether any of `words` is in `text` as a word of its own (its start at a
@@ -542,7 +632,9 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
                 // Once raised, a ticket never comes back down mid-way.
                 let raised = prev.tier.filter(|_| prev.by == TierBy::Escalation);
                 // A rule that may go below the member's own has no floor.
-                let floor = if rule.below_floor { ModelTier::Light } else { floor };
+                let floor = if rule.below_floor && choice != ModelChoice::Best { ModelTier::Light } else { floor };
+                // The person's "most careful": nothing below strong.
+                let floor = if choice == ModelChoice::Best { floor.max(ModelTier::Strong) } else { floor };
                 let tier = rule.tier.max(floor).max(raised.unwrap_or(ModelTier::Light));
                 let escalated = raised.is_some_and(|r| r >= rule.tier.max(floor));
                 let reason = if escalated {
@@ -555,7 +647,7 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
                 let shadow = (!rule.never_lower && rule.tier < tier).then_some(rule.tier);
                 let by = if escalated { TierBy::Escalation } else { TierBy::Rule };
                 // Kept at the member's own only where the person chose it.
-                (TicketModel { tier: Some(tier), by, reason, shadow, ..base }, resolve(tier, m, m.person && !rule.below_floor))
+                (TicketModel { tier: Some(tier), by, reason, shadow, ..base }, resolve(tier, m, m.person && !(rule.below_floor && choice != ModelChoice::Best)))
             }
         },
     };
@@ -648,7 +740,7 @@ mod tests {
     use super::*;
 
     fn work<'a>(role: &'a str, kind: TicketKind, title: &'a str, body: &'a str) -> Work<'a> {
-        Work { role, kind, title, body, design_qa: false, qa_tier: None, edits: !matches!(role, "qa" | "security" | "data" | "pm") }
+        Work { role, kind, title, body, design_qa: false, qa_tier: None, edits: !matches!(role, "qa" | "security" | "data" | "pm"), hosted: false }
     }
 
     fn tier(role: &str, kind: TicketKind, title: &str, body: &str) -> (ModelTier, TierReason, bool) {
@@ -1070,5 +1162,71 @@ mod tests {
         let a = choose(None, Some(&code), &CLAUDE, ModelChoice::QualityFirst);
         let b = choose(None, Some(&code), &CLAUDE, ModelChoice::QualityFirst);
         assert_eq!(a, b);
+    }
+
+    fn hosted_tier(role: &str, kind: TicketKind, title: &str, body: &str) -> (ModelTier, TierReason, bool) {
+        let r = rule(&Work { hosted: true, ..work(role, kind, title, body) }).unwrap();
+        (r.tier, r.reason, r.never_lower)
+    }
+
+    #[test]
+    fn a_hosted_squad_keeps_screens_strong_and_routes_the_rest() {
+        // The first-run build: a screen shipped live keeps Opus · high (the A/B's finding).
+        let first = hosted_tier("backend", TicketKind::Code, "Build the dog walking booking page and deploy it", "One page, a form that saves bookings. Deploy with the platform tool.");
+        assert_eq!(first, (ModelTier::Deep, TierReason::Risk, true));
+        assert_eq!(hosted_tier("backend", TicketKind::Code, "Add an endpoint that lists bookings by day and deploy it", "").0, ModelTier::Standard);
+        assert_eq!(tier("backend", TicketKind::Code, "Build the dog walking booking page and deploy it", "").0, ModelTier::Deep, "self-hosted squads keep the table");
+        // An imported site put live as it is: standard, deploy and all.
+        let import = hosted_tier("frontend", TicketKind::Code, "Put the imported site live as it is and deploy it", "A static site that looks and reads exactly like the original. Do not redesign.");
+        assert_eq!(import, (ModelTier::Standard, TierReason::Risk, true));
+        // Server work with nothing on screen: standard; a screen stays strong.
+        assert_eq!(hosted_tier("backend", TicketKind::Code, "Add an endpoint that lists bookings by day", "").0, ModelTier::Standard);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Add a pricing section", "").0, ModelTier::Strong);
+        assert_eq!(hosted_tier("backend", TicketKind::Code, "Add a bookings page", "").0, ModelTier::Strong);
+        // A foundation, other risks, design, reviews, broad changes and actions keep their tier.
+        assert_eq!(hosted_tier("backend", TicketKind::Code, "Set up the data model for bookings", "").0, ModelTier::Strong);
+        assert_eq!(hosted_tier("backend", TicketKind::Code, "Add sign-in with email", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("backend", TicketKind::Code, "Take payments with Stripe and deploy", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("designer", TicketKind::Code, "Create the design system", "").0, ModelTier::Strong);
+        assert_eq!(hosted_tier("qa", TicketKind::Task, "QA the booking flow", "").0, tier("qa", TicketKind::Task, "QA the booking flow", "").0);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Refactor the layout across all pages", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("marketing", TicketKind::Action, "Reply on the forum", "").0, ModelTier::Strong);
+        // A few words or a link: light, checked or not; never on a release.
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix a typo in the hero", ""), (ModelTier::Light, TierReason::Small, false));
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix broken link in the footer", "").0, ModelTier::Light);
+        assert!(hosted_tier("frontend", TicketKind::Code, "Fix a typo and deploy", "").0 > ModelTier::Light);
+        // The PM keeps its own model.
+        assert!(rule(&Work { hosted: true, ..work("pm", TicketKind::Task, "Plan the first version", "") }).is_none());
+    }
+
+    #[test]
+    fn a_hosted_lane_runs_at_its_tier_and_escalates_from_there() {
+        let api = rule(&Work { hosted: true, ..work("backend", TicketKind::Code, "Add an endpoint that lists bookings by day", "") }).unwrap();
+        // Its role's default (Sonnet, set by equipe) is no floor: Sonnet · medium.
+        let c = choose(None, Some(&api), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((c.model.as_deref(), c.effort.as_deref()), (Some("sonnet"), Some("medium")));
+        let typo = rule(&Work { hosted: true, ..work("frontend", TicketKind::Code, "Fix a typo in the hero", "") }).unwrap();
+        assert_eq!(choose(None, Some(&typo), &CLAUDE, ModelChoice::QualityFirst).model.as_deref(), Some("haiku"));
+        // Work that comes back wrong goes up a tier: Opus.
+        let up = step_up(&c.ticket).unwrap();
+        let again = choose(Some(&up), Some(&api), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!(again.model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn most_careful_puts_every_lane_on_strong_at_least() {
+        let page = rule(&Work { hosted: true, ..work("backend", TicketKind::Code, "Add an endpoint that lists bookings by day", "") }).unwrap();
+        let typo = rule(&Work { hosted: true, ..work("frontend", TicketKind::Code, "Fix a typo in the hero", "") }).unwrap();
+        for r in [&page, &typo] {
+            let c = choose(None, Some(r), &CLAUDE, ModelChoice::Best);
+            assert_eq!((c.ticket.tier, c.model.as_deref()), (Some(ModelTier::Strong), Some("opus")));
+        }
+        let risky = rule(&Work { hosted: true, ..work("backend", TicketKind::Code, "Add sign-in with email", "") }).unwrap();
+        assert_eq!(choose(None, Some(&risky), &CLAUDE, ModelChoice::Best).ticket.tier, Some(ModelTier::Deep), "never lowers a higher rule");
+        let qa = rule(&Work { design_qa: true, qa_tier: Some(QaTier { tier: ModelTier::Standard, below_floor: true }), ..work("designer", TicketKind::Task, "Design QA of T-4", "") }).unwrap();
+        assert_eq!(choose(None, Some(&qa), &CLAUDE, ModelChoice::Best).model.as_deref(), Some("opus"), "design QA's economy tier too");
+        assert_eq!(ModelChoice::parse("best"), Some(ModelChoice::Best));
+        assert_eq!(ModelChoice::parse("careful"), Some(ModelChoice::Best));
+        assert_eq!(ModelChoice::parse(ModelChoice::Best.code()), Some(ModelChoice::Best));
     }
 }

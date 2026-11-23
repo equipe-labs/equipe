@@ -83,6 +83,10 @@ impl ModelTier {
 pub enum ModelChoice {
     /// Members' own models only, as before tiers: nothing raised.
     Off,
+    /// As [`ModelChoice::QualityFirst`], but no lane below the strong tier:
+    /// the most careful work, at its cost. A daemon before it reads it as
+    /// `QualityFirst`.
+    Best,
     /// Right-size each ticket's model and effort by how hard it looks, raise
     /// it when its work comes back wrong, and never go below a model the
     /// person chose for the member. Also what a choice this build doesn't
@@ -93,12 +97,13 @@ pub enum ModelChoice {
 }
 
 impl ModelChoice {
-    pub const ALL: [ModelChoice; 2] = [ModelChoice::QualityFirst, ModelChoice::Off];
+    pub const ALL: [ModelChoice; 3] = [ModelChoice::QualityFirst, ModelChoice::Best, ModelChoice::Off];
 
     pub fn code(self) -> &'static str {
         match self {
             ModelChoice::QualityFirst => "quality",
             ModelChoice::Off => "off",
+            ModelChoice::Best => "best",
         }
     }
 
@@ -106,6 +111,7 @@ impl ModelChoice {
         match text.trim().to_ascii_lowercase().as_str() {
             "quality" | "quality_first" | "quality-first" | "on" | "auto" => Some(ModelChoice::QualityFirst),
             "off" | "own" | "members" => Some(ModelChoice::Off),
+            "best" | "strongest" | "careful" | "most_careful" | "max" => Some(ModelChoice::Best),
             _ => None,
         }
     }

@@ -391,6 +391,8 @@
   "model_choice.heading": "モデル選択",
   "model_choice.quality": "品質優先",
   "model_choice.off": "オフ",
+  "model_choice.best": "最も丁寧に",
+  "model_choice.best_about": "すべてのチケットを少なくとも強いモデルで、費用は増えます",
   "model_choice.quality_about": "必要なチケットはより強いモデルや深い思考に上げます。メンバー自身の設定より下げません",
   "model_choice.off_about": "すべてのチケットをメンバー自身のモデルと effort で",
   "model_choice.now": "モデル選択：{mode} — {about} · /model-choice quality|off",

@@ -5,7 +5,7 @@
 //! are; for moves equipe made on its own, `u` undoes them and `n` closes it.
 //! Only the person's key answers a card. Beside it, how many tickets the squad
 //! works at once (`/parallel auto|max [per member] [per engine]`), and whether
-//! equipe picks each ticket's model (`/model-choice quality|off`).
+//! equipe picks each ticket's model (`/model-choice quality|best|off`).
 
 use crossterm::event::KeyCode;
 use equipe_core::protocol::engines::{Move, Proposal, Switching, Why, Window};
@@ -101,6 +101,7 @@ pub fn parallel_about(parallel: &Parallel) -> String {
 pub fn model_choice_word(choice: ModelChoice) -> &'static str {
     match choice {
         ModelChoice::QualityFirst => t!("model_choice.quality"),
+        ModelChoice::Best => t!("model_choice.best"),
         ModelChoice::Off => t!("model_choice.off"),
     }
 }
@@ -109,6 +110,7 @@ pub fn model_choice_word(choice: ModelChoice) -> &'static str {
 pub fn model_choice_about(choice: ModelChoice) -> &'static str {
     match choice {
         ModelChoice::QualityFirst => t!("model_choice.quality_about"),
+        ModelChoice::Best => t!("model_choice.best_about"),
         ModelChoice::Off => t!("model_choice.off_about"),
     }
 }
@@ -233,7 +235,7 @@ impl App {
         vec![Command::SetParallel { squad: self.squad.clone(), parallel }]
     }
 
-    /// `/model-choice [quality|off]`.
+    /// `/model-choice [quality|best|off]`.
     pub(super) fn model_choice_command(&mut self, rest: &str) -> Vec<Command> {
         let rest = rest.trim();
         if rest.is_empty() {

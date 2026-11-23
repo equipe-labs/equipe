@@ -22,7 +22,11 @@ impl Runtime {
         let choice = self.journal(squad).map(Journal::model_choice).unwrap_or_default();
         let (name, role, engine) = self.sessions.get(&id).and_then(|s| s.member.as_ref().map(|m| (m.name.clone(), m.role.clone(), s.engine)))?;
         // Only a model the person chose is a floor: the member's own `/model`, or a model they set for its role.
-        let person = self.journal(squad).is_some_and(|j| j.person_models().contains(&name) || j.role_models().iter().any(|r| r.role == role && r.engine == engine && r.model.is_some()));
+        // A hosted squad's role models are equipe's own setup, not the person's: no floor there.
+        let hosted = crate::cost_levers::credits_profile();
+        let person = self
+            .journal(squad)
+            .is_some_and(|j| j.person_models().contains(&name) || (!hosted && j.role_models().iter().any(|r| r.role == role && r.engine == engine && r.model.is_some())));
         let qa_tier = match (&batch, design_qa) {
             // A daily review on the cheap tier, its audit on the top one.
             (Some(kind), _) => self.batch_tier(squad, kind, &name, &role, engine),
@@ -37,7 +41,7 @@ impl Runtime {
         };
         let catalog: Vec<rules::Offer<'_>> = infos.iter().map(|m| rules::Offer { id: &m.id, efforts: &m.efforts, default_effort: m.default_effort.as_deref() }).collect();
         let member = rules::Member { engine: s.engine, model: s.model.as_deref(), effort: effort.as_deref(), catalog: &catalog, person };
-        let work = rules::Work { role: &role, kind: ticket.kind, title: &ticket.title, body: &ticket.body, design_qa, qa_tier, edits: s.edits() };
+        let work = rules::Work { role: &role, kind: ticket.kind, title: &ticket.title, body: &ticket.body, design_qa, qa_tier, edits: s.edits(), hosted };
         let rule = rules::rule(&work);
         Some(rules::choose(ticket.model.as_ref(), rule.as_ref(), &member, choice))
     }

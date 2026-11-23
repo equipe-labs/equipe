@@ -407,6 +407,8 @@
   "model_choice.heading": "Model choice",
   "model_choice.quality": "quality first",
   "model_choice.off": "off",
+  "model_choice.best": "most careful",
+  "model_choice.best_about": "every ticket on a strong model at least, at a higher cost",
   "model_choice.quality_about": "a stronger model or more thinking where a ticket needs it, never below its member's own",
   "model_choice.off_about": "every ticket on its member's own model and effort",
   "model_choice.now": "Model choice: {mode} — {about} · /model-choice quality|off",

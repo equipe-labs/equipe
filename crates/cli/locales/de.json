@@ -407,6 +407,8 @@
   "model_choice.heading": "Modellwahl",
   "model_choice.quality": "Qualität zuerst",
   "model_choice.off": "aus",
+  "model_choice.best": "am sorgfältigsten",
+  "model_choice.best_about": "jedes Ticket mindestens auf einem starken Modell, zu höheren Kosten",
   "model_choice.quality_about": "ein stärkeres Modell oder mehr Nachdenken, wo ein Ticket es braucht – nie unter den eigenen des Mitglieds",
   "model_choice.off_about": "jedes Ticket mit Modell und Effort seines Mitglieds",
   "model_choice.now": "Modellwahl: {mode} — {about} · /model-choice quality|off",

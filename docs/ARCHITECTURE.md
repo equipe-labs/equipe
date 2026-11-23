@@ -892,8 +892,21 @@ owns it or suggests `/add`.
   automatic move to the other engine) is not. To override: the person sets any
   ticket's tier with `SetTicketTier` (the Model row on its card in the desktop app;
   lower than the rules included) and may pin it so escalation leaves it; the squad's model
-  choice setting (`SetModelChoice`: `/model-choice quality|off`) turns picking off, so
-  members run on their own models. `model_choices` in the squad's journal keeps every
+  choice setting (`SetModelChoice`: `/model-choice quality|best|off`) puts every lane
+  on strong at least (`best`, "most careful") or turns picking off, so members run on
+  their own models.
+
+  A hosted squad (`EQUIPE_AI=credits`) builds on a known stack and pays per call, so
+  a few cells differ (`tiers::hosted`, set from an A/B of real first-run tickets): a
+  faithful copy (an imported site put live as it is) and server-side work with
+  nothing on screen run standard unless they are a foundation (design system, data
+  model, API, architecture), deployed or not, since the platform's deploy tool does
+  the release; a few words or a link is light. Screens a person sees keep the table's
+  tiers: on standard, and on strong at medium effort, the first versions came out
+  plainer in a blind review. Its role models are equipe's own setup, not the person's, so they are no
+  floor. The PM, design, reviews, broad changes and other risks keep their tiers,
+  and escalation stays the safety net. "Redo more carefully" on a ticket is
+  `SetTicketTier` to `deep`, then `Reopen` with the note. `model_choices` in the squad's journal keeps every
   lane's tier, model, effort, why (`reason`), what the rules made of the ticket by
   itself (`classified`) and, where it ran above that, the tier they asked (`shadow`).
 - **Reserve for the person** (`equipe_core::pacing`). On auto parallel work nothing is

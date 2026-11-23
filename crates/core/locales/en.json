@@ -695,6 +695,7 @@
   "control.parallel_auto": "Size parallel work by plan usage again (Balanced)",
   "control.model_choice_quality": "Let equipe raise each ticket's model and effort where its work needs it, never below its member's own (Quality first)",
   "control.model_choice_off": "Run every ticket on its member's own model and effort (Model choice off)",
+  "control.model_choice_best": "Run every ticket on a strong model at least: the most careful work, at a higher cost (Most careful)",
   "control.ticket_model": "Run T-{ticket} on {model}, for this ticket only (its member and other tickets keep theirs)",
   "control.ticket_model_premium": "Run T-{ticket} on {model}, the premium family at several times Opus's cost, for this ticket only; it ends when the ticket closes",
   "control.ticket_model_off": "Let go of the model picked for T-{ticket}: its tier decides again",

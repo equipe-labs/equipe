@@ -391,6 +391,8 @@
   "model_choice.heading": "模型选择",
   "model_choice.quality": "质量优先",
   "model_choice.off": "关闭",
+  "model_choice.best": "最细致",
+  "model_choice.best_about": "所有工单至少用强模型，成本更高",
   "model_choice.quality_about": "工单需要时换更强的模型或更深的思考，绝不低于成员自己的设置",
   "model_choice.off_about": "所有工单都用成员自己的模型和 effort",
   "model_choice.now": "模型选择：{mode} — {about} · /model-choice quality|off",

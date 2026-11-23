@@ -691,6 +691,7 @@
   "control.parallel_auto": "並行作業をふたたびプランの使用量に合わせます（バランス）",
   "control.model_choice_quality": "仕事に必要なときはチケットごとにモデルと effort を上げます。メンバー自身の設定より下げることはありません（品質優先）",
   "control.model_choice_off": "すべてのチケットをメンバー自身のモデルと effort で動かします（モデル選択オフ）",
+  "control.model_choice_best": "すべてのチケットを少なくとも強いモデルで動かします。最も丁寧ですが、費用が増えます（最も丁寧に）",
   "control.ticket_model": "T-{ticket} だけを {model} で動かします（メンバーと他のチケットはそのままです）",
   "control.ticket_model_premium": "T-{ticket} だけをプレミアムの {model} で動かします。Opus の数倍のコストがかかり、チケットを閉じると終わります",
   "control.ticket_model_off": "T-{ticket} に選んだモデルを外します。あらためてステップで決まります",

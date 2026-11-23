@@ -695,6 +695,7 @@
   "control.parallel_auto": "Parallele Arbeit wieder nach der Plannutzung bemessen (Ausgewogen)",
   "control.model_choice_quality": "equipe hebt Modell und Effort eines Tickets an, wo die Arbeit es braucht – nie unter die eigenen des Mitglieds (Qualität zuerst)",
   "control.model_choice_off": "Jedes Ticket mit Modell und Effort seines Mitglieds ausführen (Modellwahl aus)",
+  "control.model_choice_best": "Jedes Ticket mindestens auf einem starken Modell ausführen: die sorgfältigste Arbeit, zu höheren Kosten (Am sorgfältigsten)",
   "control.ticket_model": "T-{ticket} allein auf {model} laufen lassen (das Mitglied und andere Tickets behalten ihr Modell)",
   "control.ticket_model_premium": "T-{ticket} allein auf {model} laufen lassen, der Premium-Familie mit mehrfachen Opus-Kosten; es endet, wenn das Ticket geschlossen wird",
   "control.ticket_model_off": "Das für T-{ticket} gewählte Modell aufgeben: wieder entscheidet seine Stufe",
