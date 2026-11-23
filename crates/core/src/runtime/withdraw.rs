@@ -179,6 +179,47 @@ back and why.{still_waits} If something is still theirs to choose, ask anew — 
         count
     }
 
+    /// Take away approval `id` the person never answered: its card leaves
+    /// every screen, and the member that asked hears it was withdrawn —
+    /// never that the person said no. Its tool call still doesn't go ahead.
+    /// The week's retro keeps it as `outcome` (`withdrawn`, `timed out`) and
+    /// the ticket's history as `withdrawn` — never `declined` — so no member
+    /// later reports a refusal nobody gave.
+    pub(super) fn withdraw_approval(&mut self, id: u64, why: &str, outcome: &str) {
+        let Some(pending) = self.pending.remove(&id) else { return };
+        let Pending { squad, approval, input, reply } = pending;
+        let told = withdrawn_answer(why);
+        if let Some(asked) = self.approvals_asked.remove(&id) {
+            let wait = crate::retro::Wait { kind: "permission".into(), member: approval.member.clone(), ticket: approval.ticket, what: approval.action.clone(), asked, answered: Some(now_secs()), outcome: outcome.into() };
+            if let Some(journal) = self.journal(&squad) {
+                let _ = journal.record_wait(&wait);
+            }
+        }
+        if let Some(preview) = &approval.preview {
+            let _ = std::fs::remove_file(preview);
+        }
+        for other in self.sign_in_joined.remove(&id).unwrap_or_default() {
+            let _ = other.reply.send(ToolResult { text: told.clone(), is_error: false, image: None });
+        }
+        let in_words = approval.tool == CONFIRM || approval.tool == SIGN_IN_TOOL || approval.tool == crate::controls::SETTING_TOOL || approval.tool == crate::controls::ENGINE_TOOL;
+        let result = if in_words {
+            ToolResult { text: told.clone(), is_error: false, image: None }
+        } else if approval.tool == crate::phone::INSTALL || approval.tool == desktop_gate::SEND {
+            ToolResult { text: told.clone(), is_error: true, image: None }
+        } else {
+            // A permission its engine waits on: still not allowed, said as withdrawn.
+            verdict(Decision::Deny, &input, &told)
+        };
+        if approval.ask.as_ref().is_some_and(|a| a.later) {
+            let _ = self.internal.send(Internal::LaterAnswered { squad: squad.clone(), approval: Box::new(approval.clone()), said: told });
+        } else {
+            let reply = self.late_reply(id, &approval, Decision::Deny, reply, true);
+            let _ = reply.send(result);
+        }
+        self.audit(&squad, approval.ticket, "equipe", "withdrawn", &approval.action);
+        self.publish(Event::ApprovalResolved { squad, approval: id, decision: Decision::Deny });
+    }
+
     /// Close `cards` as `by` (a member, or `equipe`), said from conversation
     /// `from`; `wake`: a member held up on one is set going again with the
     /// news, rather than hearing it at its next turn.
@@ -196,9 +237,9 @@ back and why.{still_waits} If something is still theirs to choose, ask anew — 
                     self.close_card(squad, card.id);
                 }
                 Source::Approval => {
-                    // Its member hears it in the answer, as it hears a no.
-                    let reason = if why.is_empty() { format!("{by} withdrew this card.") } else { format!("{by} withdrew this card: {why}.") };
-                    self.answer(card.id, Decision::Deny, &format!("{reason} Don't do it as asked; go on the way the PM or the person says."));
+                    // Its member hears it in the answer: withdrawn, not the person's no.
+                    let reason = if why.is_empty() { format!("{by} withdrew this card") } else { format!("{by} withdrew this card: {why}") };
+                    self.withdraw_approval(card.id, &reason, "withdrawn");
                 }
                 Source::Questions => {
                     self.drop_questions(squad, |s| s.id == card.id);
@@ -281,5 +322,28 @@ unless the PM or the person says so; go on without it.",
         reminded.extend(fresh.iter().map(|c| (c.kind, c.id)));
         crate::daemon_log!("equipe: {squad}: the PM said a card was withdrawn while {} still up; reminded", fresh.len());
         self.brief_pm(squad, wd::reminder(&fresh), None);
+    }
+}
+
+/// What a member hears of a card withdrawn before the person answered it.
+fn withdrawn_answer(why: &str) -> String {
+    let why = why.trim().trim_end_matches('.');
+    let because = if why.is_empty() { String::new() } else { format!(" ({why})") };
+    format!(
+        "Withdrawn{because}: the person never answered — they did not say no. Don't do it as asked, and never tell anyone \
+they declined it; go on the way the PM or the person says, or ask again if it is still needed."
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::withdrawn_answer;
+
+    #[test]
+    fn a_withdrawn_card_is_never_said_as_the_persons_no() {
+        let told = withdrawn_answer("that ticket's run ended before the person answered.");
+        assert!(told.starts_with("Withdrawn (that ticket's run ended before the person answered):"), "{told}");
+        assert!(told.contains("did not say no") && !told.contains("The person declined") && !told.contains("said no ("), "{told}");
+        assert!(withdrawn_answer("").starts_with("Withdrawn: "));
     }
 }

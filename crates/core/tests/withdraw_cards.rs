@@ -344,6 +344,7 @@ async fn the_pm_withdraws_an_ask_person_card_and_its_member_hears_it_in_the_answ
     assert!(handle.snapshot("acme").await.approvals.is_empty(), "gone from Needs you");
     let answered = tokio::time::timeout(Duration::from_secs(10), asking).await.expect("its call is answered").unwrap();
     assert!(answered.text.contains("pm withdrew this card: the site deploys from GitHub"), "{answered:?}");
+    assert!(answered.text.contains("did not say no") && !answered.text.contains("said no ("), "withdrawn, not the person's no: {answered:?}");
     handle.shutdown().await;
 }
 

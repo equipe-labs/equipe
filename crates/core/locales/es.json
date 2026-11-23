@@ -778,6 +778,7 @@
   "provider.why.network": "No se pudo conectar con {provider} en {url}. Comprueba la dirección y tu conexión y, si es un servidor en este ordenador, que esté en marcha.",
   "error.provider_not_connected": "{provider} no está conectado en esta máquina. Añádelo en Configuración › Plataformas de IA o elige otro modelo.",
   "error.provider_unauthorized": "{provider} rechazó la clave. Cámbiala en Configuración › Plataformas de IA.",
+  "error.gateway_refused": "El servicio de IA de equipe rechazó esta solicitud. Es un problema de equipe, no tuyo: no tienes que iniciar sesión en nada. Vuelve a intentarlo en unos minutos.",
   "error.provider_model_codex": "Los modelos de {provider} funcionan con el agente de la CLI de Codex, y esta conversación no está en él. Ponlo para un miembro de un squad o empieza uno con él.",
   "error.provider_model_claude": "Los modelos de {provider} funcionan con Claude Code, y esta conversación no está en él. Ponlo para un miembro de un squad o empieza uno con él.",
   "notice.provider_limits": "En {provider} este miembro trabaja con archivos, comandos y el tablero, pero aún no tiene subagentes ni búsqueda web, y no puede ver imágenes. Elige un modelo que pueda llamar herramientas.",

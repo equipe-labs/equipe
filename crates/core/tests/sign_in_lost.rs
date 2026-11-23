@@ -152,3 +152,63 @@ async fn a_lost_claude_sign_in_is_found_signed_in_again_from_a_screen_and_the_wo
     assert!(carried_on.contains("make the header calmer") && carried_on.contains("sign-in"), "{carried_on}");
     assert_eq!(asked.lines().count(), 2, "once failed, once carried on: {asked}");
 }
+
+/// A `claude` whose `auth status` keeps listing a sign-in while every turn
+/// fails on it, as an OAuth session revoked elsewhere does.
+fn stale_claude(dir: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let bin = dir.join("claude");
+    let script = format!(
+        r#"#!/bin/sh
+D='{dir}'
+if [ "$1 $2" = "auth status" ]; then echo '{{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}}'; exit 0; fi
+if [ "$1 $2" = "auth login" ]; then echo "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&state=s"; read code; exit 1; fi
+read -r line
+printf "%s\\n" "$line" >> "$D/asked"
+echo '{{"type":"result","subtype":"success","is_error":true,"result":"Failed to authenticate: OAuth session expired and could not be refreshed"}}'
+"#,
+        dir = dir.display()
+    );
+    std::fs::write(&bin, script).unwrap();
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    bin
+}
+
+#[tokio::test]
+async fn a_sign_in_its_tool_keeps_listing_is_retried_quietly_then_held_not_announced_as_signed_back_in() {
+    // SAFETY: set before this binary's only runtime reads them (the same values as the test above).
+    unsafe {
+        std::env::set_var("EQUIPE_LOGIN_SESSION", "inside");
+        std::env::set_var("EQUIPE_KEYCHAIN", "unlocked");
+    }
+    let (home, project, bin) = (scratch("home"), scratch("proj"), scratch("bin"));
+    let claude = stale_claude(&bin);
+    equipe_core::squads::create(&home, "acme", &project.canonicalize().unwrap()).unwrap();
+    let (core, mut events) = runtime::start(config(&home, &claude));
+    let spec = SessionSpec { engine: Some(Engine::Claude), model: None, access: Access::ReadOnly, cwd: project.clone(), role: Some("designer".into()), squad: Some("acme".into()) };
+    core.send(Command::Start { session: 7, spec });
+    next(&mut events, |e| matches!(e, Event::SessionStarted { .. })).await;
+
+    core.send(Command::Submit { session: 7, text: "make the header calmer".into(), about: None });
+    // Everything heard until the carried-on turn fails again and the stale sign-in is held.
+    let mut heard = Vec::new();
+    let wait = async {
+        loop {
+            let event = events.recv().await.expect("the runtime stopped");
+            let held = matches!(&event, Event::EngineAuth { engine: Engine::Claude, state: AuthState::SignedOut, stopped, .. } if stopped == &vec![7]);
+            heard.push(event);
+            if held {
+                return;
+            }
+        }
+    };
+    tokio::time::timeout(Duration::from_secs(20), wait).await.expect("the stale sign-in is held");
+    assert!(heard.iter().any(|e| matches!(e, Event::EngineAuth { state: AuthState::SignedIn { resumed: 1 }, .. })), "retried once: {heard:#?}");
+    // Its tool never said it was signed out: nobody is told it was signed back in.
+    let announced = heard.iter().filter(|e| matches!(e, Event::Notice { text, .. } if text.contains("signed in again"))).count();
+    assert_eq!(announced, 0, "{heard:#?}");
+    // Held: no third try within the next while — no loop.
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let asked = std::fs::read_to_string(bin.join("asked")).unwrap();
+    assert_eq!(asked.lines().count(), 2, "once failed, once retried, then held: {asked}");
+}

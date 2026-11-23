@@ -774,6 +774,7 @@
   "provider.why.network": "無法連線到 {url} 上的 {provider}。請檢查位址和網路連線；如果是這台電腦上的伺服器，請確認它正在執行。",
   "error.provider_not_connected": "這台機器上沒有連接 {provider}。請在 設定 › AI 平台 中新增，或選擇其他模型。",
   "error.provider_unauthorized": "{provider} 拒絕了這個金鑰。請在 設定 › AI 平台 中更換。",
+  "error.gateway_refused": "equipe 的 AI 服務拒絕了這個請求。問題在 equipe 這邊，不在你這邊——不需要登入任何東西。請幾分鐘後再試。",
   "error.provider_model_codex": "{provider} 的模型在 Codex CLI 的代理上執行，而這個對話不在它上面。請為小隊成員設定它，或用它啟動一個新成員。",
   "error.provider_model_claude": "{provider} 的模型在 Claude Code 上執行，而這個對話不在它上面。請為小隊成員設定它，或用它啟動一個新成員。",
   "notice.provider_limits": "在 {provider} 上，這個成員可以使用檔案、指令和看板，但暫時沒有子代理和網頁搜尋，也看不了圖片。請選擇能呼叫工具的模型。",

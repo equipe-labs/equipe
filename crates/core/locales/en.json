@@ -778,6 +778,7 @@
   "provider.why.network": "Couldn't reach {provider} at {url}. Check the address and your connection, and for a server on this computer, that it's running.",
   "error.provider_not_connected": "{provider} isn't connected on this machine. Add it in Settings › AI platforms, or pick another model.",
   "error.provider_unauthorized": "{provider} refused the key. Replace it in Settings › AI platforms.",
+  "error.gateway_refused": "equipe's AI service turned this request down. It's on equipe's side, not yours — there's nothing to sign in to. Try again in a few minutes.",
   "error.provider_model_codex": "Models from {provider} run on the Codex CLI's agent, which this conversation isn't on. Set it for a squad's member, or start one on it.",
   "error.provider_model_claude": "Models from {provider} run on Claude Code, which this conversation isn't on. Set it for a squad's member, or start one on it.",
   "notice.provider_limits": "On {provider} this member works with files, commands and the board, but has no subagents or web search yet, and can't look at images. Pick a model that can call tools.",

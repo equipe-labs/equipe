@@ -778,6 +778,7 @@
   "provider.why.network": "Impossible de joindre {provider} à {url}. Vérifiez l'adresse et votre connexion et, pour un serveur sur cet ordinateur, qu'il tourne.",
   "error.provider_not_connected": "{provider} n'est pas connecté sur cette machine. Ajoutez-le dans Réglages › Plateformes d'IA, ou choisissez un autre modèle.",
   "error.provider_unauthorized": "{provider} a refusé la clé. Remplacez-la dans Réglages › Plateformes d'IA.",
+  "error.gateway_refused": "Le service d'IA d'equipe a refusé cette demande. Le problème vient d'equipe, pas de vous : il n'y a rien à quoi vous connecter. Réessayez dans quelques minutes.",
   "error.provider_model_codex": "Les modèles de {provider} tournent avec l'agent de la CLI Codex, sur lequel cette conversation n'est pas. Réglez-le pour un membre d'une squad, ou démarrez-en un avec.",
   "error.provider_model_claude": "Les modèles de {provider} tournent avec Claude Code, sur lequel cette conversation n'est pas. Réglez-le pour un membre d'une squad, ou démarrez-en un avec.",
   "notice.provider_limits": "Sur {provider}, ce membre travaille avec les fichiers, les commandes et le tableau, mais n'a pas encore de sous-agents ni de recherche web, et ne peut pas regarder d'images. Choisissez un modèle qui sait appeler des outils.",

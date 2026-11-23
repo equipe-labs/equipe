@@ -3148,7 +3148,12 @@ async fn stopping_a_member_withdraws_what_it_was_waiting_for() {
     handle.send(Command::Interrupt { session: approval.session });
     let resolved = until(&mut events, |e| matches!(e, Event::ApprovalResolved { .. })).await;
     assert!(matches!(resolved.last(), Some(Event::ApprovalResolved { decision: Decision::Deny, .. })));
-    assert_eq!(serde_json::from_str::<serde_json::Value>(&waiting.await.unwrap().text).unwrap()["behavior"], "deny");
+    // Not allowed — but withdrawn, never the person's no: nobody may report a refusal they never gave.
+    let answer: serde_json::Value = serde_json::from_str(&waiting.await.unwrap().text).unwrap();
+    assert_eq!(answer["behavior"], "deny");
+    let message = answer["message"].as_str().unwrap_or_default();
+    assert!(message.starts_with("Withdrawn") && message.contains("did not say no"), "{message}");
+    assert!(!resolved.iter().any(|e| matches!(e, Event::Notice { text, .. } if text.contains("declined") || text.contains("Declined"))), "{resolved:#?}");
     assert!(handle.snapshot("acme").await.approvals.is_empty());
     handle.shutdown().await;
 }

@@ -2318,7 +2318,8 @@ impl Runtime {
                 Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ConversationTitle(done) => self.on_conversation_title(done),
-                Internal::ApprovalTimedOut(id) => self.answer(id, Decision::Deny, "Nobody answered in time."),
+                // Nobody answered: not a no — taken away as unanswered, and asked again if still needed.
+                Internal::ApprovalTimedOut(id) => self.withdraw_approval(id, "nobody answered it in time", "timed out"),
                 Internal::LaterAnswered { squad, approval, said } => self.later_answered(&squad, *approval, said).await,
                 Internal::ReleaseAsk(id) => self.release_ask(id),
                 Internal::WordsDue(id) => self.words_due(id).await,
@@ -2432,6 +2433,8 @@ impl Runtime {
                     // Signed in (or not): looked at again, and what it stopped carried on.
                     if let Some(fix) = self.auth.get_mut(&engine) {
                         fix.carried_on_at = None;
+                        // The person signed in through equipe: a sign-in found next is theirs.
+                        fix.seen_out = true;
                         self.check_engine(engine);
                     }
                     // Maybe another account now: its plan and usage read afresh.
@@ -3824,13 +3827,22 @@ impl Runtime {
     /// asked) to carry on once it is signed in again, and why looked at.
     fn sign_in_lost(&mut self, engine: Engine, session: SessionId, prompt: String) {
         let member = self.sessions.get(&session).filter(|s| s.is_member_itself()).and_then(session_member);
+        let now = now_secs();
         let fix = self.auth.entry(engine).or_default();
+        // Lost again soon after its turns were carried on: the sign-in its tool lists doesn't
+        // work, and the next carry-on waits longer. Otherwise a new sign-out begins.
+        if fix.stopped.is_empty() {
+            match fix.carried_on_at {
+                Some(at) if now.saturating_sub(at) < CARRIED_ON_FOR => fix.failed_carries += 1,
+                _ => (fix.failed_carries, fix.told_carried_on, fix.seen_out) = (0, false, false),
+            }
+        }
         match fix.stopped.iter_mut().find(|s| s.session == session) {
             Some(stopped) if !stopped.prompts.contains(&prompt) => stopped.prompts.push(prompt),
             Some(_) => {}
-            None => fix.stopped.push(crate::engine_auth::Stopped { engine, session, member, prompts: vec![prompt], at: now_secs() }),
+            None => fix.stopped.push(crate::engine_auth::Stopped { engine, session, member, prompts: vec![prompt], at: now }),
         }
-        fix.since.get_or_insert(now_secs());
+        fix.since.get_or_insert(now);
         self.save_stopped();
         self.check_engine(engine);
     }
@@ -3869,18 +3881,32 @@ impl Runtime {
         if fix.state == AuthState::Moving {
             return;
         }
+        // Its own tool said it isn't signed in: a sign-in that comes next is a real one.
+        if matches!(state, AuthState::SignedOut | AuthState::KeychainLocked) {
+            fix.seen_out = true;
+        }
+        // A sign-in that went away and came back carries on at once; one its tool kept
+        // listing while turns failed on it waits, longer each time ([`carry_on_hold`]).
+        let held = !fix.seen_out && carry_on_held(fix.carried_on_at, fix.failed_carries, now);
         let state = match state {
-            AuthState::SignedIn { .. } if fix.carried_on_at.is_some_and(|at| now.saturating_sub(at) < CARRIED_ON_FOR) && !fix.stopped.is_empty() => AuthState::SignedOut,
+            AuthState::SignedIn { .. } if held && !fix.stopped.is_empty() => AuthState::SignedOut,
             state => state,
         };
         if let AuthState::SignedIn { .. } = state {
             let stopped = std::mem::take(&mut fix.stopped);
             fix.carried_on_at = (!stopped.is_empty()).then_some(now);
             fix.since = None;
-            fix.auto_started = false;
+            // Members hear "signed back in" only when it was signed out and is signed in now —
+            // once a sign-out; a retry on a sign-in its tool kept listing carries on quietly.
+            let tell = fix.seen_out && !fix.told_carried_on && !stopped.is_empty();
+            if fix.seen_out {
+                fix.auto_started = false;
+            }
+            fix.told_carried_on |= tell;
+            fix.seen_out = false;
             let mut resumed = 0;
             for stopped in stopped {
-                if self.carry_on_signed_in(&stopped).await {
+                if self.carry_on_signed_in(&stopped, tell).await {
                     resumed += 1;
                 }
             }
@@ -3920,10 +3946,10 @@ impl Runtime {
         }
     }
 
-    /// One stopped turn carried on, as its member is told why it stopped:
-    /// its own session, or the member's as this daemon knows it. Not when
-    /// it works again already, or is gone.
-    async fn carry_on_signed_in(&mut self, stopped: &crate::engine_auth::Stopped) -> bool {
+    /// One stopped turn carried on — its own session, or the member's as this
+    /// daemon knows it; `tell`: its conversation hears it was signed back in.
+    /// Not when it works again already, or is gone.
+    async fn carry_on_signed_in(&mut self, stopped: &crate::engine_auth::Stopped, tell: bool) -> bool {
         let found = self
             .sessions
             .get(&stopped.session)
@@ -3933,8 +3959,10 @@ impl Runtime {
         let Some(id) = found.filter(|id| self.sessions.get(id).is_some_and(|s| !s.is_working())) else {
             return false;
         };
-        let text = say!(self, "news.sign_in_carried_on", engine = engine_name(stopped.engine));
-        self.publish(Event::Notice { undo: None, session: id, text });
+        if tell {
+            let text = say!(self, "news.sign_in_carried_on", engine = engine_name(stopped.engine));
+            self.publish(Event::Notice { undo: None, session: id, text });
+        }
         self.set_going(id, crate::engine_auth::carry_on_prompt(stopped.engine, &stopped.prompts)).await;
         true
     }
@@ -4579,13 +4607,14 @@ runbooks and reports live there, and work across the projects or on running them
 
     /// Run `id` put its ticket down: it closes. What was left for it and
     /// not read goes to its member's conversation; what it asked the person
-    /// and is still unanswered is answered no — no other run takes it.
+    /// and is still unanswered is withdrawn — never recorded as the person's
+    /// no, which they never gave — and no other run takes it.
     fn close_run(&mut self, id: SessionId) {
         let Some(member) = self.sessions.get(&id).filter(|s| s.work.is_none()).and_then(|s| s.run_of) else { return };
         self.stop_turn(id);
         let asked: Vec<u64> = self.pending.iter().filter(|(_, p)| p.approval.session == id).map(|(&a, _)| a).collect();
         for approval in asked {
-            self.answer(approval, Decision::Deny, "That ticket's run ended.");
+            self.withdraw_approval(approval, "that ticket's run ended before the person answered", "withdrawn");
         }
         let (memos, threads) = self.sessions.get_mut(&id).map(|s| (std::mem::take(&mut s.queued), std::mem::take(&mut s.memo_threads))).unwrap_or_default();
         for (i, text) in memos.into_iter().enumerate() {
@@ -4989,6 +5018,9 @@ runbooks and reports live there, and work across the projects or on running them
                             self.plan_types.insert(Engine::Claude, plan);
                         }
                     }
+                    // On equipe credits (or another endpoint set for the machine) Claude Code runs on
+                    // that endpoint's key: no Claude sign-in is needed, so none is asked for.
+                    Ok(Some(_)) if on_claude_gateway(&[]) => {}
                     Ok(Some(_)) => return fail(self, say!(self, "error.claude_signed_out"), Some("equipe login claude")),
                     Ok(None) => {
                         return fail(
@@ -6746,6 +6778,7 @@ runbooks and reports live there, and work across the projects or on running them
                     self.pm_woken.remove(&id),
                 );
                 let mut effort = effort_of(session);
+                let on_gateway = on_provider.is_none() && on_claude_gateway(&env);
                 if cost_levers::credits_profile() {
                     if effort.is_none() {
                         effort = cost_levers::lane_effort(session.member.as_ref().map_or("", |m| m.role.as_str()), kind).map(str::to_owned);
@@ -6892,11 +6925,13 @@ runbooks and reports live there, and work across the projects or on running them
                     drop(bound);
                     let claude_session = outcome.as_ref().ok().and_then(|turn| turn.session_id.clone());
                     // On a provider's endpoint a refused key is the provider's, not the person's Claude sign-in.
+                    // On equipe credits the gateway's key is equipe's: a refusal is the gateway's, never a Claude sign-out.
                     let result = outcome.map(|turn| turn.result).map_err(|err| match &on_provider {
                         Some(provider) => provider_claude_failure(err, provider, lang),
+                        None if on_gateway => gateway_claude_failure(err, lang),
                         None => claude_failure(err),
                     });
-                    let lost = on_provider.is_none() && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Claude));
+                    let lost = on_provider.is_none() && !on_gateway && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Claude));
                     let reply = finish_turn(&emit, id, result, streamed);
                     // After the error is told: the screens hear what it was, then why.
                     if lost {
@@ -7048,7 +7083,7 @@ runbooks and reports live there, and work across the projects or on running them
         let asked: Vec<u64> = self.pending.iter().filter(|(_, p)| p.approval.session == id).map(|(&a, _)| a).collect();
         for approval in asked {
             self.approvals_turn.remove(&approval);
-            self.answer(approval, Decision::Deny, "The turn was stopped.");
+            self.withdraw_approval(approval, "the turn that asked was stopped", "withdrawn");
         }
         true
     }
@@ -10049,7 +10084,7 @@ renames still needs the person — equipe holds that one at landing by itself.",
         let Pending { squad, approval, input, reply } = pending;
         // A request its member didn't wait for: the answer goes to it as a message, below.
         let later = approval.ask.as_ref().is_some_and(|a| a.later);
-        let reply = if later { reply } else { self.late_reply(approval_id, &approval, decision, reply) };
+        let reply = if later { reply } else { self.late_reply(approval_id, &approval, decision, reply, false) };
         // How long it waited on the person, for the week's retro.
         if let Some(asked) = self.approvals_asked.remove(&approval_id) {
             let outcome = match decision {
@@ -10150,7 +10185,8 @@ renames still needs the person — equipe holds that one at landing by itself.",
     /// nothing to hold it until its lease ran out. So it goes to the member as
     /// a turn of its own (or after the one running now), with what it asked;
     /// otherwise to `reply`, the call still waiting for it.
-    fn late_reply(&mut self, id: u64, approval: &Approval, decision: Decision, reply: oneshot::Sender<ToolResult>) -> oneshot::Sender<ToolResult> {
+    /// `withdrawn`: nobody answered it (`withdraw_approval`); what it is told is said in words.
+    pub(super) fn late_reply(&mut self, id: u64, approval: &Approval, decision: Decision, reply: oneshot::Sender<ToolResult>, withdrawn: bool) -> oneshot::Sender<ToolResult> {
         let Some((asker, began)) = self.approvals_turn.remove(&id) else { return reply };
         let Some(s) = self.sessions.get(&asker) else { return reply };
         if s.member.is_none() || (s.is_working() && s.turn_began == Some(began)) {
@@ -10162,7 +10198,7 @@ renames still needs the person — equipe holds that one at landing by itself.",
         crate::daemon_log!("equipe: {who}'s request{at} was answered after the turn that asked had ended: it goes to it as a turn of its own");
         let action = clip(approval.action.lines().next().unwrap_or_default(), 300);
         // A question the member put, or a sign-in: its answer is in words already.
-        let in_words = approval.tool == CONFIRM || approval.tool == SIGN_IN_TOOL;
+        let in_words = withdrawn || approval.tool == CONFIRM || approval.tool == SIGN_IN_TOOL;
         let (tx, rx) = oneshot::channel::<ToolResult>();
         let internal = self.internal.clone();
         tokio::spawn(async move {
@@ -13701,11 +13737,30 @@ struct AuthFix {
     /// once, for every member and lane it stopped; again only when the
     /// person asks, or after it signed in and was lost again.
     auto_started: bool,
+    /// Carry-ons this sign-out that lost the sign-in again within
+    /// [`CARRIED_ON_FOR`]: each makes the next wait longer ([`carry_on_hold`]).
+    failed_carries: u32,
+    /// Its own tool said it isn't signed in since turns were last carried on
+    /// (or the person signed in through equipe): a sign-in found now is real.
+    seen_out: bool,
+    /// Members were told it was signed back in, this sign-out.
+    told_carried_on: bool,
 }
 
 impl Default for AuthFix {
     fn default() -> Self {
-        Self { state: AuthState::Checking, detail: String::new(), stopped: Vec::new(), checking: false, carried_on_at: None, since: None, auto_started: false }
+        Self {
+            state: AuthState::Checking,
+            detail: String::new(),
+            stopped: Vec::new(),
+            checking: false,
+            carried_on_at: None,
+            since: None,
+            auto_started: false,
+            failed_carries: 0,
+            seen_out: false,
+            told_carried_on: false,
+        }
     }
 }
 
@@ -13721,6 +13776,22 @@ const AUTH_RECHECK: Duration = Duration::from_secs(15);
 const AUTH_WATCH: Duration = Duration::from_secs(2 * 60 * 60);
 /// Turns carried on that fail again within this long (seconds) mean the sign-in doesn't work.
 const CARRIED_ON_FOR: u64 = 15 * 60;
+/// Carry-ons that fail again this many times in one sign-out: no more by themselves.
+const CARRY_ON_TRIES: u32 = 3;
+
+/// How long after a carry-on that failed `failed` times running stopped turns
+/// wait before the next: [`CARRIED_ON_FOR`], doubling with each failure;
+/// `None` once [`CARRY_ON_TRIES`] have failed — only the person acting
+/// (signing in, asking for a look) carries them on then.
+fn carry_on_hold(failed: u32) -> Option<u64> {
+    (failed < CARRY_ON_TRIES).then(|| CARRIED_ON_FOR << failed.min(8))
+}
+
+/// Whether stopped turns wait still, though the engine's tool lists a sign-in.
+fn carry_on_held(carried_on_at: Option<u64>, failed: u32, now: u64) -> bool {
+    let Some(at) = carried_on_at else { return false };
+    carry_on_hold(failed).is_none_or(|hold| now.saturating_sub(at) < hold)
+}
 
 /// An engine's name, as the person knows it.
 fn engine_name(engine: Engine) -> &'static str {
@@ -13767,6 +13838,45 @@ fn provider_claude_failure(err: equipe_providers::Error, provider: &str, lang: c
         return (crate::i18n::core(lang).fill("error.provider_unauthorized", &[("provider", provider.to_owned())]), None);
     }
     (claude_failure(err).0, None)
+}
+
+/// Whether this machine's Claude Code talks to an endpoint other than
+/// Claude's own sign-in: equipe credits (`EQUIPE_AI=credits`, its calls go
+/// through the platform's gateway) or an `ANTHROPIC_BASE_URL` set for the
+/// daemon or this turn that isn't Anthropic's. There a 401/403 is that
+/// endpoint refusing the call, and no `claude auth login` mends it.
+fn on_claude_gateway(env: &[(String, String)]) -> bool {
+    let base = env.iter().rev().find(|(k, _)| k == "ANTHROPIC_BASE_URL").map(|(_, v)| v.clone()).or_else(|| std::env::var("ANTHROPIC_BASE_URL").ok());
+    gateway_by(cost_levers::credits_profile(), base.as_deref())
+}
+
+fn gateway_by(credits: bool, base_url: Option<&str>) -> bool {
+    let foreign = base_url.map(str::trim).filter(|u| !u.is_empty()).is_some_and(|u| {
+        let host = u.split("://").nth(1).unwrap_or(u).split(['/', ':']).next().unwrap_or_default().to_ascii_lowercase();
+        host != "api.anthropic.com"
+    });
+    credits || foreign
+}
+
+/// A Claude Code turn's failure on equipe's gateway (or another endpoint set
+/// for the whole machine): a refused call (401/403) is said as the service's
+/// refusal, with no hint — so no sign-in watch starts, and nobody is told to
+/// sign Claude in on a Mac that isn't there.
+fn gateway_claude_failure(err: equipe_providers::Error, lang: crate::i18n::Lang) -> (String, Option<&'static str>) {
+    let message = err.to_string();
+    let lower = message.to_ascii_lowercase();
+    let refused = ["401", "403", "unauthorized", "forbidden", "invalid x-api-key", "invalid api key", "authentication_error", "permission_error", "failed to authenticate", "oauth"]
+        .iter()
+        .any(|w| lower.contains(w));
+    if refused {
+        crate::daemon_log!("equipe: the AI gateway refused a Claude Code call: {}", clip(&message, 300));
+        return (crate::i18n::core(lang).get("error.gateway_refused").to_owned(), None);
+    }
+    match claude_failure(err) {
+        // Nothing to sign in to here: whatever the error says of a login is told as it is, without a hint.
+        (message, Some(hint)) if crate::engine_auth::lost_by(Some(hint)).is_some() => (message, None),
+        other => other,
+    }
 }
 
 /// Whether an engine's error says it can't run the model asked for (Claude
@@ -14025,6 +14135,41 @@ mod tests {
         let line = tidy_line(&[(12, "Dark mode".into(), 9 * 86400), (15, "Old CSV export".into(), 21 * 86400)]).unwrap();
         assert!(line.contains("T-12 Dark mode (9 days)") && line.contains("T-15 Old CSV export (21 days)"), "{line}");
         assert!(line.contains("propose") && line.contains("Don't cancel"), "{line}");
+    }
+
+    #[test]
+    fn on_equipe_credits_a_refused_call_is_the_gateways_not_a_claude_sign_out() {
+        assert!(gateway_by(true, None), "EQUIPE_AI=credits");
+        assert!(gateway_by(false, Some("https://gateway.equipe.im/anthropic")), "a gateway base URL");
+        assert!(!gateway_by(false, Some("https://api.anthropic.com")), "Anthropic's own API is no gateway");
+        assert!(!gateway_by(false, Some("  ")) && !gateway_by(false, None), "nothing set: the person's own Claude sign-in");
+        for message in [
+            "Failed to authenticate. API Error: 403 {\"type\":\"error\",\"error\":{\"type\":\"permission_error\"}}",
+            "API Error: 401 Unauthorized",
+            "Failed to authenticate: OAuth session expired and could not be refreshed",
+        ] {
+            let err = equipe_providers::Error::Backend { message: message.into(), code: None };
+            let (said, next) = gateway_claude_failure(err, crate::i18n::Lang::En);
+            assert_eq!(next, None, "no hint, so no sign-in watch: {message}");
+            assert_eq!(crate::engine_auth::lost_by(next), None);
+            assert_eq!(said, crate::i18n::core(crate::i18n::Lang::En).get("error.gateway_refused"));
+            assert!(!said.contains("Mac") && !said.contains("Terminal") && !said.contains("claude auth"), "{said}");
+        }
+        // Anything else is told as it is.
+        let err = equipe_providers::Error::Backend { message: "API Error: 529 Overloaded".into(), code: None };
+        assert_eq!(gateway_claude_failure(err, crate::i18n::Lang::En), ("API Error: 529 Overloaded".to_owned(), None));
+    }
+
+    #[test]
+    fn carry_ons_that_keep_failing_wait_longer_then_wait_for_the_person() {
+        assert!(!carry_on_held(None, 0, 1_000), "never carried on: nothing holds it");
+        assert_eq!(carry_on_hold(1), Some(2 * CARRIED_ON_FOR));
+        assert_eq!(carry_on_hold(2), Some(4 * CARRIED_ON_FOR));
+        assert_eq!(carry_on_hold(CARRY_ON_TRIES), None, "given up: only the person carries them on");
+        let at = 10_000;
+        assert!(carry_on_held(Some(at), 1, at + CARRIED_ON_FOR), "failed once: a 15-minute loop no more");
+        assert!(!carry_on_held(Some(at), 1, at + 2 * CARRIED_ON_FOR));
+        assert!(carry_on_held(Some(at), CARRY_ON_TRIES, at + 365 * 24 * 3600));
     }
 
     #[test]

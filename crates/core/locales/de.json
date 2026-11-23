@@ -778,6 +778,7 @@
   "provider.why.network": "{provider} unter {url} war nicht erreichbar. Prüfe die Adresse und deine Verbindung und bei einem Server auf diesem Computer, ob er läuft.",
   "error.provider_not_connected": "{provider} ist auf diesem Rechner nicht verbunden. Füge ihn unter Einstellungen › KI-Plattformen hinzu oder wähle ein anderes Modell.",
   "error.provider_unauthorized": "{provider} hat den Schlüssel abgelehnt. Ersetze ihn unter Einstellungen › KI-Plattformen.",
+  "error.gateway_refused": "Der KI-Dienst von equipe hat diese Anfrage abgelehnt. Das liegt bei equipe, nicht bei dir — du musst dich nirgends anmelden. Versuch es in ein paar Minuten noch einmal.",
   "error.provider_model_codex": "Modelle von {provider} laufen mit dem Agenten der Codex-CLI, und auf dem läuft dieses Gespräch nicht. Stell es für ein Mitglied einer Squad ein oder starte eines damit.",
   "error.provider_model_claude": "Modelle von {provider} laufen mit Claude Code, und darauf läuft dieses Gespräch nicht. Stell es für ein Mitglied einer Squad ein oder starte eines damit.",
   "notice.provider_limits": "Auf {provider} arbeitet dieses Mitglied mit Dateien, Befehlen und dem Board, hat aber noch keine Subagenten und keine Websuche und kann keine Bilder ansehen. Wähle ein Modell, das Tools aufrufen kann.",

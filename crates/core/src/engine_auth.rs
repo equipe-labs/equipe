@@ -36,8 +36,14 @@ use tokio::process::Command;
 use tokio::sync::mpsc;
 
 /// The hint a Claude turn that lost its sign-in leaves ([`equipe_protocol::Event::Error`]'s
-/// `next`): what an older screen shows as it is.
+/// `next`): what an older screen shows as it is. On a Mac the sign-in lives in
+/// the login Keychain, which a session over SSH can't reach.
+#[cfg(target_os = "macos")]
 pub const CLAUDE_HINT: &str = "claude auth login — in Terminal on this Mac's own screen (Screen Sharing is fine), not over SSH";
+/// Elsewhere (a Linux or Windows machine, a hosted team's) there is no Mac,
+/// Terminal or Keychain to point at: only the command, on the machine itself.
+#[cfg(not(target_os = "macos"))]
+pub const CLAUDE_HINT: &str = "claude auth login — on the machine equipe runs on";
 /// The one a Codex turn leaves.
 pub const CODEX_HINT: &str = "equipe login codex";
 
@@ -423,6 +429,17 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_claude_hint_names_a_mac_only_on_a_mac() {
+        assert!(CLAUDE_HINT.starts_with("claude auth login"));
+        let mac_words = ["Mac", "Terminal", "SSH", "Screen Sharing"];
+        if cfg!(target_os = "macos") {
+            assert!(CLAUDE_HINT.contains("Mac"), "{CLAUDE_HINT}");
+        } else {
+            assert!(!mac_words.iter().any(|w| CLAUDE_HINT.contains(w)), "a hosted team's Linux machine has no Mac: {CLAUDE_HINT}");
+        }
+    }
 
     #[test]
     fn a_failed_turns_hint_names_the_engine_whose_sign_in_was_lost() {

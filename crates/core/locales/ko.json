@@ -774,6 +774,7 @@
   "provider.why.network": "{url}의 {provider}에 연결하지 못했어요. 주소와 연결 상태를 확인하고, 이 컴퓨터의 서버라면 실행 중인지 확인해 주세요.",
   "error.provider_not_connected": "이 컴퓨터에 {provider}가 연결되어 있지 않아요. 설정 › AI 플랫폼에서 추가하거나 다른 모델을 골라 주세요.",
   "error.provider_unauthorized": "{provider}가 키를 거부했어요. 설정 › AI 플랫폼에서 키를 바꿔 주세요.",
+  "error.gateway_refused": "equipe의 AI 서비스가 이 요청을 받아 주지 않았어요. equipe 쪽 문제라 따로 로그인할 건 없어요. 몇 분 뒤에 다시 시도해 주세요.",
   "error.provider_model_codex": "{provider}의 모델은 Codex CLI 에이전트에서 실행되는데, 이 대화는 그 위에 있지 않아요. 스쿼드 멤버에게 설정하거나 그 모델로 새 멤버를 시작해 주세요.",
   "error.provider_model_claude": "{provider}의 모델은 Claude Code에서 실행되는데, 이 대화는 그 위에 있지 않아요. 스쿼드 멤버에게 설정하거나 그 모델로 새 멤버를 시작해 주세요.",
   "notice.provider_limits": "{provider}에서 이 멤버는 파일, 명령, 보드로 일하지만 아직 서브에이전트와 웹 검색이 없고 이미지를 볼 수 없어요. 도구를 호출할 수 있는 모델을 골라 주세요.",

@@ -774,6 +774,7 @@
   "provider.why.network": "{url} の {provider} に接続できませんでした。アドレスと接続を確かめてください。このコンピューター上のサーバーなら、動いているかも確かめてください。",
   "error.provider_not_connected": "このマシンには {provider} が接続されていません。設定 › AI プラットフォームで追加するか、別のモデルを選んでください。",
   "error.provider_unauthorized": "{provider} がキーを拒否しました。設定 › AI プラットフォームでキーを差し替えてください。",
+  "error.gateway_refused": "equipe の AI サービスがこのリクエストを受け付けませんでした。原因は equipe 側にあり、あなたがサインインする必要はありません。数分後にもう一度お試しください。",
   "error.provider_model_codex": "{provider} のモデルは Codex CLI のエージェントで動きますが、この会話はその上にありません。スクワッドのメンバーに設定するか、そのモデルで新しいメンバーを始めてください。",
   "error.provider_model_claude": "{provider} のモデルは Claude Code で動きますが、この会話はその上にありません。スクワッドのメンバーに設定するか、そのモデルで新しいメンバーを始めてください。",
   "notice.provider_limits": "{provider} ではこのメンバーはファイル、コマンド、ボードで作業しますが、まだサブエージェントとウェブ検索がなく、画像を見ることもできません。ツールを呼び出せるモデルを選んでください。",
