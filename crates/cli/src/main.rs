@@ -1490,12 +1490,21 @@ fn show_whereabouts(p: &ui::Painter, w: &daemon::Whereabouts) {
 /// `equipe mcp …`: the squad's outside MCP servers.
 #[derive(Subcommand)]
 enum McpAction {
-    /// Connect a server: a catalog name (`mobbin`), or a name and its https address
+    /// Connect a server: a catalog name (`mobbin`), a name and its https
+    /// address, or a local server with --stdio -- <command> [args]
     Add {
         /// Its name (`mobbin`, or one of your own: letters, digits, `-`, `_`)
         name: String,
         /// Its https address (left out for a catalog service)
         url: Option<String>,
+        /// A local server: a command on this machine speaking MCP over stdio,
+        /// given after `--`. Each member's engine runs it in the member's own
+        /// environment (equipe adds no credential to it)
+        #[arg(long, requires = "command", conflicts_with_all = ["url", "sse", "engine_signin"])]
+        stdio: bool,
+        /// The local server's command and its arguments (with --stdio)
+        #[arg(last = true, requires = "stdio")]
+        command: Vec<String>,
         /// The roles whose members get it, comma-separated (default: the catalog's, else every member)
         #[arg(long, value_delimiter = ',')]
         roles: Vec<String>,
@@ -1568,6 +1577,7 @@ async fn mcp_action(action: McpAction) -> Result<(), Failure> {
     };
     let socket = daemon::socket();
     let lines = match action {
+        McpAction::Add { name, roles, stdio: true, command, .. } => mcp_servers::add_stdio(&home, &socket, &squad, &name, &command, &roles).await,
         McpAction::Add { name, url, roles, sse, engine_signin, .. } => mcp_servers::add(&home, &socket, &squad, &name, url.as_deref(), &roles, sse, engine_signin).await,
         McpAction::List { no_check, .. } => mcp_servers::list(&home, &socket, &squad, !no_check).await,
         McpAction::Proxy { .. } => Ok(Vec::new()),
@@ -2355,6 +2365,22 @@ mod tests {
         assert!(purge(&["equipe", "squad", "delete", "acme", "--purge"]), "for good, now");
         assert!(!purge(&["equipe", "squad", "delete", "acme"]), "kept for a week unless asked");
         assert_eq!(parsed(&["equipe", "squad", "new", "acme"]).map(|p| p.1), Some(false), "the other words as ever");
+    }
+
+    #[test]
+    fn mcp_add_takes_a_local_server_after_two_dashes() {
+        let parsed = |args: &[&str]| match Cli::try_parse_from(args).map(|c| c.command) {
+            Ok(Some(Command::Mcp { action: Some(McpAction::Add { name, url, stdio, command, squad, .. }), .. })) => Some((name, url, stdio, command, squad)),
+            _ => None,
+        };
+        // What the cloud's setup-team.sh runs.
+        let local = parsed(&["equipe", "mcp", "add", "equipe-platform", "--squad", "acme", "--stdio", "--", "node", "/home/x/server.mjs", "--flag"]).unwrap();
+        assert_eq!(local, ("equipe-platform".to_owned(), None, true, vec!["node".to_owned(), "/home/x/server.mjs".to_owned(), "--flag".to_owned()], Some("acme".to_owned())));
+        assert!(parsed(&["equipe", "mcp", "add", "x", "--stdio"]).is_none(), "a command is needed");
+        assert!(parsed(&["equipe", "mcp", "add", "x", "--", "node"]).is_none(), "a command only with --stdio");
+        assert!(parsed(&["equipe", "mcp", "add", "x", "https://x.example.com/mcp", "--stdio", "--", "node"]).is_none(), "an address or a command, not both");
+        let remote = parsed(&["equipe", "mcp", "add", "docs", "https://docs.example.com/mcp"]).unwrap();
+        assert_eq!((remote.1.as_deref(), remote.2, remote.3.is_empty()), (Some("https://docs.example.com/mcp"), false, true));
     }
 
     #[test]

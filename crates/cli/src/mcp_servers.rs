@@ -89,6 +89,17 @@ pub async fn add(home: &Path, socket: &Path, squad: &str, name: &str, url: Optio
     if engine_signin && !matches!(server.auth, McpAuth::Key { .. }) {
         server.auth = McpAuth::Engine;
     }
+    add_server(home, socket, squad, server).await
+}
+
+/// `equipe mcp add <name> --stdio [--roles a,b] -- <command> [args]`: a local server.
+pub async fn add_stdio(home: &Path, socket: &Path, squad: &str, name: &str, command: &[String], roles: &[String]) -> Result<Vec<String>, String> {
+    let server = sm::stdio_server(name, command, (!roles.is_empty()).then_some(roles))?;
+    add_server(home, socket, squad, server).await
+}
+
+/// `server` kept for the squad — through the daemon (which looks at it) when it runs, else in the journal.
+async fn add_server(home: &Path, socket: &Path, squad: &str, server: McpServer) -> Result<Vec<String>, String> {
     let wanted = server.clone();
     let since = now_secs();
     let command = Command::AddMcpServer { squad: squad.to_owned(), server: server.clone(), sign_in: false };
@@ -102,7 +113,7 @@ pub async fn add(home: &Path, socket: &Path, squad: &str, name: &str, url: Optio
         }
     }
     let roles = if server.roles.is_empty() { t!("mcp.everyone").to_owned() } else { server.roles.join(", ") };
-    let mut lines = vec![t!("mcp.added", name = sm::label(&server), url = server.url, roles = roles)];
+    let mut lines = vec![t!("mcp.added", name = sm::label(&server), url = server.place(), roles = roles)];
     if let Some(service) = sm::service_of(&server).and_then(|s| s.mcp) {
         lines.push(t!("mcp.plan_note", url = service.sign_up_url));
     }
@@ -110,10 +121,12 @@ pub async fn add(home: &Path, socket: &Path, squad: &str, name: &str, url: Optio
         // Where it stands, as the app shows it — and what to do next only when something is left.
         Some(status) => {
             lines.push(status_words(&server, &status));
-            if status.overall() != McpState::Connected {
+            if status.overall() != McpState::Connected && !server.is_local() {
                 lines.push(next_step(&server));
             }
         }
+        // A local server needs nothing more from the person.
+        None if server.is_local() => {}
         None => lines.push(next_step(&server)),
     }
     Ok(lines)
@@ -132,7 +145,7 @@ fn next_step(server: &McpServer) -> String {
 /// One line for where a server stands: one word for all engines when equipe
 /// connects it, each engine's for the engine-signed fallback.
 fn status_words(server: &McpServer, status: &McpServerStatus) -> String {
-    if server.auth.proxied() {
+    if server.auth.one_for_all() {
         let first = status.engines.first();
         return state_words(status.overall(), first.and_then(|e| e.detail.as_deref()), &server.name);
     }
@@ -165,7 +178,7 @@ fn lines_of(servers: &[McpServer], mut stands: impl FnMut(&McpServer) -> Option<
     for server in servers {
         let roles = if server.roles.is_empty() { t!("mcp.everyone").to_owned() } else { server.roles.join(", ") };
         let off = if server.enabled { String::new() } else { format!(" · {}", t!("mcp.off")) };
-        lines.push(format!("{}  {}  ({roles}){off}", server.name, server.url));
+        lines.push(format!("{}  {}  ({roles}){off}", server.name, server.place()));
         if server.enabled
             && let Some(words) = stands(server)
         {
@@ -186,7 +199,7 @@ async fn list_here(home: &Path, squad: &str, check: bool, engines: &[(Engine, St
         let line = match &server.auth {
             McpAuth::Key { secret, .. } if kept.iter().any(|k| k.name == *secret) => t!("mcp.key_saved").to_owned(),
             McpAuth::Key { .. } => next_step(server),
-            McpAuth::Oauth => t!("mcp.daemon_off").to_owned(),
+            McpAuth::Oauth | McpAuth::Local => t!("mcp.daemon_off").to_owned(),
             McpAuth::Engine => {
                 let mut each = Vec::new();
                 for (engine, binary) in engines.iter().filter(|(e, _)| server.transport.on(*e)) {
@@ -242,8 +255,8 @@ async fn remove_with(home: &Path, socket: &Path, squad: &str, name: &str, engine
         None => {
             let kept: Vec<McpServer> = servers.into_iter().filter(|s| s.name != name).collect();
             journal(home, squad)?.set_mcp_servers(&kept).map_err(|err| format!("Couldn't keep it: {err}"))?;
-            let shared = equipe_core::squads::list(home).iter().filter(|s| s.name != squad).any(|s| journal(home, &s.name).is_ok_and(|j| j.mcp_servers().iter().any(|o| o.name == gone.name && o.url == gone.url)));
-            if !shared {
+            let shared = equipe_core::squads::list(home).iter().filter(|s| s.name != squad).any(|s| journal(home, &s.name).is_ok_and(|j| j.mcp_servers().iter().any(|o| o.same_place(&gone))));
+            if !shared && !gone.is_local() {
                 for (engine, binary) in engines {
                     sm::forget(*engine, binary, &sm::signin_dir(home, squad), &gone).await;
                 }
@@ -263,6 +276,7 @@ pub async fn login(home: &Path, socket: &Path, squad: &str, name: &str, engine: 
         McpAuth::Key { .. } => Err(next_step(&server)),
         McpAuth::Oauth => login_through_daemon(socket, squad, &server).await,
         McpAuth::Engine => login_with_engine(home, socket, squad, &server, engine).await,
+        McpAuth::Local => Ok(t!("mcp.local_no_login", name = server.name)),
     }
 }
 
@@ -511,6 +525,30 @@ mod tests {
         remove_with(&home, &socket, "acme", "docs", &[]).await.unwrap();
         assert_eq!(journal(&home, "acme").unwrap().mcp_servers().len(), 1);
         assert!(remove_with(&home, &socket, "acme", "docs", &[]).await.is_err());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[tokio::test]
+    async fn without_a_daemon_a_local_server_is_kept_by_its_command_and_needs_no_sign_in() {
+        let home = std::env::temp_dir().join(format!("equipe-cli-mcp-stdio-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(equipe_core::journal::squad_dir(&home, "acme")).unwrap();
+        let socket = home.join("no-daemon.sock");
+        let command = ["node".to_owned(), "/home/x/platform-mcp/server.mjs".to_owned()];
+        let said = add_stdio(&home, &socket, "acme", "equipe-platform", &command, &[]).await.unwrap();
+        assert_eq!(said.len(), 1, "nothing to sign in to, no key to save: {said:?}");
+        assert!(said[0].contains("node /home/x/platform-mcp/server.mjs"), "{said:?}");
+        // Added again (a wake re-running setup): kept once.
+        add_stdio(&home, &socket, "acme", "equipe-platform", &command, &[]).await.unwrap();
+        let kept = journal(&home, "acme").unwrap().mcp_servers();
+        assert_eq!(kept.len(), 1);
+        assert!(kept[0].is_local() && kept[0].auth == McpAuth::Local && kept[0].url.is_empty() && kept[0].command == command);
+        assert_eq!(list(&home, &socket, "acme", false).await.unwrap(), ["equipe-platform  node /home/x/platform-mcp/server.mjs  (everyone)".replace("everyone", t!("mcp.everyone"))]);
+        assert!(login(&home, &socket, "acme", "equipe-platform", None).await.unwrap().contains("nothing to sign in"));
+        assert!(add_stdio(&home, &socket, "acme", "empty", &[], &[]).await.is_err(), "a command is needed");
+        assert!(add_stdio(&home, &socket, "acme", "equipe", &command, &[]).await.is_err(), "equipe's own names stay its own");
+        remove_with(&home, &socket, "acme", "equipe-platform", &[]).await.unwrap();
+        assert!(journal(&home, "acme").unwrap().mcp_servers().is_empty());
         let _ = std::fs::remove_dir_all(&home);
     }
 }

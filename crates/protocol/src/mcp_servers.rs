@@ -21,6 +21,9 @@ pub enum McpTransport {
     Http,
     /// Server-sent events, the older transport: Claude Code only.
     Sse,
+    /// A command on this machine speaking MCP on its standard streams (a
+    /// local server: [`McpServer::command`]). Every engine runs it itself.
+    Stdio,
 }
 
 impl McpTransport {
@@ -28,6 +31,7 @@ impl McpTransport {
         match self {
             Self::Http => "http",
             Self::Sse => "sse",
+            Self::Stdio => "stdio",
         }
     }
 
@@ -35,13 +39,14 @@ impl McpTransport {
         match word.trim().to_ascii_lowercase().replace(['-', '_'], "").as_str() {
             "" | "http" | "streamablehttp" => Some(Self::Http),
             "sse" => Some(Self::Sse),
+            "stdio" => Some(Self::Stdio),
             _ => None,
         }
     }
 
     /// Whether `engine` can reach a server over it.
     pub fn on(self, engine: Engine) -> bool {
-        self == Self::Http || engine == Engine::Claude
+        self != Self::Sse || engine == Engine::Claude
     }
 }
 
@@ -64,6 +69,10 @@ pub enum McpAuth {
     /// engine's own command-line tool signs in (`claude mcp login`, `codex
     /// mcp login`) and keeps the token; members get the server's address.
     Engine,
+    /// A local server ([`McpTransport::Stdio`]): no credential at all. Each
+    /// member's engine runs its command itself, in the member's own
+    /// environment — equipe adds no value to it and takes none away.
+    Local,
 }
 
 impl McpAuth {
@@ -78,6 +87,11 @@ impl McpAuth {
 
     /// Reached through equipe's proxy (its own sign-in, or a kept key).
     pub fn proxied(&self) -> bool {
+        matches!(self, Self::Oauth | Self::Key { .. })
+    }
+
+    /// Where it stands is one word for every engine (all but the engine-signed fallback).
+    pub fn one_for_all(&self) -> bool {
         !self.is_engine()
     }
 }
@@ -87,10 +101,15 @@ impl McpAuth {
 pub struct McpServer {
     /// Its name, which members' tools are named after (`mcp__<name>__…`).
     pub name: String,
-    /// Its address (https).
+    /// Its address (https); empty for a local server.
+    #[serde(default)]
     pub url: String,
     #[serde(default)]
     pub transport: McpTransport,
+    /// A local server's command line ([`McpTransport::Stdio`]): the program,
+    /// then its arguments. Empty for a server reached by its address.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command: Vec<String>,
     /// The roles whose members get it; empty: every member.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roles: Vec<String>,
@@ -118,6 +137,21 @@ impl McpServer {
     /// every engine can; the engine-signed fallback only over a transport the engine speaks.
     pub fn reaches(&self, engine: Engine) -> bool {
         self.auth.proxied() || self.transport.on(engine)
+    }
+
+    /// A command this machine runs rather than a server at an address.
+    pub fn is_local(&self) -> bool {
+        self.transport == McpTransport::Stdio
+    }
+
+    /// Where it is, for the person: its address, or a local server's command line.
+    pub fn place(&self) -> String {
+        if self.is_local() { self.command.join(" ") } else { self.url.clone() }
+    }
+
+    /// The same server as `other` is: the same name, address and command.
+    pub fn same_place(&self, other: &Self) -> bool {
+        self.name == other.name && self.url == other.url && self.command == other.command
     }
 }
 
@@ -190,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_server_round_trips_and_old_or_short_records_read_with_defaults() {
-        let server = McpServer { name: "mobbin".into(), url: "https://api.mobbin.com/mcp".into(), transport: McpTransport::Http, roles: vec!["designer".into(), "frontend".into()], enabled: true, catalog: Some("mobbin".into()), auth: McpAuth::Oauth };
+        let server = McpServer { name: "mobbin".into(), url: "https://api.mobbin.com/mcp".into(), transport: McpTransport::Http, command: Vec::new(), roles: vec!["designer".into(), "frontend".into()], enabled: true, catalog: Some("mobbin".into()), auth: McpAuth::Oauth };
         assert!(!serde_json::to_string(&server).unwrap().contains("auth"), "equipe's own connection: said by saying nothing");
         // A record from before equipe signed in itself reads as equipe's own connection: it moves to the proxy.
         let old: McpServer = serde_json::from_str(r#"{"name":"mobbin","url":"https://api.mobbin.com/mcp"}"#).unwrap();
@@ -224,5 +258,21 @@ mod tests {
         assert_eq!(status(&[]).overall(), McpState::Unchecked);
         assert_eq!(status(&[McpState::NeedsKey]).overall(), McpState::NeedsKey);
         assert_eq!(serde_json::to_string(&McpState::NeedsKey).unwrap(), "\"needs_key\"");
+    }
+
+    #[test]
+    fn a_local_server_round_trips_reaches_every_engine_and_holds_no_credential() {
+        let local = McpServer { name: "platform".into(), url: String::new(), transport: McpTransport::Stdio, command: vec!["node".into(), "/home/x/server.mjs".into()], roles: Vec::new(), enabled: true, catalog: None, auth: McpAuth::Local };
+        let text = serde_json::to_string(&local).unwrap();
+        assert!(text.contains(r#""transport":"stdio""#) && text.contains(r#""command":["node","/home/x/server.mjs"]"#) && text.contains(r#""auth":{"kind":"local"}"#), "{text}");
+        assert_eq!(serde_json::from_str::<McpServer>(&text).unwrap(), local);
+        assert!(local.reaches(Engine::Claude) && local.reaches(Engine::Codex));
+        assert!(!local.auth.proxied() && local.auth.one_for_all() && local.is_local());
+        assert_eq!(local.place(), "node /home/x/server.mjs");
+        assert_eq!(McpTransport::parse("stdio"), Some(McpTransport::Stdio));
+        // A server at an address writes no command.
+        let remote: McpServer = serde_json::from_str(r#"{"name":"x","url":"https://x.example.com/mcp"}"#).unwrap();
+        assert!(!serde_json::to_string(&remote).unwrap().contains("command") && !remote.is_local());
+        assert!(!remote.same_place(&local) && local.same_place(&local.clone()));
     }
 }

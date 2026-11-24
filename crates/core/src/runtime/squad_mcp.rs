@@ -220,15 +220,8 @@ impl Runtime {
     /// isn't trusted), shown, and looked at; `sign_in`: a card where it needs one.
     /// Adding one already there is the same: idempotent.
     pub(super) fn add_mcp_server(&mut self, squad: &str, asked: McpServer, sign_in: bool) {
-        let server = match sm::server(&asked.name, Some(&asked.url), Some(&asked.roles), Some(asked.transport.code())) {
-            Ok(mut server) => {
-                server.enabled = asked.enabled;
-                // The engine-signed fallback, when asked for (and the server isn't the catalog's keyed one).
-                if asked.auth.is_engine() && !matches!(server.auth, McpAuth::Key { .. }) {
-                    server.auth = McpAuth::Engine;
-                }
-                server
-            }
+        let server = match sm::checked(&asked) {
+            Ok(server) => server,
             Err(why) => return self.squad_error(squad, why),
         };
         let now = self.journal(squad).map(Journal::mcp_servers).unwrap_or_default();
@@ -246,13 +239,15 @@ impl Runtime {
             if let Some(known) = self.mcp.status.get_mut(squad) {
                 known.remove(&server.name);
             }
-            if server.auth == McpAuth::Oauth && !now.iter().any(|s| s.name == server.name && s.url == server.url) {
+            if server.auth == McpAuth::Oauth && !now.iter().any(|s| s.same_place(&server)) {
                 mcp_oauth::forget(self.mcp_store().as_ref(), squad, &server.name);
             }
         }
         self.clear_put_off(squad, &server.name);
         self.mcp.key_asked.remove(&(squad.to_owned(), server.name.clone()));
-        crate::daemon_log!("equipe: {squad} connected the outside MCP server {} ({})", server.name, server.url);
+        // A local server's program only: its arguments are the person's own.
+        let place = if server.is_local() { format!("stdio: {}", server.command.first().map_or("", String::as_str)) } else { server.url.clone() };
+        crate::daemon_log!("equipe: {squad} connected the outside MCP server {} ({place})", server.name);
         self.publish_mcp(squad);
         self.status_changed(squad);
         if server.enabled {
@@ -278,9 +273,9 @@ impl Runtime {
         let dir = sm::signin_dir(&self.config.home, squad);
         let jobs: Vec<(Engine, String)> = if shared { Vec::new() } else { [Engine::Claude, Engine::Codex].into_iter().map(|e| (e, self.binary_of(e))).collect() };
         let store = self.mcp_store();
-        let (squad_s, engine_signed) = (squad.to_owned(), gone.auth.is_engine());
+        let (squad_s, engine_signed, signed_in) = (squad.to_owned(), gone.auth.is_engine(), gone.auth.proxied());
         tokio::spawn(async move {
-            if !engine_signed {
+            if signed_in {
                 let (squad, name) = (squad_s.clone(), gone.name.clone());
                 let _ = tokio::task::spawn_blocking(move || mcp_oauth::forget(store.as_ref(), &squad, &name)).await;
             }
@@ -327,6 +322,8 @@ impl Runtime {
         };
         match server.auth {
             McpAuth::Engine => self.check_mcp_servers(squad, Some(name), Some(None)),
+            // Nothing to sign in to: looked at again.
+            McpAuth::Local => self.check_mcp_servers(squad, Some(name), None),
             _ => self.open_mcp_card(squad, &server, OWN, None, None),
         }
     }
@@ -354,6 +351,14 @@ impl Runtime {
             let engines = self.mcp_engines(squad, &server);
             let (internal, squad_s) = (self.internal.clone(), squad.to_owned());
             match server.auth.clone() {
+                // A local server: its command started and asked to initialize.
+                McpAuth::Local => {
+                    tokio::spawn(async move {
+                        let (state, detail) = sm::probe_local(&server).await;
+                        let statuses = engines.into_iter().map(|engine| McpEngineStatus { engine, state, detail: detail.clone(), checked_at: now_secs() }).collect();
+                        let _ = internal.send(Internal::McpChecked(Checked { squad: squad_s, server, statuses }));
+                    });
+                }
                 // A keyed server: no key, no look; with one, equipe's own look with it.
                 McpAuth::Key { secret, header } => {
                     if !self.key_kept(squad, &secret) {
@@ -432,9 +437,9 @@ impl Runtime {
         for s in &statuses {
             if !before.iter().any(|b| b.engine == s.engine && b.state == s.state && b.detail == s.detail) {
                 // equipe's own connection is one for every engine: said once.
-                let on = if server.auth.proxied() { "through equipe".to_owned() } else { format!("on {}", s.engine.label()) };
+                let on = if server.is_local() { "on this machine".to_owned() } else if server.auth.proxied() { "through equipe".to_owned() } else { format!("on {}", s.engine.label()) };
                 crate::daemon_log!("equipe: {squad}'s outside MCP server {} {on}: {:?}{}", server.name, s.state, s.detail.as_deref().map(|d| format!(" ({d})")).unwrap_or_default());
-                if server.auth.proxied() {
+                if server.auth.one_for_all() {
                     break;
                 }
             }
@@ -453,11 +458,15 @@ impl Runtime {
         let Checked { squad, server, statuses } = checked;
         let card_for = self.mcp.checking.remove(&(squad.clone(), server.name.clone())).flatten();
         // Gone or changed meanwhile: this answer is about something no longer kept.
-        if !self.mcp_servers_of(&squad).iter().any(|s| s.name == server.name && s.url == server.url && s.enabled) {
+        if !self.mcp_servers_of(&squad).iter().any(|s| s.same_place(&server) && s.enabled) {
             return;
         }
         let was_connected = self.mcp.status.get(&squad).and_then(|k| k.get(&server.name)).is_some_and(|all| all.iter().any(|s| s.state == McpState::Connected));
         self.set_mcp_status(&squad, &server, statuses.clone());
+        // A local server has no sign-in or key to ask the person for: its status says what is wrong.
+        if server.is_local() {
+            return;
+        }
         // Working until now, and equipe couldn't heal it itself (the renewal
         // refused, the key refused): one card for the person, saying what
         // happened — unless they put it off.
@@ -538,6 +547,9 @@ impl Runtime {
     /// more (`by` a member). The person asking (`by` none) always gets a fresh
     /// one. `why`: what the card says instead of the server's own reason.
     fn open_mcp_card(&mut self, squad: &str, server: &McpServer, engine: Engine, by: CardFor, why: Option<String>) {
+        if server.is_local() {
+            return;
+        }
         // A keyed server: the catalog's key card (steps and the page to create
         // the key), once for a member's turns; again whenever the person asks.
         if let McpAuth::Key { secret, .. } = &server.auth {
@@ -616,10 +628,17 @@ impl Runtime {
         let servers = self.mcp_servers_of(squad);
         let mine: Vec<McpServer> = sm::for_member(&servers, &member.1, engine).into_iter().cloned().collect();
         let now = now_secs();
-        let known_of = |this: &Self, server: &McpServer| this.mcp.status.get(squad).and_then(|k| k.get(&server.name)).and_then(|all| all.iter().find(|s| s.engine == engine || server.auth.proxied())).map(|s| (s.state, s.checked_at));
+        let known_of = |this: &Self, server: &McpServer| this.mcp.status.get(squad).and_then(|k| k.get(&server.name)).and_then(|all| all.iter().find(|s| s.engine == engine || server.auth.one_for_all())).map(|s| (s.state, s.checked_at));
         for server in &mine {
             let known = known_of(self, server);
             let by = Some((id, member.0.clone(), ticket));
+            // A local server is always given (the member's engine starts it); looked at once, for the screens.
+            if server.is_local() {
+                if known.is_none() {
+                    self.check_mcp_servers(squad, Some(&server.name), None);
+                }
+                continue;
+            }
             // A keyed server stands on its key being kept: looked at again when that changed.
             if let McpAuth::Key { secret, .. } = &server.auth {
                 let kept = self.key_kept(squad, secret);
@@ -654,9 +673,9 @@ impl Runtime {
         let (mut given, mut unavailable) = (Vec::new(), Vec::new());
         for server in mine {
             let kept = matches!(&server.auth, McpAuth::Key { secret, .. } if self.key_kept(squad, secret));
-            let known = self.mcp.status.get(squad).and_then(|k| k.get(&server.name)).and_then(|all| all.iter().find(|s| s.engine == engine || server.auth.proxied())).cloned();
+            let known = self.mcp.status.get(squad).and_then(|k| k.get(&server.name)).and_then(|all| all.iter().find(|s| s.engine == engine || server.auth.one_for_all())).cloned();
             match sm::credential(&server, kept, known.as_ref().map(|s| s.state)) {
-                credential @ (Credential::Engine | Credential::Proxy) => given.push((server, credential)),
+                credential @ (Credential::Engine | Credential::Proxy | Credential::Local) => given.push((server, credential)),
                 missing => {
                     let card_up = self.mcp_card_up(squad, &server.name, if server.auth.is_engine() { kind_of(engine) } else { Kind::EquipeMcp });
                     let put_off = self.mcp.put_off.get(&(squad.to_owned(), server.name.clone(), if server.auth.is_engine() { engine } else { OWN })).is_some_and(|p| p.reoffered);
@@ -695,6 +714,9 @@ impl Runtime {
         match server.auth.clone() {
             McpAuth::Engine => {
                 let _ = reply.send(Err(format!("{name} is signed in by each engine itself")));
+            }
+            McpAuth::Local => {
+                let _ = reply.send(Err(format!("{name} runs on this machine, started by each member's engine")));
             }
             McpAuth::Key { secret, header } => match (self.key_kept(&squad, &secret), rejected.is_some()) {
                 (true, false) => {
@@ -741,7 +763,7 @@ impl Runtime {
     /// What a proxy's message showed of its server: its status, the same for
     /// every engine; one that wants a sign-in puts its card up for the member.
     pub(super) fn mcp_seen(&mut self, open: McpProxyOpen, seen: Seen) {
-        let Some(server) = self.mcp_servers_of(&open.squad).into_iter().find(|s| s.name == open.server && s.enabled) else { return };
+        let Some(server) = self.mcp_servers_of(&open.squad).into_iter().find(|s| s.name == open.server && s.enabled && !s.is_local()) else { return };
         let keyed = matches!(server.auth, McpAuth::Key { .. });
         let (state, detail) = match seen {
             Seen::Connected => (McpState::Connected, None),

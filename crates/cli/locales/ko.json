@@ -383,6 +383,7 @@
   "mcp.login_starting": "스쿼드의 Mac에서 {name} 로그인을 시작하는 중…",
   "mcp.login_paste": "페이지가 오류로 끝나면(브라우저가 다른 Mac에 있을 때) 마지막 주소를 여기에 붙여넣고 Enter를 누르세요.",
   "mcp.signed_in_equipe": "{name}에 로그인했어요: 모든 멤버가 엔진과 상관없이 다음 턴부터 도구를 써요",
+  "mcp.local_no_login": "{name}은(는) 이 기기에서 실행돼요: 로그인할 것이 없어요",
   "speed.now": "속도: {mode} — {about} · equipe speed full|balanced [--per-member N] [--per-engine N]",
   "speed.balanced_about": "플랜이 줄수록 한 번에 진행하는 티켓을 줄이고, 나와 급한 작업을 위해 주간 여유분을 남겨 둬요",
   "speed.full_about": "플랜 사용량과 상관없이 멤버당 최대 {per_member}개, 엔진당 최대 {per_engine}개를 동시에 진행해요 — 플랜을 더 빨리 써요",

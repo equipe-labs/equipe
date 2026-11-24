@@ -816,6 +816,19 @@ member's engine is given at launch.
   `codex mcp list --json`); one card per engine. Removed: the engines' own
   entry and sign-in are cleared unless another squad uses the same server
   that way.
+- **`local`** (`equipe mcp add <name> --stdio [--roles …] -- <command> [args]`):
+  a server that is a command on the daemon's machine, speaking MCP over
+  stdio — tools that must read and write the machine's own files. Only the
+  person adds one (a terminal or a screen of theirs); the PM's
+  `change_setting` takes addresses only. It holds no credential: each
+  member's engine gets `{ "type": "stdio", "command", "args" }` with no `env`
+  of equipe's (Claude Code passes the member's own environment, Codex its
+  safe default set), so equipe adds nothing to it and takes nothing out.
+  No proxy, no card: it is always given, and its status is equipe's own look
+  (the command started and asked to `initialize`). Members still run with
+  `--strict-mcp-config`, so a project's `.mcp.json` and the person's own
+  servers stay out; Claude Code defers its tools behind tool search, so they
+  cost no prompt until a member looks for them.
 
 ## Left to the person
 

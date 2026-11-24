@@ -399,6 +399,7 @@
   "mcp.login_starting": "Starting the sign-in to {name} on the squad's Mac…",
   "mcp.login_paste": "If the page ends on an error (the browser is on another Mac), paste the address it ended on here and press Enter.",
   "mcp.signed_in_equipe": "Signed in to {name}: every member gets its tools from its next turn, whatever its engine",
+  "mcp.local_no_login": "{name} runs on this machine: there is nothing to sign in to",
   "speed.now": "Speed: {mode} — {about} · equipe speed full|balanced [--per-member N] [--per-engine N]",
   "speed.balanced_about": "fewer tickets at once as a plan runs low, with a weekly reserve for you and urgent work",
   "speed.full_about": "up to {per_member} tickets per member and {per_engine} per engine at once, whatever the plan usage — uses the plan faster",

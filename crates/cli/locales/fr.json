@@ -399,6 +399,7 @@
   "mcp.login_starting": "Connexion à {name} en cours de lancement sur le Mac de l'équipe…",
   "mcp.login_paste": "Si la page finit sur une erreur (le navigateur est sur un autre Mac), collez ici l’adresse où elle s’est arrêtée et appuyez sur Entrée.",
   "mcp.signed_in_equipe": "Connecté à {name} : chaque membre a ses outils dès son prochain tour, quel que soit son moteur",
+  "mcp.local_no_login": "{name} tourne sur cette machine : il n’y a rien à connecter",
   "speed.now": "Vitesse : {mode} — {about} · equipe speed full|balanced [--per-member N] [--per-engine N]",
   "speed.balanced_about": "moins de tickets à la fois à mesure qu’un forfait s’épuise, avec une réserve hebdomadaire pour vous et l’urgent",
   "speed.full_about": "jusqu’à {per_member} tickets par membre et {per_engine} par moteur à la fois, quelle que soit l’utilisation du forfait — le forfait s’épuise plus vite",

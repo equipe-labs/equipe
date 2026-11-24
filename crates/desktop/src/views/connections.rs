@@ -358,7 +358,7 @@ fn row_view(shell: &Shell, row: &Row, divider: bool, cx: &mut Context<Shell>) ->
     let status = &row.status;
     let id = row.id.clone();
     let element = |prefix: &str| SharedString::from(format!("{prefix}-{id}"));
-    let used = row.service.and_then(|s| super::secrets::service_words(s.id, "use")).or_else(|| row.mcp.as_ref().and_then(|m| m.server.as_ref()).map(|s| s.url.clone()));
+    let used = row.service.and_then(|s| super::secrets::service_words(s.id, "use")).or_else(|| row.mcp.as_ref().and_then(|m| m.server.as_ref()).map(McpServer::place));
     if let Some(mcp) = &row.mcp {
         return mcp_row_view(shell, row, mcp, used, divider, cx);
     }

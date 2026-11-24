@@ -383,6 +383,7 @@
   "mcp.login_starting": "正在小队的 Mac 上开始登录 {name}…",
   "mcp.login_paste": "如果页面最后显示错误（浏览器在另一台 Mac 上），请把它最后的地址粘贴到这里并按回车。",
   "mcp.signed_in_equipe": "已登录 {name}：每位成员无论使用哪个引擎，下一轮起都能用它的工具",
+  "mcp.local_no_login": "{name} 在这台机器上运行：无需登录",
   "speed.now": "速度：{mode} — {about} · equipe speed full|balanced [--per-member N] [--per-engine N]",
   "speed.balanced_about": "套餐用量越高，同时进行的工单越少，并为你和紧急工作保留每周余量",
   "speed.full_about": "无论套餐用量如何，每位成员最多同时进行 {per_member} 个，每个引擎最多 {per_engine} 个 — 套餐会用得更快",

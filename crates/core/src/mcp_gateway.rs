@@ -210,6 +210,14 @@ pub async fn serve(http: reqwest::Client, ask: Ask, tell: Tell, mut from_client:
     match first.transport {
         McpTransport::Http => streamable(http, ask, tell, from_client, to_client, on_call).await,
         McpTransport::Sse => legacy_sse(http, ask, tell, first, from_client, to_client, on_call).await,
+        // A local server is never proxied (the daemon refuses it an upstream): said, should one get here.
+        McpTransport::Stdio => {
+            while let Some(message) = from_client.recv().await {
+                if let Some(reply) = error_reply(&message, "a local server runs on this machine, not through equipe's proxy") {
+                    let _ = to_client.send(reply);
+                }
+            }
+        }
     }
 }
 

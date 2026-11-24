@@ -132,7 +132,7 @@ impl Runtime {
                 Some(crate::squad_mcp::McpState::Failing) => "failing",
                 _ => "not checked yet",
             };
-            out.push(format!("- outside MCP server {} ({}) for {roles}: {}, {stands}.", server.name, server.url, on(server.enabled)));
+            out.push(format!("- outside MCP server {} ({}) for {roles}: {}, {stands}.", server.name, if server.is_local() { "runs on this machine" } else { server.url.as_str() }, on(server.enabled)));
         }
         out.join("\n")
     }

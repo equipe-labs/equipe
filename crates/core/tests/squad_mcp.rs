@@ -648,3 +648,44 @@ async fn once_signed_in_a_server_stays_connected_across_restart_rotation_and_exp
     assert!(handle.snapshot("acme").await.cli_sign_ins.iter().all(|c| c.tool != "equipe_mcp"), "the person was never asked again");
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_local_server_is_started_by_every_members_engine_with_no_proxy_no_credential_and_no_card() {
+    use std::os::unix::fs::PermissionsExt as _;
+    let _serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let (handle, mut events, bin, _home, _) = squad_with(&[(1, "pm"), (2, "backend")]).await;
+    // A stand-in local server: answers `initialize` on its standard streams.
+    let script = scratch("local").join("server.sh");
+    std::fs::write(&script, "#!/bin/sh\nread line\necho '{\"jsonrpc\":\"2.0\",\"id\":0,\"result\":{\"capabilities\":{\"tools\":{}}}}'\ncat >/dev/null\n").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let script = script.to_string_lossy().into_owned();
+
+    // The person adds it (the cloud's setup does, over the CLI): looked at by starting it.
+    let local = squad_mcp::stdio_server("equipe-platform", &["/bin/sh".to_owned(), script.clone()], None).unwrap();
+    handle.send(Command::AddMcpServer { squad: "acme".into(), server: local, sign_in: true });
+    overall(&handle, "equipe-platform", McpState::Connected).await;
+
+    // Every member's next turn has it as its own command: no proxy, no `env`, no address.
+    for session in [2, 1] {
+        let call = turn(&handle, &mut events, &bin, session).await;
+        assert_eq!(servers(&call)["equipe-platform"], json!({ "type": "stdio", "command": "/bin/sh", "args": [script] }));
+        assert!(call.iter().any(|a| a == "--strict-mcp-config"), "the person's own servers stay out");
+        assert!(call.join("\n").contains("`equipe-platform` (tools `mcp__equipe-platform__*`)"), "told of it in a line");
+    }
+    let refused = handle.mcp_upstream(&McpProxyOpen { squad: "acme".into(), server: "equipe-platform".into(), member: "backend".into() }, None).await;
+    assert!(refused.unwrap_err().contains("runs on this machine"));
+
+    // One whose command is missing: failing, said — and still no card (nothing to sign in to).
+    let broken = squad_mcp::stdio_server("broken", &["/no/such/tool".to_owned()], Some(&["backend".to_owned()])).unwrap();
+    handle.send(Command::AddMcpServer { squad: "acme".into(), server: broken, sign_in: true });
+    overall(&handle, "broken", McpState::Failing).await;
+    handle.send(Command::SignInMcpServer { squad: "acme".into(), name: "broken".into() });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(handle.snapshot("acme").await.cli_sign_ins.is_empty(), "a local server never puts a card up");
+    assert!(handle.snapshot("acme").await.secret_asks.is_empty());
+
+    // The PM can't add one: a settings change takes addresses only.
+    let pm = tool(&handle, "pm", "change_setting", json!({ "setting": "mcp_server", "value": "add", "name": "tools", "transport": "stdio" })).await;
+    assert!(pm.is_error && pm.text.contains("--stdio"), "{}", pm.text);
+    handle.shutdown().await;
+}

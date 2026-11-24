@@ -29,6 +29,16 @@
 //!   members get the server's address; status comes from those tools
 //!   (`claude mcp get`, `codex mcp list --json`). equipe never reads, keeps
 //!   or passes such a token.
+//!
+//! - [`McpAuth::Local`]: a local server, a command on this machine speaking
+//!   MCP over stdio (`equipe mcp add <name> --stdio -- <command> [args]`).
+//!   Each member's engine runs the command itself, with no `env` of equipe's:
+//!   it inherits what the engine gives its MCP servers (Claude Code: the
+//!   member's own environment; Codex: its safe default set). equipe never
+//!   adds a credential to it and never takes one out. Only the person adds
+//!   one (the CLI or a screen of theirs); a member's settings change can't
+//!   ([`server`] takes addresses only). Where it stands is equipe's own look:
+//!   the command started and asked to `initialize` ([`probe_local`]).
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -118,6 +128,11 @@ pub fn check_roles(roles: &[String]) -> Result<Vec<String>, String> {
 /// catalog's, else every member) and the transport.
 pub fn server(name: &str, url: Option<&str>, roles: Option<&[String]>, transport: Option<&str>) -> Result<McpServer, String> {
     let name = check_name(name)?;
+    // Said first: a local server is the person's own command, never an address.
+    let transport = match transport {
+        Some(word) => McpTransport::parse(word).filter(|t| *t != McpTransport::Stdio).ok_or_else(|| format!("{word:?}: a transport is http (streamable HTTP) or sse (a local server is added by the person with `equipe mcp add <name> --stdio -- <command>`)."))?,
+        None => McpTransport::Http,
+    };
     let catalog = Service::by_id(&name).and_then(|s| s.mcp.map(|m| (s.id, m)));
     let url = match (url.map(str::trim).filter(|u| !u.is_empty()), catalog) {
         (Some(url), _) => check_url(url)?,
@@ -129,17 +144,60 @@ pub fn server(name: &str, url: Option<&str>, roles: Option<&[String]>, transport
         (None, Some((_, mcp))) => mcp.roles.iter().map(|r| (*r).to_owned()).collect(),
         (None, None) => Vec::new(),
     };
-    let transport = match transport {
-        Some(word) => McpTransport::parse(word).ok_or_else(|| format!("{word:?}: a transport is http (streamable HTTP) or sse."))?,
-        None => McpTransport::Http,
-    };
     // The catalog's own server, at its own address: remembered as the catalog's, its key with it.
     let catalog = catalog.filter(|(_, mcp)| mcp.url == url);
     let auth = match catalog.and_then(|(id, mcp)| Some((Service::by_id(id)?.key_name?, mcp.key_header?))) {
         Some((secret, header)) => McpAuth::Key { secret: secret.to_owned(), header: header.to_owned() },
         None => McpAuth::Oauth,
     };
-    Ok(McpServer { name, url, transport, roles, enabled: true, catalog: catalog.map(|(id, _)| id.to_owned()), auth })
+    Ok(McpServer { name, url, transport, command: Vec::new(), roles, enabled: true, catalog: catalog.map(|(id, _)| id.to_owned()), auth })
+}
+
+/// At most this many words in a local server's command line, each at most [`LONGEST_WORD`] long.
+const MOST_WORDS: usize = 64;
+const LONGEST_WORD: usize = 4096;
+
+/// A local server's command line: a program, then its arguments — plain
+/// words (no control character), the program not an option.
+pub fn check_command(command: &[String]) -> Result<Vec<String>, String> {
+    let Some(program) = command.first().map(|p| p.trim()).filter(|p| !p.is_empty()) else {
+        return Err("Give the server's command after `--` (`equipe mcp add tools --stdio -- node ~/tools/server.mjs`).".to_owned());
+    };
+    if program.starts_with('-') {
+        return Err(format!("{program:?}: the command's first word is the program to run."));
+    }
+    if command.len() > MOST_WORDS || command.iter().any(|w| w.len() > LONGEST_WORD || w.chars().any(char::is_control)) {
+        return Err(format!("A server's command is at most {MOST_WORDS} plain words."));
+    }
+    let mut out = command.to_vec();
+    out[0] = program.to_owned();
+    Ok(out)
+}
+
+/// A local server as asked for, checked: `name`, its command line and the
+/// roles (left out: every member). It holds no credential ([`McpAuth::Local`]).
+pub fn stdio_server(name: &str, command: &[String], roles: Option<&[String]>) -> Result<McpServer, String> {
+    let name = check_name(name)?;
+    let command = check_command(command)?;
+    let roles = roles.map(check_roles).transpose()?.unwrap_or_default();
+    Ok(McpServer { name, url: String::new(), transport: McpTransport::Stdio, command, roles, enabled: true, catalog: None, auth: McpAuth::Local })
+}
+
+/// A server a screen or the CLI asked for, checked again in the daemon: a
+/// local one by its command, any other by its address.
+pub fn checked(asked: &McpServer) -> Result<McpServer, String> {
+    if asked.is_local() || asked.auth == McpAuth::Local {
+        let mut server = stdio_server(&asked.name, &asked.command, Some(&asked.roles))?;
+        server.enabled = asked.enabled;
+        return Ok(server);
+    }
+    let mut server = server(&asked.name, Some(&asked.url), Some(&asked.roles), Some(asked.transport.code()))?;
+    server.enabled = asked.enabled;
+    // The engine-signed fallback, when asked for (and the server isn't the catalog's keyed one).
+    if asked.auth.is_engine() && !matches!(server.auth, McpAuth::Key { .. }) {
+        server.auth = McpAuth::Engine;
+    }
+    Ok(server)
 }
 
 /// How a member's engine is given a server at launch.
@@ -153,12 +211,15 @@ pub enum Credential {
     MissingKey { secret: String },
     /// equipe isn't signed in to it: left out, and the sign-in card asked for.
     NeedsSignIn,
+    /// A local server: the engine runs its command, nothing to hold.
+    Local,
 }
 
 /// How `server` reaches a member: `kept`, whether a keyed server's key is
 /// saved; `state`, where it was last seen to stand.
 pub fn credential(server: &McpServer, kept: bool, state: Option<McpState>) -> Credential {
     match &server.auth {
+        McpAuth::Local => Credential::Local,
         McpAuth::Engine => Credential::Engine,
         McpAuth::Key { secret, .. } if !kept => Credential::MissingKey { secret: secret.clone() },
         McpAuth::Key { .. } => Credential::Proxy,
@@ -265,6 +326,8 @@ design work itself stays the designer's.",
 pub fn claude_entry(server: &McpServer, credential: &Credential, proxy: &ProxyCommand) -> Value {
     match credential {
         Credential::Engine => json!({ "type": server.transport.code(), "url": server.url }),
+        // Its own command, and no `env`: nothing added to the member's environment, nothing taken out.
+        Credential::Local => json!({ "type": "stdio", "command": server.command.first(), "args": server.command.get(1..).unwrap_or_default() }),
         _ => json!({ "type": "stdio", "command": proxy.binary, "args": proxy.args(&server.name) }),
     }
 }
@@ -275,6 +338,7 @@ pub fn claude_entry(server: &McpServer, credential: &Credential, proxy: &ProxyCo
 pub fn codex_entry(server: &McpServer, approved: bool, credential: &Credential, proxy: &ProxyCommand) -> Value {
     match credential {
         Credential::Engine => equipe_providers::codex_app::mcp_http_server(&server.url, approved),
+        Credential::Local => equipe_providers::codex_app::mcp_server(Path::new(server.command.first().map_or("", String::as_str)), server.command.get(1..).unwrap_or_default(), approved),
         _ => equipe_providers::codex_app::mcp_server(&proxy.binary, &proxy.args(&server.name), approved),
     }
 }
@@ -295,6 +359,7 @@ const PROBE_WAIT: Duration = Duration::from_secs(20);
 /// answers is connected; a refusal means a sign-in (or, `keyed`, its key).
 pub async fn probe(http: &reqwest::Client, server: &McpServer, header: Option<(&str, &str)>, keyed: bool) -> (McpState, Option<String>) {
     let request = match server.transport {
+        McpTransport::Stdio => return probe_local(server).await,
         McpTransport::Http => http.post(&server.url).header("content-type", "application/json").header("accept", "application/json, text/event-stream").body(crate::mcp_oauth::initialize_message().to_string()),
         McpTransport::Sse => http.get(&server.url).header("accept", "text/event-stream"),
     };
@@ -324,6 +389,53 @@ pub async fn probe(http: &reqwest::Client, server: &McpServer, header: Option<(&
         401 | 403 => (McpState::NeedsSignIn, header.map(|_| "the sign-in was refused".to_owned())),
         other => (McpState::Failing, Some(format!("it answered {other}"))),
     }
+}
+
+/// Where a local server stands: its command started (in the home folder,
+/// the daemon's environment, input and output piped) and asked to
+/// `initialize`. Any answer is connected; the process is stopped after.
+pub async fn probe_local(server: &McpServer) -> (McpState, Option<String>) {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+    let Some(program) = server.command.first() else {
+        return (McpState::Failing, Some("it has no command".to_owned()));
+    };
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.args(&server.command[1..]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    if let Some(home) = std::env::var_os("HOME") {
+        cmd.current_dir(home);
+    }
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (McpState::Failing, Some(format!("{program} isn't on this machine"))),
+        Err(e) => return (McpState::Failing, Some(short(&format!("{program} couldn't start: {e}")))),
+    };
+    let (Some(mut input), Some(output)) = (child.stdin.take(), child.stdout.take()) else {
+        return (McpState::Failing, Some("its standard streams couldn't be opened".to_owned()));
+    };
+    let look = async {
+        let mut message = crate::mcp_oauth::initialize_message().to_string();
+        message.push('\n');
+        input.write_all(message.as_bytes()).await.map_err(|_| "it closed its input".to_owned())?;
+        input.flush().await.map_err(|_| "it closed its input".to_owned())?;
+        let mut lines = tokio::io::BufReader::new(output).lines();
+        while let Some(line) = lines.next_line().await.map_err(|_| "its output couldn't be read".to_owned())? {
+            let Ok(reply) = serde_json::from_str::<Value>(line.trim()) else { continue };
+            if reply.get("id").is_some() && reply.get("result").is_some() {
+                return Ok(());
+            }
+            if let Some(error) = reply.get("error") {
+                return Err(short(&format!("it refused to initialize: {}", error["message"].as_str().unwrap_or("no reason"))));
+            }
+        }
+        Err("it stopped without answering".to_owned())
+    };
+    let seen = match tokio::time::timeout(PROBE_WAIT, look).await {
+        Ok(Ok(())) => (McpState::Connected, None),
+        Ok(Err(why)) => (McpState::Failing, Some(why)),
+        Err(_) => (McpState::Failing, Some(format!("it didn't answer in {} s", PROBE_WAIT.as_secs()))),
+    };
+    let _ = child.kill().await;
+    seen
 }
 
 /// The rule that lets a Claude Code member use every tool of `server` without asking.
@@ -898,5 +1010,65 @@ esac"#,
         assert!(gone.detail.unwrap().contains("/no/such/codex"));
         let sse = McpServer { transport: McpTransport::Sse, ..m };
         assert_eq!(check(Engine::Codex, script.to_str().unwrap(), Path::new("/nowhere"), &sse, 1).await.state, McpState::Failing);
+    }
+
+    fn words(w: &[&str]) -> Vec<String> {
+        strs(w)
+    }
+
+    #[test]
+    fn a_local_server_is_its_command_given_to_every_engine_as_it_is_with_nothing_added() {
+        let local = stdio_server("Equipe-Platform", &words(&[" node ", "/home/x/server.mjs", "--quiet"]), None).unwrap();
+        assert_eq!((local.name.as_str(), local.url.as_str(), local.transport, local.auth.clone(), local.roles.is_empty()), ("equipe-platform", "", McpTransport::Stdio, McpAuth::Local, true));
+        assert_eq!(local.command, words(&["node", "/home/x/server.mjs", "--quiet"]));
+        assert_eq!(credential(&local, false, Some(McpState::Failing)), Credential::Local, "always given: the member's engine starts it");
+        let proxy = ProxyCommand { binary: "/opt/equipe".into(), squad: "acme".into(), member: "backend".into(), home: "/h".into() };
+        // Claude Code: its own command, no `env` (nothing injected, nothing stripped), no proxy.
+        assert_eq!(claude_entry(&local, &Credential::Local, &proxy), json!({ "type": "stdio", "command": "node", "args": ["/home/x/server.mjs", "--quiet"] }));
+        // Codex: the same command.
+        let codex = codex_entry(&local, true, &Credential::Local, &proxy);
+        assert_eq!((codex["command"].clone(), codex["args"].clone(), codex.get("env")), (json!("node"), json!(["/home/x/server.mjs", "--quiet"]), None));
+        assert!(local.reaches(Engine::Codex) && for_member(std::slice::from_ref(&local), "qa", Engine::Codex).len() == 1);
+        assert!(charter_note(&[&local]).unwrap().contains("`equipe-platform` (tools `mcp__equipe-platform__*`)"));
+        assert_eq!(allowed_rule(&local), "mcp__equipe-platform");
+        // Only by the person's own command: a settings change (the PM's) takes addresses only.
+        assert!(server("tools", None, None, Some("stdio")).unwrap_err().contains("--stdio"));
+        // Checked again in the daemon whatever a screen sent.
+        let sent = McpServer { name: "Tools".into(), command: words(&["node", "a.mjs"]), url: "ignored".into(), catalog: Some("mobbin".into()), ..local.clone() };
+        let kept = checked(&sent).unwrap();
+        assert_eq!((kept.name.as_str(), kept.url.as_str(), kept.catalog.clone(), kept.auth.clone()), ("tools", "", None, McpAuth::Local));
+        assert!(checked(&McpServer { command: Vec::new(), ..local.clone() }).is_err());
+        for bad in [&[][..], &[""][..], &["--help"][..], &["node", "a\nb"][..]] {
+            assert!(stdio_server("tools", &words(bad), None).is_err(), "{bad:?}");
+        }
+        assert!(stdio_server("equipe", &words(&["node"]), None).is_err(), "equipe's own names stay its own");
+        assert!(stdio_server("tools", &vec!["x".to_owned(); MOST_WORDS + 1], None).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_local_server_stands_on_its_command_answering_initialize() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = std::env::temp_dir().join(format!("equipe-local-mcp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = |name: &str, body: &str| {
+            let path = dir.join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let answers = script("answers.sh", r#"read line; echo 'not json'; echo '{"jsonrpc":"2.0","id":0,"result":{"capabilities":{}}}'; cat >/dev/null"#);
+        let refuses = script("refuses.sh", r#"read line; echo '{"jsonrpc":"2.0","id":0,"error":{"code":-1,"message":"no config"}}'"#);
+        let quits = script("quits.sh", "exit 3");
+        let at = |cmd: &str| stdio_server("tools", &words(&[cmd]), None).unwrap();
+        assert_eq!(probe_local(&at(&answers)).await, (McpState::Connected, None));
+        let (state, why) = probe_local(&at(&refuses)).await;
+        assert_eq!(state, McpState::Failing);
+        assert!(why.unwrap().contains("no config"));
+        assert_eq!(probe_local(&at(&quits)).await.0, McpState::Failing);
+        let (state, why) = probe_local(&at("/no/such/tool")).await;
+        assert_eq!((state, why.as_deref()), (McpState::Failing, Some("/no/such/tool isn't on this machine")));
+        // Through `probe`, the same look.
+        assert_eq!(probe(&reqwest::Client::new(), &at(&answers), None, false).await.0, McpState::Connected);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

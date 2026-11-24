@@ -383,6 +383,7 @@
   "mcp.login_starting": "スクワッドの Mac で {name} へのサインインを始めています…",
   "mcp.login_paste": "ページがエラーで終わったら（ブラウザが別の Mac にある場合）、最後のアドレスをここに貼り付けて Enter を押してください。",
   "mcp.signed_in_equipe": "{name} にサインインしました: どのエンジンのメンバーも次のターンからツールを使えます",
+  "mcp.local_no_login": "{name} はこのマシンで動きます。サインインは不要です",
   "speed.now": "速度: {mode} — {about} · equipe speed full|balanced [--per-member N] [--per-engine N]",
   "speed.balanced_about": "プランが減るほど同時に進めるチケットを減らし、あなたと急ぎの作業のために週ごとの予備を残します",
   "speed.full_about": "プランの使用量にかかわらず、メンバーごとに最大 {per_member} 件、エンジンごとに最大 {per_engine} 件を同時に進めます — プランを速く使います",

@@ -399,6 +399,7 @@
   "mcp.login_starting": "Die Anmeldung bei {name} startet auf dem Mac des Squads …",
   "mcp.login_paste": "Endet die Seite mit einem Fehler (der Browser ist auf einem anderen Mac), füge hier die Adresse ein, bei der sie endete, und drücke Enter.",
   "mcp.signed_in_equipe": "Bei {name} angemeldet: jedes Mitglied bekommt ab seinem nächsten Zug die Tools, mit jeder Engine",
+  "mcp.local_no_login": "{name} läuft auf diesem Rechner: Es gibt nichts anzumelden",
   "speed.now": "Tempo: {mode} — {about} · equipe speed full|balanced [--per-member N] [--per-engine N]",
   "speed.balanced_about": "weniger Tickets gleichzeitig, wenn ein Plan knapp wird, mit einer Wochenreserve für dich und Dringendes",
   "speed.full_about": "bis zu {per_member} Tickets pro Mitglied und {per_engine} pro Engine gleichzeitig, unabhängig von der Plannutzung – der Plan wird schneller aufgebraucht",
