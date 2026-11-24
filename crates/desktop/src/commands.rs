@@ -46,7 +46,7 @@ pub const COMMANDS: [Spec; 37] = [
     Spec { name: "engine", args: "[member|all] <claude|codex>", about: "commands.about_engine" },
     Spec { name: "engines", args: "[auto|suggest|off|setup]", about: "commands.about_engines" },
     Spec { name: "parallel", args: "[auto|max [per member] [per engine]]", about: "commands.about_parallel" },
-    Spec { name: "model-choice", args: "[quality|off]", about: "commands.about_model_choice" },
+    Spec { name: "model-choice", args: "[quality|best|off]", about: "commands.about_model_choice" },
     Spec { name: "export", args: "", about: "commands.about_export" },
     Spec { name: "mouse", args: "", about: "commands.about_mouse" },
     Spec { name: "help", args: "", about: "commands.about_help" },
@@ -314,7 +314,7 @@ fn arguments(name: &str, rest: &str, ctx: &Context<'_>) -> Vec<Choice> {
         .filter(|(w, _)| starts(w))
         .map(|(w, about)| word(w, about, ""))
         .collect(),
-        ("model-choice", 1) => [("quality", t!("model_choice.quality_about")), ("off", t!("model_choice.off_about"))]
+        ("model-choice", 1) => [("quality", t!("model_choice.quality_about")), ("best", t!("model_choice.best_about")), ("off", t!("model_choice.off_about"))]
             .iter()
             .filter(|(w, _)| starts(w))
             .map(|(w, about)| word(w, about, ""))
