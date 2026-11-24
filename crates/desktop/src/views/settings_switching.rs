@@ -176,10 +176,10 @@ mod tests {
     }
 
     #[test]
-    fn model_choice_offers_quality_first_then_off_and_says_what_each_does() {
+    fn model_choice_offers_quality_first_then_best_then_off_and_says_what_each_does() {
         use crate::switching::{model_choice_about, model_choice_word};
         // The tests' screens speak Korean.
-        assert_eq!(ModelChoice::ALL.map(model_choice_word), ["품질 우선", "끔"]);
+        assert_eq!(ModelChoice::ALL.map(model_choice_word), ["품질 우선", "가장 꼼꼼하게", "끔"]);
         assert_eq!(ModelChoice::ALL[0], ModelChoice::default(), "quality first, the default, first");
         assert!(model_choice_about(ModelChoice::QualityFirst).contains("낮추지는 않아요"));
         assert!(model_choice_about(ModelChoice::Off).contains("멤버 자신의 모델"));

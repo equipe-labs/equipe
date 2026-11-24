@@ -439,10 +439,11 @@ pub fn parallel_about(parallel: &Parallel) -> String {
     }
 }
 
-/// The squad's model choice as a word: quality first, or off.
+/// The squad's model choice as a word: quality first, most careful, or off.
 pub fn model_choice_word(choice: equipe_core::protocol::tiers::ModelChoice) -> &'static str {
     match choice {
         equipe_core::protocol::tiers::ModelChoice::QualityFirst => t!("model_choice.quality"),
+        equipe_core::protocol::tiers::ModelChoice::Best => t!("model_choice.best"),
         equipe_core::protocol::tiers::ModelChoice::Off => t!("model_choice.off"),
     }
 }
@@ -451,6 +452,7 @@ pub fn model_choice_word(choice: equipe_core::protocol::tiers::ModelChoice) -> &
 pub fn model_choice_about(choice: equipe_core::protocol::tiers::ModelChoice) -> &'static str {
     match choice {
         equipe_core::protocol::tiers::ModelChoice::QualityFirst => t!("model_choice.quality_about"),
+        equipe_core::protocol::tiers::ModelChoice::Best => t!("model_choice.best_about"),
         equipe_core::protocol::tiers::ModelChoice::Off => t!("model_choice.off_about"),
     }
 }
