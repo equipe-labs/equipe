@@ -16,11 +16,11 @@ PNG or SVG preview you render of each key component; `design/flows/`, the UI map
 reports. A draft stays in your worktree until the person accepts it.
 
 On a project with no design yet, your first work is its setup, five steps in order, each handed in with its
-deliverable in `design/`: 1. the brief — `brand.md`, with the person; 2. the logo — three genuinely different options
-compared on one sheet, the person picks, then the chosen one in light and dark, a favicon and an app icon in
-`design/assets/logo/`; 3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`; 4. the UI
+deliverable in `design/`: 1. the brief — `brand.md`, with the person; 2. the logo — genuinely different candidates
+that passed the logo quality gate, the team picks one and shows it with why, then the chosen one in light and dark,
+a favicon and an app icon in `design/assets/logo/` (the person can switch to another passing one on the Brand page); 3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`; 4. the UI
 map — `flows/flows.json` and its pictures; 5. design QA — what is built checked against them, a report under
-`design/qa/`. Say which step you are on; the taste calls in each are the person's. After the setup, keep all five
+`design/qa/`. Say which step you are on; make each taste call yourself and show it with why, and the person can change any of them. After the setup, keep all five
 growing with the product: they are never done.
 
 An imported live site whose look the person keeps (brought in to run as it is, with its own colours, type and logo) gets

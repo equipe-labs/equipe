@@ -1,6 +1,6 @@
 ---
 name: brand-kit
-description: Use for a product's brand step — logo options from an image model, the person's pick, then the final mark, wordmark, favicon set, social image, palette and type saved as tokens.
+description: Use for a product's brand step — logo candidates that passed the quality gate, the designer's pick (the person can switch), the final mark, wordmark, favicon set, social image, palette and type saved as tokens.
 ---
 
 # The brand step: from a brief to a kit
@@ -15,34 +15,32 @@ Name (the spelling the person gave), who it is for, three to five attributes eac
 references they admire, one thing it must not look like, and any colour or letter they already love. Ask it with
 tappable answers where the app offers them (see "Asking the person"). Write it to `design/brand.md`.
 
-## 2. Four concepts, genuinely different
+## 2. Candidates that passed the gate
 
-Make four directions, not four variations of one: a symbol made of simple geometry; a letterform or monogram; a
-pictorial mark with one clear idea (what the product does, or who it is for); a wordmark-led option with a small
-accent. Use the image tool your platform gives you — on equipe cloud, `generate_image` with `purpose: "logo"`. It
-routes to a vector-capable model (SVG output where one is configured) and falls back to a raster model, and its
-answer tells you the provider, the files it saved and what it cost. Prefer vector: a raster logo can't be a favicon,
-a wordmark and a one-colour print version without being redrawn.
+Make four genuinely different candidates, not four variations of one: a symbol made of simple geometry; an abstract
+mark; a letterform or monogram; an emblem with one clear idea. In a scaffolded project the tool does this already:
+`npm run logo` (started when the product was made) generates them, traces raster pictures to clean SVG, and rejects
+every one that fails its quality gate — legible at 16, 32 and 180 px, contrast on light and dark, at most three
+colours and a path limit, no gradients, no frame, no specks or jagged edges, no letters in the symbol, the wordmark
+read back as the name. If fewer than two pass it tries once more, then falls back to typeset monograms, so there is
+always a logo that passed. `design/concepts/options.json` and `logo-qa.md` say what passed and why. Never make concepts
+by hand with the image tool or draw a logo yourself; `npm run logo -- --force` makes a fresh set for cents.
 
-Prompt like a brand designer: "flat vector logo mark for <what it is>, <attribute words>, simple geometric shapes,
-two or three solid colours, no gradients, no text, no mockup, no shadows, centred on a plain background, reads at
-16 px". Name no existing brand, artist or character. Image models misspell: ask for the symbol alone, and set the
-name yourself in a licensed typeface — the kit script outlines it (below). Use a text-in-image model (Ideogram) only
-when the person wants lettering drawn as part of the mark, and proofread every letter.
+Elsewhere, use the image tool your platform gives you (on equipe cloud, `generate_image` with `purpose: "logo"`) and
+hold every candidate to the same checks: show each at 32 px and 16 px on light and dark, run the critic first as
+`design-process` says, and drop any that is a raster in an SVG wrapper (`<image>`), has gradients, needs more than about
+thirty paths, misspells, or looks like a known brand (search the web for the mark and for the name). Prompt like a
+brand designer, name no existing brand, artist or character, ask for the symbol alone and set the name yourself in a
+licensed typeface. Say what a round costs before you start.
 
-Say what one round will cost before you start (the tool reports each call's cost; four vector concepts are well under
-a dollar), and stop after two rounds to ask rather than burn credit on taste.
+## 3. The team picks, the person can switch
 
-Show them on one sheet, large, at 32 px and 16 px, on light and on dark. Run the critic first, as `design-process`
-says. Drop any option that is a raster in an SVG wrapper (`<image>`), has gradients it can't lose, needs more than
-about thirty paths, or looks like a known brand: search the web for the mark and for the name before the person
-falls for it, and say plainly if something is close.
-
-## 3. The person picks
-
-Offer the options as letters on the sheet, with your recommendation and why, and nothing else to decide:
-`choices: A | B | C | D | None, try again`. The pick is theirs; remember what they chose and why in `design/taste.md`.
-"None" is one more round, with their words in the prompt, never a longer argument.
+Pick the strongest of the candidates that passed, against the direction in `design/DESIGN.md`, yourself: in a
+scaffolded project keep the tool's pick or switch with `npm run logo -- --pick <letter> --by designer --why "<one line
+tied to the direction>"`. Then show the person the passing options with your pick marked and why, in one message ("I
+went with B: it stays clear as a tab icon and carries the warm, hand-made feel; you can switch on the Brand page").
+Never ask them to choose first. If they switch (the Brand page does it in one tap), that is the logo; note what they
+chose and why in `design/taste.md`.
 
 ## 4. The final mark and the kit
 
@@ -75,11 +73,12 @@ Fontsource), set for the product's languages. Write them into `design/tokens.jso
 ## Asking the person
 
 The cloud app turns a final line `choices: A | B | C` into tappable buttons (each under 30 characters, one such
-line per question, never repeated in the prose). Elsewhere, ask the same question in words. A logo, a palette or a
-typeface is the person's call: give them options with your reasons; don't decide for them.
+line per question, never repeated in the prose). Elsewhere, ask the same question in words. Ask only what the person
+alone can answer (the name, who it is for, what they love or must avoid); a logo, a palette or a typeface you choose
+yourself, show with your reasons, and they can change it.
 
 ## What to say about rights
 
 An AI-made logo may not be protectable as a trademark or copyright in every country and can echo an existing mark.
-Tell the person in one line when they pick, suggest a trademark search before they print or sign anything, and keep
+Tell the person in one line when you show the logo, suggest a trademark search before they print or sign anything, and keep
 the generating prompts in `design/brand.md` so the logo can be traced to how it was made.

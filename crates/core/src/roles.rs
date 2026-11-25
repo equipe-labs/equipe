@@ -1357,13 +1357,13 @@ mod tests {
             // The setup, each step with its deliverable in the design folder.
             "your first work is its setup, five steps in order",
             "1. the brief — `brand.md`, with the person",
-            "2. the logo — three genuinely different options compared",
+            "2. the logo — genuinely different candidates",
             "a favicon and an app icon in `design/assets/logo/`",
             "3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`",
             "4. the UI map — `flows/flows.json` and its pictures",
             "5. design QA",
             "a report under `design/qa/`",
-            "Say which step you are on; the taste calls in each are the person's",
+            "Say which step you are on; make each taste call yourself and show it with why",
             // The map: every flow, screen and state, shot or drawn, checked, kept current.
             "`design/flows/flows.json` names every flow",
             "those nobody meets by using it included",
