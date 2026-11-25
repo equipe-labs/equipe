@@ -343,6 +343,14 @@ pub struct TicketWork {
     pub engine_session: Option<String>,
 }
 
+/// A member's last turn, as [`Journal::member_last_turn`] tells it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LastTurn {
+    pub ended: u64,
+    /// It wrote to the prompt cache, all of it for 5 minutes.
+    pub cached_short: bool,
+}
+
 /// What a member's turn used: its engine and model, the engine's session it
 /// ran in, and its tokens by kind.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3022,6 +3030,19 @@ impl Journal {
         Ok(at.map(|a| a.max(0) as u64))
     }
 
+    /// `member`'s last turn, on a ticket or not: when it ended, and whether
+    /// what it wrote to the prompt cache was all written for 5 minutes (it
+    /// wrote some, none of it for an hour).
+    pub fn member_last_turn(&self, member: &str) -> Result<Option<LastTurn>> {
+        let row: Option<(i64, Option<i64>, Option<i64>)> = self
+            .conn
+            .query_row("SELECT ended, cache_write, cache_write_long FROM turns WHERE member = ?1 ORDER BY ended DESC, rowid DESC LIMIT 1", [member], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .optional()?;
+        Ok(row.map(|(ended, write, long)| LastTurn { ended: ended.max(0) as u64, cached_short: write.unwrap_or(0) > 0 && long.unwrap_or(0) == 0 }))
+    }
+
     /// Each turn that ended at or after `since`: when it ended, its tokens and its ticket.
     pub fn turn_spend_since(&self, since: u64) -> Result<Vec<(u64, u64, Option<TicketId>)>> {
         let mut stmt = self.conn.prepare("SELECT ended, tokens, ticket FROM turns WHERE ended >= ?1 ORDER BY ended")?;
@@ -4183,6 +4204,23 @@ mod tests {
         t.remaining.clear();
         j.save_ticket(&t).unwrap();
         assert!(j.ticket(1).unwrap().unwrap().remaining.is_empty());
+    }
+
+    #[test]
+    fn a_members_last_turn_is_its_own() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        assert_eq!(j.member_last_turn("pm").unwrap(), None);
+        let at = now() as u64;
+        let turn = |member: &str, ended: u64| crate::retro::Turn { member: member.into(), role: member.into(), ticket: None, began: ended - 30, ended, outcome: "completed".into(), tokens: 10 };
+        let used = |write: u64, long: u64| TurnUse::of(Engine::Claude, None, None, &crate::protocol::Usage { cache_write_tokens: Some(write), cache_write_long_tokens: Some(long), ..Default::default() });
+        j.record_turn_use(&turn("pm", at - 7_200), Some(&used(5_000, 5_000))).unwrap();
+        j.record_turn_use(&turn("pm", at - 3_600), Some(&used(90_000, 0))).unwrap();
+        j.record_turn_use(&turn("frontend", at - 60), Some(&used(800, 800))).unwrap();
+        assert_eq!(j.member_last_turn("pm").unwrap(), Some(LastTurn { ended: at - 3_600, cached_short: true }));
+        assert_eq!(j.member_last_turn("frontend").unwrap(), Some(LastTurn { ended: at - 60, cached_short: false }));
+        j.record_turn(&turn("pm", at - 10)).unwrap();
+        assert_eq!(j.member_last_turn("pm").unwrap(), Some(LastTurn { ended: at - 10, cached_short: false }), "nothing known of what it cached: not short");
     }
 
     #[test]

@@ -2425,6 +2425,24 @@ invent one."), "{id}: true numbers");
         assert!(frontend.contains("Build to the craft skills you're offered") && !frontend.contains("`Kind: landing`") && !frontend.contains("## The kind checklist"));
     }
 
+    /// An imported site keeps its original design (Golden Boot, 2026-11-26: a
+    /// designer-filed "apply the new design system" ticket restyled a
+    /// customer's imported site nobody asked to change). The light setup only
+    /// reads the brand; restyles need the person's request; design QA measures
+    /// an imported site against the original.
+    #[test]
+    fn an_imported_site_keeps_its_original_design_until_the_person_asks() {
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];
+        let system = skill("designer", &ctx(&team, &[], true), "design-system");
+        for part in ["keeps its original design", "that setup only reads", "notes for the person, never fixes", "Never open a ticket to apply or re-apply a design system", "quotes that request", "`reference/fidelity/`"] {
+            assert!(system.contains(part), "{part}: {system}");
+        }
+        let pm = skill("pm", &ctx(&team, &[], true), "working-with-design");
+        assert!(pm.contains("keeps its original design") && pm.contains("quotes the person's request"), "{pm}");
+        let qa = skill("designer", &ctx(&team, &[], true), "design-qa");
+        assert!(qa.contains("the spec for anything the person didn't ask to change is the\noriginal site") || qa.contains("original site, not the design system"), "{qa}");
+    }
+
     #[test]
     fn the_designer_keeps_the_design_system_in_its_folder_in_the_tokens_format() {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }];

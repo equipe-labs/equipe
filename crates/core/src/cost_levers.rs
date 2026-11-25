@@ -34,9 +34,19 @@
 //!   token written but is read back at the read price on the next wake: on a
 //!   paying team's four days it would have cut the PM's cache writes from
 //!   $8.07 to about $4. Lanes call every few seconds, so they keep 5 minutes
-//!   (an hour would cost them more), and so do the PM's own subagents. The
-//!   prompt itself is unchanged: this is the same work, cached longer.
-
+//!   (an hour would cost them more), and so do the PM's own subagents. A
+//!   conversation that comes back after more than an hour unused has lost its
+//!   cache either way and writes all of it again; it is the next wake that
+//!   decides whether an hour's write pays, and after a long quiet the next
+//!   wake seldom falls between five minutes and an hour (hosted teams' PM
+//!   turns, 2026-11: about a third of the time; an hour pays from about two
+//!   thirds), so that turn writes at the 5-minute price. An hour's request
+//!   doesn't read what was written for 5 minutes (5 minutes' reads an hour's),
+//!   so a wake within 5 minutes of such a turn keeps 5 minutes too, and the
+//!   first wake after a longer gap goes back to the hour. Replayed on the
+//!   hosted teams' PM calls this took their cache cost 11% below an hour
+//!   throughout (one busy team: 10%; the busiest squad: 2%). The prompt itself
+//!   is unchanged: this is the same work, cached for a different time.
 use crate::roles;
 
 /// The environment variable that turns the profile on.
@@ -146,17 +156,35 @@ pub const UNUSED_TOOLS: [&str; 13] = [
     "CronCreate", "CronDelete", "CronList", "DesignSync", "EnterWorktree", "ExitWorktree", "NotebookEdit", "PushNotification", "RemoteTrigger", "ReportFindings", "ScheduleWakeup", "Workflow", "McpTaskCheck",
 ];
 
+/// How long Claude Code keeps a conversation's prompt cache when it is told
+/// to keep it an hour.
+pub const CACHE_HOUR: u64 = 60 * 60;
+/// And when told 5 minutes.
+pub const CACHE_SHORT: u64 = 5 * 60;
+
 /// Claude Code's prompt-cache lifetime for a turn of `kind`, as environment
 /// pairs: an hour for the PM and a member's desk, whose turns come minutes
 /// apart in one long conversation; nothing (Claude Code's 5 minutes on an API
 /// key) for lanes, whose calls come seconds apart. Subagents keep 5 minutes
 /// either way: they are short and done before a cache would matter.
-pub fn cache_ttl(kind: TurnKind) -> Vec<(String, String)> {
+///
+/// `idle` is how long the member has been without a turn, in seconds, by the
+/// wall clock, and `last_short` whether its last turn's cache was written for
+/// 5 minutes (`None`/`false` when unknown). Past [`CACHE_HOUR`] the cache is
+/// gone and this turn writes the whole conversation again whatever its
+/// lifetime; the next wake rarely comes in the window where an hour's write
+/// would pay, so that turn keeps 5 minutes. A turn within [`CACHE_SHORT`] of
+/// one that kept 5 minutes keeps 5 minutes too: an hour's request would not
+/// read what that one wrote. Every other PM and desk turn keeps the hour.
+pub fn cache_ttl(kind: TurnKind, idle: Option<u64>, last_short: bool) -> Vec<(String, String)> {
     match kind {
-        TurnKind::Pm | TurnKind::PmWake | TurnKind::Desk => vec![
-            ("CLAUDE_CODE_PROMPT_CACHE_TTL".to_owned(), "1h".to_owned()),
-            ("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned()),
-        ],
+        TurnKind::Pm | TurnKind::PmWake | TurnKind::Desk => {
+            let short = idle.is_some_and(|s| s > CACHE_HOUR || (last_short && s <= CACHE_SHORT));
+            vec![
+                ("CLAUDE_CODE_PROMPT_CACHE_TTL".to_owned(), if short { "5m" } else { "1h" }.to_owned()),
+                ("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned()),
+            ]
+        }
         TurnKind::Ticket | TurnKind::Design | TurnKind::DesignQa => Vec::new(),
     }
 }
@@ -229,12 +257,38 @@ mod tests {
     #[test]
     fn only_sparse_conversations_keep_the_cache_an_hour() {
         for kind in [TurnKind::Pm, TurnKind::PmWake, TurnKind::Desk] {
-            let env = cache_ttl(kind);
-            assert!(env.contains(&("CLAUDE_CODE_PROMPT_CACHE_TTL".to_owned(), "1h".to_owned())), "{kind:?}");
-            assert!(env.contains(&("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned())), "{kind:?}: subagents stay on 5 minutes");
+            for (idle, last_short) in [(None, false), (None, true), (Some(0), false), (Some(20 * 60), false), (Some(CACHE_HOUR), false), (Some(CACHE_SHORT + 1), true), (Some(CACHE_HOUR), true)] {
+                let env = cache_ttl(kind, idle, last_short);
+                assert_eq!(ttl(&env).as_deref(), Some("1h"), "{kind:?} after {idle:?}, last short: {last_short}");
+                assert!(env.contains(&("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned())), "{kind:?}: subagents stay on 5 minutes");
+            }
         }
         for kind in [TurnKind::Ticket, TurnKind::Design, TurnKind::DesignQa] {
-            assert!(cache_ttl(kind).is_empty(), "{kind:?}: lanes call every few seconds and keep Claude Code's 5 minutes");
+            assert!(cache_ttl(kind, None, false).is_empty(), "{kind:?}: lanes call every few seconds and keep Claude Code's 5 minutes");
+            assert!(cache_ttl(kind, Some(10 * CACHE_HOUR), true).is_empty(), "{kind:?}");
+        }
+    }
+
+    fn ttl(env: &[(String, String)]) -> Option<String> {
+        env.iter().find(|(k, _)| k == "CLAUDE_CODE_PROMPT_CACHE_TTL").map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn a_conversation_back_after_its_cache_is_gone_writes_it_at_the_5_minute_price() {
+        for kind in [TurnKind::Pm, TurnKind::PmWake, TurnKind::Desk] {
+            for (idle, last_short) in [(CACHE_HOUR + 1, false), (3 * CACHE_HOUR, true), (30 * CACHE_HOUR, false)] {
+                let env = cache_ttl(kind, Some(idle), last_short);
+                assert_eq!(ttl(&env).as_deref(), Some("5m"), "{kind:?} after {idle}s");
+                assert!(env.contains(&("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned())), "{kind:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_wake_soon_after_a_5_minute_turn_stays_on_5_minutes_to_read_it() {
+        for idle in [0, 90, CACHE_SHORT] {
+            assert_eq!(ttl(&cache_ttl(TurnKind::PmWake, Some(idle), true)).as_deref(), Some("5m"), "{idle}s after a 5-minute turn");
+            assert_eq!(ttl(&cache_ttl(TurnKind::PmWake, Some(idle), false)).as_deref(), Some("1h"), "{idle}s after an hour's turn");
         }
     }
 

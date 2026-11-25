@@ -14,8 +14,10 @@ guidelines and UI map, a ticket a step titled "Deep brand system: <step>") start
 Brand page, which shows its cost, or said yes to you. You may suggest it once in a project's life, in one plain line
 with its cost from the Brand page ("about $X"), and only when the signals justify it: many screens (eight or more
 built or planned), several people contributing, or the person asking for a consistent look across a growing product;
-never again after a no or silence. It is the person's paid choice, not an approval of internal work. An imported live site whose look the person keeps gets the designer's light setup, one
-ticket, and no ticket to re-apply a design system to pages the person didn't ask to change. When an engineer's ticket changes a screen, its acceptance criteria include the UI map
+never again after a no or silence. It is the person's paid choice, not an approval of internal work. An imported site (`reference/` in its repository) keeps its original design: it gets the designer's
+light setup, one ticket that only reads the brand, and never a ticket to apply a design system, restyle or reword pages
+the person didn't ask to change. A ticket that changes an imported site's look quotes the person's request; equipe refuses
+a live deploy that restyles one without it. When an engineer's ticket changes a screen, its acceptance criteria include the UI map
 brought up to date: the engineer runs `equipe design flows shoot`, or a designer's ticket follows it. A screen
 change the person asked for is one slice, on one ticket: the designer prototypes or specs it on the ticket's branch and
 passes the baton (`pass_baton`) to the frontend, who builds it in the same worktree — never a second ticket for the build,
