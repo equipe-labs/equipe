@@ -185,16 +185,20 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
 ///   run standard: as good for a fraction of the cost;
 /// - shipping a copy or server work through the platform's deploy tool is a
 ///   step, not a release engineering job: standard, never lower;
-/// - a few words, a link, a status check run light, checked or not.
+/// - a few words, a link, a status check run light, checked or not;
+/// - a fix to screens that exist, or a designer's finished asset (a logo,
+///   icons) put on them, runs standard, deployed or not: the look is
+///   decided already (A/B of 2026-11-25: the same fixes for a fraction of
+///   the cost).
 ///
-/// Screens a person sees keep the table's tiers: on standard, and on strong
+/// New screens a person sees keep the table's tiers: on standard, and on strong
 /// at medium effort, the first versions came out plainer in a blind review,
 /// and the first screen is what the person judges.
 /// Reviews, design, broad changes and every other risk keep the table's
 /// tier, and escalation stays the safety net: work that comes back wrong
 /// runs one tier up.
 fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, TierReason)> {
-    if w.design_qa || REVIEWERS.contains(&w.role) || w.role == "designer" || w.kind == TicketKind::Action || wide_scope(text) {
+    if w.design_qa || REVIEWERS.contains(&w.role) || w.role == "designer" || w.kind == TicketKind::Action {
         return None;
     }
     let release_only = !risk.is_empty() && risk.iter().all(|r| *r == RiskTag::Release);
@@ -202,10 +206,18 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
         return None;
     }
     let code = w.kind == TicketKind::Code;
+    // A fix to screens that exist, or a designer's finished asset put on them: the look is decided
+    // already, and a slip a cheaper model leaves is caught by the design precheck and the send-back
+    // that runs the next lane a tier up. "Everywhere" in such a ticket means every place a string
+    // appears, not a refactor; a refactor, a foundation or a first version keeps the table's tier.
+    let settled = code && !foundation(text) && !refactor(text) && (fix_of_screens(w.title) || applies_asset(w.title));
+    if wide_scope(text) && !settled {
+        return None;
+    }
     // Work a cheaper tier does as well: copying what exists, or the server side of a known stack.
-    let standard = code && !foundation(text) && (faithful_copy(text) || (SERVER_ROLES.contains(&w.role) && !on_screen(text)));
+    let standard = settled || (code && !foundation(text) && (faithful_copy(text) || (SERVER_ROLES.contains(&w.role) && !on_screen(text))));
     if release_only {
-        // A screen shipped live keeps the table's deep tier: on strong or standard the first versions came out plainer.
+        // A new screen shipped live keeps the table's deep tier: on strong or standard the first versions came out plainer.
         return standard.then_some((ModelTier::Standard, TierReason::Risk));
     }
     if (trivial(w.title) || few_words(w.title)) && !read_only(w) {
@@ -215,6 +227,21 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
         return Some((ModelTier::Light, TierReason::ReadOnly));
     }
     standard.then_some((ModelTier::Standard, TierReason::Code))
+}
+
+/// A fix to what is already there, as the title says: a bug, a slip, something broken or wrong.
+fn fix_of_screens(title: &str) -> bool {
+    has_word(title, &["fix", "fixes", "bug", "bugs", "broken", "slip", "slips", "repair", "doesn't work", "does not work", "not working", "is wrong", "are wrong"])
+}
+
+/// A designer's finished asset put on the product, as the title says: a logo, icons, a favicon, images.
+fn applies_asset(title: &str) -> bool {
+    has_word(title, &["put the", "apply the", "use the", "swap", "replace the"]) && has_word(title, &["logo", "icon", "icons", "favicon", "image", "images", "photo", "photos", "illustration"])
+}
+
+/// A refactor or a rewrite: one change made the same way through the code, worth the deep tier anywhere.
+fn refactor(text: &str) -> bool {
+    has_word(text, &["refactor", "rewrite", "renaming", "rename all", "rename every", "all call sites", "every call site", "codebase-wide", "repo-wide"])
 }
 
 /// The roles whose code no person looks at directly.
@@ -1197,6 +1224,30 @@ mod tests {
         assert!(hosted_tier("frontend", TicketKind::Code, "Fix a typo and deploy", "").0 > ModelTier::Light);
         // The PM keeps its own model.
         assert!(rule(&Work { hosted: true, ..work("pm", TicketKind::Task, "Plan the first version", "") }).is_none());
+    }
+
+    #[test]
+    fn a_hosted_fix_or_a_finished_asset_runs_standard_and_deploys() {
+        // A paying team's real tickets (2026-11-23/24): both ran Opus · high only for the word "deploy" or "everywhere".
+        let slips = hosted_tier(
+            "frontend",
+            TicketKind::Code,
+            "Fix three slips on the live pages",
+            "1. Capitalise the intro. 2. The Season Plan reads \"$1,450\" everywhere. 3. Point the FAQ link at the Apply page. Once it lands, the site is deployed to the live address.",
+        );
+        assert_eq!(slips, (ModelTier::Standard, TierReason::Risk, true));
+        let logo = hosted_tier("frontend", TicketKind::Code, "Put the vector logo and icons on the site", "Header, favicon and the package cards. Deploy after review.");
+        assert_eq!(logo.0, ModelTier::Standard);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix the booking button on phones", "").0, ModelTier::Standard);
+        // Self-hosted squads keep the table.
+        assert_eq!(tier("frontend", TicketKind::Code, "Fix three slips on the live pages", "Deploy once it lands.").0, ModelTier::Deep);
+        // A refactor, a foundation, another risk or a first version keeps its tier.
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix the layout by refactoring it across all pages", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Apply the new design system to the site", "Every page, before and after.").0, tier("frontend", TicketKind::Code, "Apply the new design system to the site", "Every page, before and after.").0);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix the sign-in form", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Build the booking page and deploy it", "").0, ModelTier::Deep);
+        // A few words stay light.
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix a typo in the hero", "").0, ModelTier::Light);
     }
 
     #[test]
