@@ -478,6 +478,7 @@
   "notice.machine_low_memory": "이 머신의 메모리가 거의 없어요({left}% 남음). 여유가 생길 때까지 equipe가 새 작업을 미뤄요. 진행 중인 턴은 계속돼요.",
   "notice.machine_calm": "이 머신이 안정됐어요. equipe가 미뤄 둔 작업을 시작해요.",
   "notice.design_qa_budget": "이 디자인 검수가 예산({calls}번 도구 호출 또는 {minutes}분)을 다 썼어요. {name}이(가) 지금까지 본 것으로 마무리해요.",
+  "notice.design_step_budget": "이 디자인 단계가 예산을 다 썼어요({calls}번의 도구 호출 또는 {minutes}분). {name}이(가) 지금까지 한 것으로 마무리해요.",
   "status.workspace_making": "작업 공간을 만드는 중",
   "status.workspace_behind": "작업 공간을 만드는 중 — {project}에서 앞에 {count}개",
   "status.machine_overloaded": "{machine}이(가) 과부하 상태예요(코어 {cores}개에 부하 {load})",

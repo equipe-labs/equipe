@@ -515,9 +515,9 @@ mod tests {
         let text = |id: &str, c: &Context<'_>, name: &str| offered(role(id).unwrap(), c).into_iter().find(|s| s.name == name).unwrap().text();
         let frontend = text("frontend", &base, "design-system");
         assert!(frontend.contains("references/registry.md") && frontend.contains("You build the components the designer specifies") && frontend.contains("## A component's life"));
-        assert!(!frontend.contains("five steps in order") && !frontend.contains("builds one from the brand"));
+        assert!(!frontend.contains("setup in two tiers") && !frontend.contains("builds one from the brand"));
         let designer = text("designer", &base, "design-system");
-        assert!(designer.contains("five steps in order") && designer.contains("builds one from the brand") && !designer.contains("You build the components the designer specifies"));
+        assert!(designer.contains("setup in two tiers") && designer.contains("builds one from the brand") && !designer.contains("You build the components the designer specifies"));
         for id in ["backend", "qa"] {
             assert_eq!(names(id, &base), if id == "backend" { vec!["plan-review", "research-report", "measure"] } else { vec!["plan-review", "research-report"] }, "{id}");
         }

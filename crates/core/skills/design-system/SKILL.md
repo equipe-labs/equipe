@@ -1,6 +1,6 @@
 ---
 name: design-system
-description: Use when you set up a project's design or work on its brand, brief, logo, tokens, components or guidelines — the `design/` folder's layout, the five setup steps and how a system is built — and its registry's components.
+description: Use when you set up a project's design or work on its brand, brief, logo, tokens, components or guidelines — the `design/` folder, the starter brand and the deep brand system, how a system is built — and its registry.
 ---
 
 # The design folder, the setup and the system
@@ -15,23 +15,41 @@ sibling `light` and `dark` groups; `design/guidelines.md`, the rules in prose; `
 PNG or SVG preview you render of each key component; `design/flows/`, the UI map; and `design/qa/`, design QA's
 reports. A draft stays in your worktree until the person accepts it.
 
-On a project with no design yet, your first work is its setup, five steps in order, each handed in with its
-deliverable in `design/`: 1. the brief — `brand.md`, with the person; 2. the logo — genuinely different candidates
-that passed the logo quality gate, the team picks one and shows it with why, then the chosen one in light and dark,
-a favicon and an app icon in `design/assets/logo/` (the person can switch to another passing one on the Brand page); 3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`; 4. the UI
-map — `flows/flows.json` and its pictures; 5. design QA — what is built checked against them, a report under
-`design/qa/`. Say which step you are on; make each taste call yourself and show it with why, and the person can change any of them. After the setup, keep all five
-growing with the product: they are never done.
+A project with no design yet gets its setup in two tiers. Know which one your ticket is: its title says "Starter brand"
+or "Deep brand system", or its body has a `Design tier:` line.
+
+**Starter brand** — every new product's default, one ticket, about $3–5 of credits at most, and it must still look
+impressive. The tools do the work and you take one short look: in a scaffolded project run `starter_brand` (equipe
+platform tool; free, no model): it keeps the design direction's palette (or the existing site's), its type pairing and
+`tokens.json` (contrast fixed to AA), runs the gated logo pipeline (`npm run logo`, capped at cents) and writes a short
+`brand.md`, a one-page `guidelines.md` and `brand.json`, which the Brand page shows as one brand sheet. Elsewhere: `equipe
+design init`, the tokens from the direction or `equipe design audit <site>`, `equipe design specimen --png`, and your
+`brand-kit` skill's gated logo step. Then look once at the Brand page (or the specimen): put the voice samples in the
+product's language, fix anything plainly wrong (a clashing colour, a logo that reads badly at 16 px), and hand in. Nothing
+else: no component sheets, no UI map, no options sheet, no second round. The step runs on a small hard budget; when equipe
+says it is used up, hand in what you have.
+
+**Deep brand system** — only when the person chose it (the Brand page's card, which shows its cost) or said yes to the
+PM's one suggestion: a ticket a step, each under its own hard budget, in order: 1. `Deep brand system: brief` —
+`brand.md` in full, with the person; 2. `Deep brand system: logo round` — only if they want a new mark: genuinely
+different candidates that passed the logo quality gate, the team picks one and shows it with why, then light and dark, a
+favicon and an app icon in `design/assets/logo/` (the person can switch to another passing one on the Brand page);
+3. `Deep brand system: tokens, component sheets and guidelines` — layered `tokens.json`, the `components/` previews and
+`guidelines.md`; 4. `Deep brand system: UI map` — `flows/flows.json` and its pictures. Design QA then checks what is
+built against them (a report under `design/qa/`). Say which step you are on; make each taste call yourself and show it
+with why, and the person can change any of them. When equipe says a step's budget is used up, hand in what is done and
+say what is left in one line: never start the next step on your own. After the setup, keep what exists growing with the
+product: it is never done, but it grows with real requests, not as setup work.
 
 An imported live site whose look the person keeps (brought in to run as it is, with its own colours, type and logo) gets
-a light setup instead, in one hand-in: harvest the brief (`brand.md`, its values under `## Locked`), the tokens from the
-site's own CSS and a one-page `guidelines.md` drawn from what the site does today; put its existing logo files in
-`design/assets/logo/` as they are (redraw a vector only when the only logo is a poor raster, the same mark, with no
-options sheet); and a UI map of its main flow only. Component sheets, the rest of the map and new logo options wait until
-a request designs a new screen or flow, and then cover only what it touches. Never open a ticket to re-apply the system
-to pages that already look this way: restyling the site is the person's request to make, not a setup step. The logo step follows your `brand-kit` skill: three or four options made with an image model where the
-platform has one, vector first, then the final kit. The tokens are the source of truth and the code's theme is generated
-from them (`web-stack`); a design file in a tool such as Penpot mirrors the repository (`design-loop`).
+the starter tier too, as a light setup in one hand-in: harvest the brief (`brand.md`, its values under `## Locked`), the
+tokens from the site's own CSS and a one-page `guidelines.md` drawn from what the site does today; put its existing logo
+files in `design/assets/logo/` as they are (redraw a vector only when the only logo is a poor raster, the same mark, with
+no options sheet); and a UI map of its main flow only. Component sheets, the rest of the map and new logo options wait
+until a request designs a new screen or flow, and then cover only what it touches. Never open a ticket to re-apply the
+system to pages that already look this way: restyling the site is the person's request to make, not a setup step. The
+logo step follows your `brand-kit` skill. The tokens are the source of truth and the code's theme is generated from them
+(`web-stack`); a design file in a tool such as Penpot mirrors the repository (`design-loop`).
 
 For the brief and the system, first find out which case it is. A company with a brand already (a website, an app, a
 deck): harvest before you design — `equipe design audit <its site>` (more pages with `--pages`), then ask the person

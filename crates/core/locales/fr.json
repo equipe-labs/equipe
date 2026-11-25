@@ -482,6 +482,7 @@
   "notice.machine_low_memory": "Cette machine manque presque de mémoire ({left} % libre) : equipe retient le nouveau travail jusqu'à ce qu'il y ait de la place. Les tours en cours continuent.",
   "notice.machine_calm": "Cette machine s'est calmée : equipe lance le travail qu'il avait retenu.",
   "notice.design_qa_budget": "Cette vérification design a épuisé son budget ({calls} appels d'outils ou {minutes} minutes) : {name} termine avec ce qu'il a.",
+  "notice.design_step_budget": "Cette étape de design a utilisé son budget ({calls} appels d’outils ou {minutes} minutes) : {name} termine avec ce qui est fait.",
   "status.workspace_making": "Préparation de son espace de travail",
   "status.workspace_behind": "Préparation de son espace de travail — {count} avant lui dans {project}",
   "status.machine_overloaded": "{machine} est surchargée (charge {load} pour {cores} cœurs)",

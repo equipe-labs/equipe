@@ -115,6 +115,18 @@ pub fn stopped_at(text: &str) -> Option<u64> {
     digits.parse().ok()
 }
 
+/// The guards for one ticket: the squad's, with a design setup step's own hard budget
+/// (`crate::design_tier`) where the ticket is one, the smaller of the two, even where the squad set none.
+pub fn for_ticket(settings: Settings, title: &str, body: &str) -> Settings {
+    match crate::design_tier::classify(title, body) {
+        Some(step) => {
+            let own = step.tokens();
+            Settings { ticket_budget: if settings.ticket_budget == 0 { own } else { settings.ticket_budget.min(own) }, ..settings }
+        }
+        None => settings,
+    }
+}
+
 /// How many tokens a ticket whose record is `record` may have used before it
 /// stops; `None`: the squad set no limit. Each stop the PM let go on from
 /// gives it another budget, counted from what it had spent then.
@@ -397,6 +409,18 @@ mod tests {
             updated_at: None,
             images: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_design_setup_step_stops_at_its_own_budget_even_with_none_set() {
+        let s = Settings { ticket_budget: DEFAULT_TICKET_BUDGET, repeat_turns: 6 };
+        assert_eq!(for_ticket(s, "Starter brand", "").ticket_budget, crate::design_tier::STARTER_TOKENS);
+        assert_eq!(for_ticket(s, "Homepage", "").ticket_budget, DEFAULT_TICKET_BUDGET);
+        let off = Settings { ticket_budget: 0, ..s };
+        assert_eq!(for_ticket(off, "Deep brand system: UI map", "").ticket_budget, crate::design_tier::DeepStep::Map.tokens(), "hard even with no squad budget");
+        assert_eq!(for_ticket(off, "Homepage", "").ticket_budget, 0);
+        let tight = Settings { ticket_budget: 1_000_000, ..s };
+        assert_eq!(for_ticket(tight, "Deep brand system: tokens", "").ticket_budget, 1_000_000, "the squad's smaller budget holds");
     }
 
     #[test]

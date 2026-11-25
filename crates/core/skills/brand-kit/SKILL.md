@@ -5,9 +5,11 @@ description: Use for a product's brand step — logo candidates that passed the 
 
 # The brand step: from a brief to a kit
 
-It is part of the first sprint of a product, right after the brief and before the screens are polished, and it ends in
-files in the project's `design/`, not in a chat: the logo, a favicon set, a social image, a palette and a type pair,
-saved as tokens so every screen picks them up.
+It is part of the first sprint of a product, before the screens are polished, and it ends in files in the project's
+`design/`, not in a chat: the logo, a favicon set, a social image, a palette and a type pair, saved as tokens so every
+screen picks them up. In the starter brand (the default: see `design-system`) tools do every step below that has a right
+answer — `starter_brand` runs them in a scaffolded project — and your part is one short look: the brief's words and voice
+in the product's language, and anything plainly wrong. The deep brand system does each step in full.
 
 ## 1. The brief, in a few lines
 

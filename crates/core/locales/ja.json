@@ -478,6 +478,7 @@
   "notice.machine_low_memory": "このマシンのメモリがほとんど残っていません（残り {left}%）。空きができるまで equipe は新しい作業を始めません。実行中のターンはそのまま続きます。",
   "notice.machine_calm": "このマシンの負荷が落ち着きました。equipe は止めていた作業を始めます。",
   "notice.design_qa_budget": "このデザインチェックは予算（ツール呼び出し {calls} 回または {minutes} 分）を使い切りました。{name} はここまでの内容でまとめます。",
+  "notice.design_step_budget": "このデザイン工程は予算を使い切りました（ツール呼び出し {calls} 回または {minutes} 分）。{name} はここまでの内容で仕上げます。",
   "status.workspace_making": "作業スペースを準備中",
   "status.workspace_behind": "作業スペースを準備中 — {project} で前に {count} 件",
   "status.machine_overloaded": "{machine} が過負荷です（{cores} コアで負荷 {load}）",

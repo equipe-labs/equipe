@@ -71,7 +71,8 @@ impl Runtime {
     fn spend_trip(&mut self, squad: &str, ticket: TicketId, member: &str) -> Option<Card> {
         let repeated = spend::repeats(self.guards.turns.get(&(squad.to_owned(), ticket)).map(Vec::as_slice).unwrap_or(&[]));
         let journal = self.journal(squad)?;
-        let settings = journal.spend_settings();
+        let found = journal.ticket(ticket).ok().flatten()?;
+        let settings = spend::for_ticket(journal.spend_settings(), &found.title, &found.body);
         let (turns, spent) = journal.ticket_spend(&[ticket]).ok()?.get(&ticket).copied().unwrap_or((0, 0));
         // Under the least it could stop at, and not repeating: no need to read its record.
         let over = settings.ticket_budget > 0 && spent >= settings.ticket_budget;
@@ -81,7 +82,6 @@ impl Runtime {
         }
         let record = journal.ticket_entries(ticket).ok()?;
         let trip = spend::trip(&settings, spent, spend::limit(&settings, &record), repeated, member)?;
-        let found = journal.ticket(ticket).ok().flatten()?;
         Some(Card::new(&found, &record, spent, turns, trip, &settings))
     }
 
@@ -89,20 +89,23 @@ impl Runtime {
     /// already (sent back, passed on, put back) doesn't start; it goes to the PM.
     pub(super) fn hold_over_budget(&mut self, squad: &str, tickets: &mut Vec<Ticket>) {
         let Some(journal) = self.journal(squad) else { return };
-        let settings = journal.spend_settings();
-        if settings.ticket_budget == 0 {
-            return;
-        }
-        let todo: Vec<TicketId> = tickets.iter().filter(|t| t.status == TicketStatus::Todo).map(|t| t.id).collect();
+        let squad_settings = journal.spend_settings();
+        // Each ticket's own guards: a design setup step has its hard budget even where the squad set none.
+        let own = |t: &Ticket| spend::for_ticket(squad_settings, &t.title, &t.body);
+        let todo: Vec<TicketId> = tickets.iter().filter(|t| t.status == TicketStatus::Todo && own(t).ticket_budget > 0).map(|t| t.id).collect();
         if todo.is_empty() {
             return;
         }
         let spent = journal.ticket_spend(&todo).unwrap_or_default();
         let mut cards = Vec::new();
-        for (id, (turns, tokens)) in spent.into_iter().filter(|(_, (_, tokens))| *tokens >= settings.ticket_budget) {
+        for (id, (turns, tokens)) in spent {
+            let Some(ticket) = tickets.iter().find(|t| t.id == id) else { continue };
+            let settings = own(ticket);
+            if tokens < settings.ticket_budget {
+                continue;
+            }
             let record = journal.ticket_entries(id).unwrap_or_default();
             let Some(limit) = spend::limit(&settings, &record).filter(|limit| tokens >= *limit) else { continue };
-            let Some(ticket) = tickets.iter().find(|t| t.id == id) else { continue };
             cards.push((ticket.clone(), Card::new(ticket, &record, tokens, turns, Trip::Budget { spent: tokens, limit }, &settings)));
         }
         for (ticket, card) in cards {

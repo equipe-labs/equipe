@@ -207,6 +207,8 @@ pub(super) struct Budget {
     pub cap: Option<(u32, u64)>,
     /// Told to finish already.
     pub told: bool,
+    /// A design setup step's turn (`crate::design_tier`), not a check.
+    pub step: bool,
 }
 
 /// Whether a turn `secs` in with `calls` tool calls is past `cap`.
@@ -221,14 +223,16 @@ impl Runtime {
     pub(super) fn watch_qa_budget(&mut self, id: SessionId) {
         let Some((squad, ticket, began, name)) = self.sessions.get(&id).and_then(|s| Some((s.squad.clone()?, s.work.as_ref()?.ticket, s.turn_began, s.name()?.to_owned()))) else { return };
         if !self.qa_budgets.contains_key(&id) {
-            let cap = if self.checked_by(&squad, ticket).is_some() {
-                Some((QA_TURN_CALLS, QA_TURN_SECS))
+            let (cap, step) = if self.checked_by(&squad, ticket).is_some() {
+                (Some((QA_TURN_CALLS, QA_TURN_SECS)), false)
             } else if self.design_batch_kind(&squad, ticket).is_some() {
-                Some((REVIEW_TURN_CALLS, REVIEW_TURN_SECS))
+                (Some((REVIEW_TURN_CALLS, REVIEW_TURN_SECS)), false)
             } else {
-                None
+                // A design setup step (the starter brand, a deep step) has its own turn cap: `crate::design_tier`.
+                let cap = self.tickets(&squad).iter().find(|t| t.id == ticket).and_then(|t| crate::design_tier::classify(&t.title, &t.body)).map(|step| step.turn());
+                (cap, cap.is_some())
             };
-            self.qa_budgets.insert(id, Budget { cap, ..Budget::default() });
+            self.qa_budgets.insert(id, Budget { cap, step, ..Budget::default() });
         }
         let Some(budget) = self.qa_budgets.get_mut(&id) else { return };
         let Some(cap) = budget.cap else { return };
@@ -239,6 +243,23 @@ impl Runtime {
         }
         budget.told = true;
         let (calls, minutes) = (cap.0, cap.1 / 60);
+        if budget.step {
+            // A design setup step past its turn's budget: an early stop, with what it has.
+            crate::daemon_log!("equipe: {squad}: {name}'s design step T-{ticket} used its turn budget ({} tool calls, {}s): told to finish", budget.calls, secs);
+            let prompt = format!(
+                "[equipe: this design step has used its budget ({calls} tool calls or {minutes} minutes). Stop here: commit what you have, \
+hand it in now with what is done and what is left in one line each, then end your turn. Do not start anything new.]"
+            );
+            let notice = say!(self, "notice.design_step_budget", calls = calls.to_string(), minutes = minutes.to_string(), name = name);
+            self.publish(Event::Notice { undo: None, session: id, text: notice });
+            match self.sessions.get(&id).and_then(|s| s.steer.clone()) {
+                Some(steer) => {
+                    let _ = steer.send(prompt);
+                }
+                None => self.leave_memo(id, prompt),
+            }
+            return;
+        }
         let tool = if cap.0 == QA_TURN_CALLS { board::DESIGN_QA } else { board::DESIGN_REVIEW };
         crate::daemon_log!("equipe: {squad}: {name}'s design check of T-{ticket} used its budget ({} tool calls, {}s): told to finish", budget.calls, secs);
         let prompt = format!(

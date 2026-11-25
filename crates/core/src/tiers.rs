@@ -25,7 +25,7 @@
 //! | Broad: a refactor, one change in many places | deep | Opus · high | Sol · high |
 //! | Design QA (squad policy `economy`, the default; `crate::design_qa::tier_for`) | standard; deep for a redesign, round 2+, or a precheck that needs judgment | Sonnet · medium (Opus · high) | Sol · low (Sol · high) |
 //! | QA, security review | standard for a narrow checklist or small diff (QA); else strong; deep with a risk tag | Sonnet · medium / Opus · medium | Sol · low / Sol · medium |
-//! | Design work | strong; standard for a small one | Opus · medium | Sol · medium |
+//! | Design work | strong; standard for a small one or the starter brand (`crate::design_tier`) | Opus · medium | Sol · medium |
 //! | Code: a feature, an unclear spec, or several areas | strong | Opus · medium | Sol · medium |
 //! | Code: routine — one area, small diff, clear acceptance criteria | standard | Sonnet · medium | Sol · low |
 //! | Tests added, chores (deps, config), copy, i18n, docs, changelog | standard | Sonnet · medium | Sol · low |
@@ -128,6 +128,14 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
     let risk = risk_tags(&text);
     let checked = checkable(w.body);
     let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: risk.clone(), never_lower: never_lower || !risk.is_empty(), below_floor: false };
+    // The starter brand is the platform's tools and one short look: the standard tier, under its own budget
+    // (`crate::design_tier`). A send-back still runs it a tier up.
+    if w.role == "designer"
+        && risk.is_empty()
+        && crate::design_tier::classify(w.title, w.body).is_some_and(|s| s.tier == crate::design_tier::DesignTier::Starter)
+    {
+        return Some(at(ModelTier::Standard, TierReason::Design, false));
+    }
     if w.hosted
         && let Some((tier, reason)) = hosted(w, &text, &risk)
     {
@@ -792,6 +800,15 @@ mod tests {
     }
 
     const TESTED: &str = "Run `cargo test -p web` to check.";
+
+    #[test]
+    fn the_starter_brand_runs_standard_and_a_deep_step_keeps_the_design_tier() {
+        assert_eq!(tier("designer", TicketKind::Task, "Starter brand for Rep Club", "Run starter_brand, look once."), (ModelTier::Standard, TierReason::Design, false));
+        assert_eq!(tier("designer", TicketKind::Task, "Deep brand system: tokens, component sheets and guidelines", ""), (ModelTier::Strong, TierReason::Design, false));
+        let mut hosted = work("designer", TicketKind::Task, "Starter brand", "");
+        hosted.hosted = true;
+        assert_eq!(rule(&hosted).unwrap().tier, ModelTier::Standard, "hosted too");
+    }
 
     #[test]
     fn routine_code_with_a_narrow_footprint_and_clear_criteria_is_standard() {

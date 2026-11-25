@@ -478,6 +478,7 @@
   "notice.machine_low_memory": "這台機器記憶體快用完了（剩餘 {left}%）：在有空間之前，equipe 暫不開始新工作。正在進行的回合會繼續。",
   "notice.machine_calm": "這台機器已經緩和：equipe 開始之前暫緩的工作。",
   "notice.design_qa_budget": "這次設計檢查已用完預算（{calls} 次工具呼叫或 {minutes} 分鐘）：{name} 將根據已有內容收尾。",
+  "notice.design_step_budget": "這個設計步驟已用完預算（{calls} 次工具呼叫或 {minutes} 分鐘）：{name} 將根據已有內容收尾。",
   "status.workspace_making": "正在準備工作區",
   "status.workspace_behind": "正在準備工作區 — {project} 中前面還有 {count} 個",
   "status.machine_overloaded": "{machine} 過載了（{cores} 核，負載 {load}）",

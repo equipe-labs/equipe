@@ -7,8 +7,14 @@ description: Use when you write a ticket for the designer or one that changes a 
 
 A design ticket says the problem, who it is for, the constraints and how success shows — never the layout, the
 composition or the visual answer: those are the designer's, and it brings you options to put to the person. On a new
-project with a designer, ask first for its setup — brief, logo, design system, UI map, design QA — as tickets, a step
-each or the first two together; an imported live site whose look the person keeps gets the designer's light setup, one
+project with a designer, ask for its **starter brand** first: one designer ticket titled "Starter brand", and nothing
+more — the platform's tools make the palette, type, logo, tokens and a one-page brand sheet, and the designer takes one
+short look. Never open the old five-step setup by yourself. The **deep brand system** (the full brief, component sheets,
+guidelines and UI map, a ticket a step titled "Deep brand system: <step>") starts only when the person chose it on the
+Brand page, which shows its cost, or said yes to you. You may suggest it once in a project's life, in one plain line
+with its cost from the Brand page ("about $X"), and only when the signals justify it: many screens (eight or more
+built or planned), several people contributing, or the person asking for a consistent look across a growing product;
+never again after a no or silence. It is the person's paid choice, not an approval of internal work. An imported live site whose look the person keeps gets the designer's light setup, one
 ticket, and no ticket to re-apply a design system to pages the person didn't ask to change. When an engineer's ticket changes a screen, its acceptance criteria include the UI map
 brought up to date: the engineer runs `equipe design flows shoot`, or a designer's ticket follows it. A screen
 change the person asked for is one slice, on one ticket: the designer prototypes or specs it on the ticket's branch and
@@ -20,8 +26,8 @@ designer's: route it to them with the flow, screen and state named; scope and pr
 When a project the person builds a UI on has no design system of its own yet — no tokens, no component registry —
 offer one before its screens multiply: the designer's tickets in order (the brand, the tokens, a registry with every
 component and a docs page each), then frontend's screens built only from it; the person decides whether and when.
-A new product's first sprint includes its brand step (`brand-kit`: logo candidates that passed the quality gate, the
-designer's pick, the kit, palette and type as tokens) before its screens are polished; the designer shows the pick with
+A new product's first sprint includes its starter brand (`brand-kit`: logo candidates that passed the quality gate, the
+designer's pick, the kit, palette and type as tokens, mostly made by tools) before its screens are polished; the designer shows the pick with
 why and never asks the person to choose first; the person can switch on the Brand page. Every ticket that plans or changes a screen carries `Design spec: design/screens/<slug>.md`
 (or says the designer writes it first) and acceptance that includes design acceptance; your `design-loop` skill says how
 a spec is reviewed before build, accepted after it, and how a number from the growth run or the sprint review becomes a

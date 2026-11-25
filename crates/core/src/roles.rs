@@ -1336,7 +1336,9 @@ mod tests {
     fn the_pm_asks_for_the_designers_setup_first_keeps_the_map_current_and_routes_a_screen_to_the_designer() {
         let pm = &skill(PM, &ctx(&[], &[], false), "working-with-design");
         for part in [
-            "On a new project with a designer, ask first for its setup — brief, logo, design system, UI map, design QA — as tickets",
+            "On a new project with a designer, ask for its **starter brand** first: one designer ticket titled \"Starter brand\"",
+            "Never open the old five-step setup by yourself",
+            "You may suggest it once in a project's life",
             "its acceptance criteria include the UI map brought up to date",
             "`equipe design flows shoot`",
             "a screen from the map",
@@ -1351,17 +1353,18 @@ mod tests {
         let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "designer", role: "designer" }, Teammate { name: "frontend", role: "frontend" }];
         let text = told("designer", "designer", &ctx(&team, &[], true));
         let (system, map) = (skill("designer", &ctx(&team, &[], true), "design-system"), skill("designer", &ctx(&team, &[], true), "ui-map"));
-        assert!(system.contains("your first work is its setup, five steps in order") && map.contains("`design/flows/flows.json` names every flow"));
+        assert!(system.contains("A project with no design yet gets its setup in two tiers") && map.contains("`design/flows/flows.json` names every flow"));
         assert!(map.contains("read `references/other-apps.md` next to this file") && map.contains("read `references/walkthrough.md` next to"), "where the rest of it is");
         for part in [
             // The setup, each step with its deliverable in the design folder.
-            "your first work is its setup, five steps in order",
-            "1. the brief — `brand.md`, with the person",
-            "2. the logo — genuinely different candidates",
+            "A project with no design yet gets its setup in two tiers",
+            "**Starter brand** — every new product's default, one ticket",
+            "run `starter_brand`",
+            "**Deep brand system** — only when the person chose it",
+            "1. `Deep brand system: brief`",
             "a favicon and an app icon in `design/assets/logo/`",
-            "3. the design system — `tokens.json`, the `components/` previews and `guidelines.md`",
-            "4. the UI map — `flows/flows.json` and its pictures",
-            "5. design QA",
+            "3. `Deep brand system: tokens, component sheets and guidelines` — layered `tokens.json`, the `components/` previews and `guidelines.md`",
+            "4. `Deep brand system: UI map` — `flows/flows.json` and its pictures",
             "a report under `design/qa/`",
             "Say which step you are on; make each taste call yourself and show it with why",
             // The map: every flow, screen and state, shot or drawn, checked, kept current.

@@ -482,6 +482,7 @@
   "notice.machine_low_memory": "This machine is nearly out of memory ({left}% left): equipe holds new work back until there's room. Turns already running go on.",
   "notice.machine_calm": "This machine has calmed down: equipe starts the work it held back.",
   "notice.design_qa_budget": "This design check used its budget ({calls} tool calls or {minutes} minutes): {name} is finishing with what it has.",
+  "notice.design_step_budget": "This design step used its budget ({calls} tool calls or {minutes} minutes): {name} is finishing with what it has.",
   "status.workspace_making": "Making its workspace",
   "status.workspace_behind": "Making its workspace — {count} ahead of it in {project}",
   "status.machine_overloaded": "{machine} is overloaded (load {load} on {cores} cores)",

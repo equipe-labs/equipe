@@ -482,6 +482,7 @@
   "notice.machine_low_memory": "Diesem Rechner geht der Arbeitsspeicher aus ({left} % frei): equipe hält neue Arbeit zurück, bis wieder Platz ist. Laufende Züge gehen weiter.",
   "notice.machine_calm": "Dieser Rechner hat sich beruhigt: equipe startet die zurückgehaltene Arbeit.",
   "notice.design_qa_budget": "Diese Design-Prüfung hat ihr Budget aufgebraucht ({calls} Tool-Aufrufe oder {minutes} Minuten): {name} schließt mit dem ab, was vorliegt.",
+  "notice.design_step_budget": "Dieser Designschritt hat sein Budget aufgebraucht ({calls} Werkzeugaufrufe oder {minutes} Minuten): {name} schließt mit dem ab, was da ist.",
   "status.workspace_making": "Arbeitsbereich wird angelegt",
   "status.workspace_behind": "Arbeitsbereich wird angelegt — {count} davor in {project}",
   "status.machine_overloaded": "{machine} ist überlastet (Last {load} bei {cores} Kernen)",

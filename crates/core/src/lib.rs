@@ -28,6 +28,7 @@ pub mod tidy;
 pub mod controls;
 pub mod cost_levers;
 pub mod design_qa;
+pub mod design_tier;
 pub mod taste;
 pub mod scratch;
 pub mod screens;
