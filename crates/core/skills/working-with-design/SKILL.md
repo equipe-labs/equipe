@@ -8,7 +8,8 @@ description: Use when you write a ticket for the designer or one that changes a 
 A design ticket says the problem, who it is for, the constraints and how success shows — never the layout, the
 composition or the visual answer: those are the designer's, and it brings you options to put to the person. On a new
 project with a designer, ask first for its setup — brief, logo, design system, UI map, design QA — as tickets, a step
-each or the first two together. When an engineer's ticket changes a screen, its acceptance criteria include the UI map
+each or the first two together; an imported live site whose look the person keeps gets the designer's light setup, one
+ticket, and no ticket to re-apply a design system to pages the person didn't ask to change. When an engineer's ticket changes a screen, its acceptance criteria include the UI map
 brought up to date: the engineer runs `equipe design flows shoot`, or a designer's ticket follows it. A screen
 change the person asked for is one slice, on one ticket: the designer prototypes or specs it on the ticket's branch and
 passes the baton (`pass_baton`) to the frontend, who builds it in the same worktree — never a second ticket for the build,
