@@ -20,6 +20,16 @@
 //!   steps than it saves.
 //! - **Explicit effort** ([`lane_effort`]): a lane whose ticket kind has no
 //!   tier effort doesn't fall back to Claude Code's `xhigh`.
+//! - **Cache kept an hour where turns are sparse** ([`cache_ttl`]): the PM's
+//!   and a member's desk conversation go on in the same engine session turn
+//!   after turn, minutes apart. On an API key Claude Code caches the prompt
+//!   for 5 minutes, so nearly every PM wake wrote its whole conversation
+//!   (often 100k tokens) to the cache again. An hour's cache costs 1.6x per
+//!   token written but is read back at the read price on the next wake: on a
+//!   paying team's four days it would have cut the PM's cache writes from
+//!   $8.07 to about $4. Lanes call every few seconds, so they keep 5 minutes
+//!   (an hour would cost them more), and so do the PM's own subagents. The
+//!   prompt itself is unchanged: this is the same work, cached longer.
 
 use crate::roles;
 
@@ -114,6 +124,21 @@ pub fn lane_effort(role: &str, kind: TurnKind) -> Option<&'static str> {
     }
 }
 
+/// Claude Code's prompt-cache lifetime for a turn of `kind`, as environment
+/// pairs: an hour for the PM and a member's desk, whose turns come minutes
+/// apart in one long conversation; nothing (Claude Code's 5 minutes on an API
+/// key) for lanes, whose calls come seconds apart. Subagents keep 5 minutes
+/// either way: they are short and done before a cache would matter.
+pub fn cache_ttl(kind: TurnKind) -> Vec<(String, String)> {
+    match kind {
+        TurnKind::Pm | TurnKind::PmWake | TurnKind::Desk => vec![
+            ("CLAUDE_CODE_PROMPT_CACHE_TTL".to_owned(), "1h".to_owned()),
+            ("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned()),
+        ],
+        TurnKind::Ticket | TurnKind::Design | TurnKind::DesignQa => Vec::new(),
+    }
+}
+
 /// `existing` custom headers with `added` after them: nothing the person or
 /// the machine already set is dropped.
 pub fn merged(existing: Option<&str>, added: &str) -> String {
@@ -171,6 +196,18 @@ mod tests {
         assert_eq!(lane_effort("designer", TurnKind::Ticket), None);
         assert_eq!(lane_effort("pm", TurnKind::Pm), None);
         assert_eq!(lane_effort("pm", TurnKind::PmWake), None);
+    }
+
+    #[test]
+    fn only_sparse_conversations_keep_the_cache_an_hour() {
+        for kind in [TurnKind::Pm, TurnKind::PmWake, TurnKind::Desk] {
+            let env = cache_ttl(kind);
+            assert!(env.contains(&("CLAUDE_CODE_PROMPT_CACHE_TTL".to_owned(), "1h".to_owned())), "{kind:?}");
+            assert!(env.contains(&("CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL".to_owned(), "5m".to_owned())), "{kind:?}: subagents stay on 5 minutes");
+        }
+        for kind in [TurnKind::Ticket, TurnKind::Design, TurnKind::DesignQa] {
+            assert!(cache_ttl(kind).is_empty(), "{kind:?}: lanes call every few seconds and keep Claude Code's 5 minutes");
+        }
     }
 
     #[test]

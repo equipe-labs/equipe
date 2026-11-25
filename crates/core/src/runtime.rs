@@ -6788,6 +6788,7 @@ runbooks and reports live there, and work across the projects or on running them
                         env.push(("ANTHROPIC_CUSTOM_HEADERS".to_owned(), cost_levers::merged(existing.as_deref(), &added)));
                     }
                     env.extend(cost_levers::output_caps());
+                    env.extend(cost_levers::cache_ttl(kind));
                 }
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
