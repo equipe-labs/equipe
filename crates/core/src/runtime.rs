@@ -6793,7 +6793,16 @@ runbooks and reports live there, and work across the projects or on running them
                         env.push(("ANTHROPIC_CUSTOM_HEADERS".to_owned(), cost_levers::merged(existing.as_deref(), &added)));
                     }
                     env.extend(cost_levers::output_caps());
-                    env.extend(cost_levers::cache_ttl(kind));
+                    // How long the member has gone without a turn, by the wall clock (a daemon
+                    // restart or a machine asleep leaves no in-memory instant to go by), and
+                    // what its last turn cached for.
+                    let last = session
+                        .member
+                        .as_ref()
+                        .zip(session.squad.as_deref())
+                        .and_then(|(m, s)| self.journals.get(s)?.member_last_turn(&m.name).ok().flatten());
+                    let idle = last.map(|l| now_secs().saturating_sub(l.ended));
+                    env.extend(cost_levers::cache_ttl(kind, idle, last.is_some_and(|l| l.cached_short)));
                 }
                 let memory = session.memory.clone();
                 let mut allowed: Vec<String> = mcp_config.iter().map(|_| format!("mcp__{MCP_SERVER}")).collect();
