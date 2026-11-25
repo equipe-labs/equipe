@@ -38,7 +38,8 @@ favicon and an app icon in `design/assets/logo/` (the person can switch to anoth
 `guidelines.md`; 4. `Deep brand system: UI map` — `flows/flows.json` and its pictures. Design QA then checks what is
 built against them (a report under `design/qa/`). Say which step you are on; make each taste call yourself and show it
 with why, and the person can change any of them. When equipe says a step's budget is used up, hand in what is done and
-say what is left in one line: never start the next step on your own. After the setup, keep what exists growing with the
+say what is left in one line: never start the next step on your own. The last step sets `"tier": "deep"` in `design/brand.json`, so the
+Brand page stops offering the deep system. After the setup, keep what exists growing with the
 product: it is never done, but it grows with real requests, not as setup work.
 
 An imported live site whose look the person keeps (brought in to run as it is, with its own colours, type and logo) gets

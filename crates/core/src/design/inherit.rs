@@ -120,13 +120,24 @@ fn version_key(v: &str) -> Vec<(u64, String)> {
     v.split('.').map(|p| (p.parse().unwrap_or(u64::MAX), p.to_owned())).collect()
 }
 
-/// The project's link, when `design` has a `brand.json`: `None` without one.
+/// The project's link, when `design` has a `brand.json` that is one: `None` without one. A `brand.json` with no
+/// `brand` field is the Brand page's own notes (colour names, imagery, the setup's tier; equipe cloud's `brand_kit`
+/// and `starter_brand` write it), not a link to a shared brand, so it is left alone too.
 pub fn link_of(design: &Path) -> Option<Result<Link, String>> {
     let path = design.join(FILE);
     if !std::fs::symlink_metadata(&path).is_ok_and(|m| m.is_file()) {
         return None;
     }
-    Some(std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str::<Link>(&t).map_err(|e| format!("{} can't be read: {e}", path.display()))))
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) => return Some(Err(e.to_string())),
+    };
+    if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&text)
+        && !map.contains_key("brand")
+    {
+        return None;
+    }
+    Some(serde_json::from_str::<Link>(&text).map_err(|e| format!("{} can't be read: {e}", path.display())))
 }
 
 fn read_capped(path: &Path) -> Option<String> {
@@ -554,6 +565,18 @@ mod tests {
         assert_eq!(tokens_text_in(&m.brands, &design).as_deref(), Some("{}"));
         assert!(check::check_in(&design, &m.brands).iter().any(|f| f.area == "brand" && f.level == check::Level::Error));
         assert!(!valid_slug("../x") && !valid_slug("Kettle") && valid_slug("kettle-2"));
+    }
+
+    #[test]
+    fn the_brand_pages_own_brand_json_is_no_link() {
+        let m = mac();
+        let design = project(&m, "site");
+        std::fs::write(design.join(TOKENS), "{}").unwrap();
+        std::fs::write(design.join(FILE), r#"{ "version": 1, "name": "Rep Club", "tier": "starter", "colors": [] }"#).unwrap();
+        assert!(link_of(&design).is_none(), "colour names and the setup's tier are not a shared-brand link");
+        assert!(!check::check_in(&design, &m.brands).iter().any(|f| f.area == "brand" && f.level == check::Level::Error));
+        std::fs::write(design.join(FILE), "not json").unwrap();
+        assert!(link_of(&design).is_some_and(|r| r.is_err()), "a broken file is still said");
     }
 
     #[test]
