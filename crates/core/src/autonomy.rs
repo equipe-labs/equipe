@@ -84,6 +84,62 @@ pub fn hands_off_allows(tool: &str, action: &str, input: &Value, kind: Kind, roo
     }
 }
 
+/// The environment variable a hosted team's machine sets to say the whole
+/// machine is the team's sandbox (`EQUIPE_MACHINE=sandbox`).
+pub const MACHINE_ENV: &str = "EQUIPE_MACHINE";
+
+/// Whether this whole machine is the squad's sandbox: a hosted team's own
+/// isolated machine, which holds nothing of the person's but the team's work.
+/// Said outright with `EQUIPE_MACHINE=sandbox`; a Linux daemon on equipe
+/// credits is one too (that is what a hosted team is).
+pub fn sandbox_machine() -> bool {
+    machine_is_sandbox(std::env::var(MACHINE_ENV).ok().as_deref(), crate::cost_levers::credits_profile(), cfg!(target_os = "linux"))
+}
+
+fn machine_is_sandbox(said: Option<&str>, credits: bool, linux: bool) -> bool {
+    match said.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+        Some("sandbox" | "yes" | "1" | "true") => true,
+        Some("no" | "0" | "false" | "own") => false,
+        _ => credits && linux,
+    }
+}
+
+/// equipe's platform tools (`mcp__equipe-platform__*`) that publish, send,
+/// spend or connect the person's accounts: on a sandbox machine these, and
+/// only these of its tools, still ask.
+pub const PLATFORM_OUTWARD: [&str; 14] = [
+    "deploy_site", "promote_version", "rollback_site", "configure_email", "send_email", "buy_domain", "connect_domain",
+    "enable_payments", "set_auth_client", "delete_secret", "request_machine_upgrade", "set_sprint_budget", "connect_posthog", "record_ad_spend",
+];
+
+/// The MCP servers equipe runs itself for a member, whose tools only touch
+/// the machine (the browser in any profile, the board, design, a phone
+/// simulator) or are its platform's ([`PLATFORM_OUTWARD`] aside).
+fn equipes_own_server(server: &str) -> bool {
+    matches!(server, "browser" | "equipe" | "design" | "desktop" | "phone" | "equipe-platform") || server.starts_with("browser_")
+}
+
+/// Whether, on a machine that is the squad's sandbox ([`sandbox_machine`]),
+/// an engine's permission prompt goes ahead without the person. The default
+/// is yes — browser code, shell steps, files anywhere on the machine,
+/// packages, dev servers, screenshots, any new tool — and only an explicit
+/// list of outward or irreversible things still asks: the floor's kinds
+/// (credentials, money, deleting, sending or publishing, security, legal),
+/// outward commands ([`permissions::outward`], [`permissions::outward_more`]),
+/// anything naming a credential, the platform's outward tools
+/// ([`PLATFORM_OUTWARD`]) and tools of MCP servers equipe doesn't run (the
+/// person's own accounts).
+pub fn sandbox_machine_allows(tool: &str, action: &str, input: &Value, kind: Kind, scratch: &[String]) -> bool {
+    if kind.is_floor() || permissions::outward(tool, action) || permissions::outward_more(tool, action) || permissions::touches_secret(&input.to_string(), scratch) {
+        return false;
+    }
+    if let Some((server, name)) = tool.strip_prefix("mcp__").and_then(|rest| rest.split_once("__")) {
+        return equipes_own_server(server) && !(server == "equipe-platform" && PLATFORM_OUTWARD.contains(&name));
+    }
+    // The person's word (`Confirm`) or a send in their name is never the machine's to give.
+    !matches!(tool, "Confirm" | "Send" | "Sign in")
+}
+
 /// Whether `path` is somewhere a member works: relative (its worktree), under
 /// one of `roots` or of the squad's `scratch` areas, climbing out of none.
 fn within(path: &str, roots: &[String], scratch: &[String]) -> bool {
@@ -384,6 +440,54 @@ mod tests {
         ] {
             assert!(!allows(tool, action), "{tool} {action}");
         }
+    }
+
+    #[test]
+    fn on_a_sandbox_machine_only_the_outward_list_asks_and_anything_new_goes_ahead() {
+        let scratch = permissions::scratch_areas(std::path::Path::new("/home/tenki/.equipe"), "team");
+        let allows = |tool: &str, action: &str| {
+            let input = match tool {
+                "Bash" => json!({ "command": action }),
+                t if t.contains("run_code") => json!({ "code": action }),
+                t if t.starts_with("mcp__") => serde_json::from_str(action).unwrap_or(json!({})),
+                _ => json!({ "file_path": action }),
+            };
+            sandbox_machine_allows(tool, action, &input, engine_kind_in(tool, action, &scratch), &scratch)
+        };
+        // The team's own machine: browser code in any profile, system installs, files anywhere, and any tool
+        // equipe hasn't heard of yet (a new built-in, a new tool of its own servers) — never a card.
+        for (tool, action) in [
+            (permissions::BROWSER_CODE, "async (page) => { await page.goto('http://127.0.0.1:4318/'); return page.title(); }"),
+            ("mcp__browser_jhjung__browser_run_code_unsafe", "async (page) => page.screenshot()"),
+            ("mcp__browser__browser_take_screenshot", "{}"), ("Bash", "sudo apt-get install -y ffmpeg"), ("Bash", "npm run dev &"),
+            ("Bash", "ls /var/log && cat /etc/os-release"), ("Write", "/etc/hosts"), ("Edit", "/home/tenki/other/a.txt"), ("Read", "/anywhere"),
+            ("mcp__equipe-platform__generate_image", "{}"), ("mcp__equipe-platform__a_tool_added_tomorrow", "{}"), ("mcp__design__palette", "{}"),
+            ("SomeNewBuiltinTool", "{}"), ("WebFetch", "https://example.com"),
+        ] {
+            assert!(allows(tool, action), "{tool} {action}");
+        }
+        // The explicit outward list: still the person's.
+        for (tool, action) in [
+            ("Bash", "git push origin main"), ("Bash", "vercel deploy --prod"), ("Bash", "npx wrangler deploy"), ("Bash", "curl -X POST https://x.test -d a=b"),
+            ("Bash", "rm -rf /home/tenki/Documents"), ("Bash", "cat ~/.aws/credentials"), ("Read", "/home/tenki/.equipe/config.json"), ("Write", "/home/tenki/.claude/settings.json"),
+            ("Edit", "/home/tenki/work/site/.env"), ("mcp__equipe-platform__send_email", "{}"), ("mcp__equipe-platform__deploy_site", "{}"),
+            ("mcp__equipe-platform__buy_domain", "{}"), ("mcp__gmail__send_message", "{}"), ("Confirm", "Email the waitlist"), ("Send", "hi"),
+        ] {
+            assert!(!allows(tool, action), "{tool} {action}");
+        }
+        // Every floor kind asks, whatever the tool.
+        for kind in Kind::FLOOR {
+            assert!(!sandbox_machine_allows("SomeNewBuiltinTool", "x", &json!({}), kind, &scratch), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn a_hosted_linux_team_on_credits_is_a_sandbox_machine_and_a_mac_is_not() {
+        assert!(machine_is_sandbox(None, true, true));
+        assert!(!machine_is_sandbox(None, true, false), "a Mac on credits is the person's own computer");
+        assert!(!machine_is_sandbox(None, false, true));
+        assert!(machine_is_sandbox(Some("sandbox"), false, false));
+        assert!(!machine_is_sandbox(Some("own"), true, true));
     }
 
     #[test]

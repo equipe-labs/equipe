@@ -6091,9 +6091,10 @@ runbooks and reports live there, and work across the projects or on running them
         };
         let browses_freely = browser.is_some() && matches!(mode, Mode::Auto | Mode::Full);
         // Code run in the browser's own process is outside any sandbox: in auto
-        // the person sees the code and says yes; in full it runs.
+        // the person sees the code and says yes; in full it runs. On a hosted
+        // team's machine, which is the sandbox, it runs.
         let ask_tools: Vec<String> =
-            if browser.is_some() && mode == Mode::Auto {
+            if browser.is_some() && mode == Mode::Auto && !crate::autonomy::sandbox_machine() {
                 std::iter::once(permissions::BROWSER_CODE.to_owned())
                     .chain(profile_browsers.iter().map(|(p, _)| format!("mcp__{}__browser_run_code_unsafe", browser::server_name(Some(&p.name)))))
                     .collect()
@@ -9787,6 +9788,16 @@ there, end your turn, and carry on when they say they're done."
             let own = [Some(&session.cwd), session.work.as_ref().map(|w| &w.cwd), session.work.as_ref().and_then(|w| w.sandbox.as_ref()).map(|s| &s.path)];
             scratch.extend(own.into_iter().flatten().filter(|d| d.starts_with(self.config.home.join("worktrees"))).map(|d| format!("{}/", d.display())));
         }
+        // A hosted team's machine is its sandbox: every member's worktree and the whole
+        // temporary folder under equipe's home are the team's work there, not credentials
+        // (equipe's config, sign-ins and journals still are).
+        if crate::autonomy::sandbox_machine() {
+            // Spelled out and as its real path: a team's home is a link onto its volume.
+            let homes = [Some(self.config.home.clone()), std::fs::canonicalize(&self.config.home).ok()];
+            for home in homes.into_iter().flatten() {
+                scratch.extend(["worktrees", "tmp"].iter().map(|d| format!("{}/", home.join(d).display())));
+            }
+        }
         // The engine waiting on a step already under way (`Monitor`, a background command's
         // output): nothing for the person to approve — never a card, in any mode.
         if permissions::only_waits(&tool, &action, &scratch) {
@@ -9837,6 +9848,13 @@ there, end your turn, and carry on when they say they're done."
         }
         // Writing in the squad's own scratch areas is part of the work, as it is inside the fence.
         if auto && permissions::writes_in_scratch(&tool, &action, &scratch) {
+            let _ = reply.send(verdict(Decision::Allow, &input, ""));
+            return;
+        }
+        // A hosted team's machine is its sandbox: what only touches it goes ahead
+        // without the person; only the explicit outward list still asks.
+        if crate::autonomy::sandbox_machine() && crate::autonomy::sandbox_machine_allows(&tool, &action, &input, kind, &scratch) {
+            self.audit(&call.squad, ticket, "equipe", "allowed (the team's own machine)", &action);
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
         }
