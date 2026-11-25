@@ -20,6 +20,12 @@
 //!   steps than it saves.
 //! - **Explicit effort** ([`lane_effort`]): a lane whose ticket kind has no
 //!   tier effort doesn't fall back to Claude Code's `xhigh`.
+//! - **Unused built-in tools left out** ([`UNUSED_TOOLS`]): every tool
+//!   Claude Code offers is described in every call's prompt. A member's lane
+//!   never used the scheduling, notebook, worktree, notification and remote
+//!   tools (a paying team's 2,000 calls: zero), and leaving them out took the
+//!   first call from 19.5k to 14.7k tokens; a blind A/B with the lighter
+//!   prompt (2026-11-25, three tickets) found the same work.
 //! - **Cache kept an hour where turns are sparse** ([`cache_ttl`]): the PM's
 //!   and a member's desk conversation go on in the same engine session turn
 //!   after turn, minutes apart. On an API key Claude Code caches the prompt
@@ -124,6 +130,13 @@ pub fn lane_effort(role: &str, kind: TurnKind) -> Option<&'static str> {
     }
 }
 
+/// Claude Code's built-in tools a member's turn on credits never uses: left
+/// out of the turn (`--disallowedTools`), so their descriptions are not resent
+/// with every call. A name this Claude Code doesn't have is ignored.
+pub const UNUSED_TOOLS: [&str; 13] = [
+    "CronCreate", "CronDelete", "CronList", "DesignSync", "EnterWorktree", "ExitWorktree", "NotebookEdit", "PushNotification", "RemoteTrigger", "ReportFindings", "ScheduleWakeup", "Workflow", "McpTaskCheck",
+];
+
 /// Claude Code's prompt-cache lifetime for a turn of `kind`, as environment
 /// pairs: an hour for the PM and a member's desk, whose turns come minutes
 /// apart in one long conversation; nothing (Claude Code's 5 minutes on an API
@@ -207,6 +220,13 @@ mod tests {
         }
         for kind in [TurnKind::Ticket, TurnKind::Design, TurnKind::DesignQa] {
             assert!(cache_ttl(kind).is_empty(), "{kind:?}: lanes call every few seconds and keep Claude Code's 5 minutes");
+        }
+    }
+
+    #[test]
+    fn the_tools_a_member_works_with_stay() {
+        for kept in ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Task", "Agent", "Monitor", "TaskStop", "SendMessage", "ToolSearch", "Skill", "WebSearch", "WebFetch"] {
+            assert!(!UNUSED_TOOLS.contains(&kept), "{kept}");
         }
     }
 

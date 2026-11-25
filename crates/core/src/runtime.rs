@@ -6833,6 +6833,10 @@ runbooks and reports live there, and work across the projects or on running them
                 if member_rules {
                     blocked.extend(guard::deny_rules(self.config.equipe_binary.as_deref()));
                 }
+                // On credits every call is paid: tools a member never uses are left out of its prompt.
+                if member_rules && cost_levers::credits_profile() {
+                    blocked.extend(cost_levers::UNUSED_TOOLS.iter().map(|t| (*t).to_owned()));
+                }
                 // The person's browser sign-ins and equipe's logins: no fenced command reads them.
                 // Nor other squads' homes.
                 // Who its engine works for, noted off the loop as it starts (`crate::engine_bind`).
