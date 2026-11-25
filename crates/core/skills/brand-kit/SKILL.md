@@ -62,6 +62,17 @@ values, each text pair at 4.5:1 or better. Choose a heading and a body typeface 
 Fontsource), set for the product's languages. Write them into `design/tokens.json` (the brand colour as
 `color.brand.*` and the roles that alias it), regenerate the theme (`web-stack`), and judge them on a real screen.
 
+## Two things the kit never does
+
+- No small labels in capitals with wide letter-spacing (eyebrows, kickers, badges like "BEST MATCH"). Write "Best
+  match" and set it apart by weight, size and colour, or a soft sentence-case pill. Capitals only when the chosen
+  direction says so: `design/direction.json` has `"labels": "uppercase"` (or labels with `"case": "uppercase"`), as a
+  luxury, brutalist or sports brand may.
+- No odd borders: never a coloured border on one side of a rounded box, never an underline or inset bottom line on a
+  pill or rounded element, no inset box-shadow stripes, no double border (a border plus an inner ring) on a selected
+  state. A selected tab, chip, option or card is a filled, softly raised surface: a background plus a subtle shadow,
+  no border.
+
 ## Asking the person
 
 The cloud app turns a final line `choices: A | B | C` into tappable buttons (each under 30 characters, one such
