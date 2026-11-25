@@ -68,10 +68,9 @@ Fontsource), set for the product's languages. Write them into `design/tokens.jso
   match" and set it apart by weight, size and colour, or a soft sentence-case pill. Capitals only when the chosen
   direction says so: `design/direction.json` has `"labels": "uppercase"` (or labels with `"case": "uppercase"`), as a
   luxury, brutalist or sports brand may.
-- No odd borders: never a coloured border on one side of a rounded box, never an underline or inset bottom line on a
-  pill or rounded element, no inset box-shadow stripes, no double border (a border plus an inner ring) on a selected
-  state. A selected tab, chip, option or card is a filled, softly raised surface: a background plus a subtle shadow,
-  no border.
+- Full borders are fine; never a border on only one side: no left, top, right or bottom accent line, no underline
+  under a pill or tab, no single-side inset shadow (inset 3px 0 0, inset 0 -2px 0). Mark a selected tab, chip or card
+  with a fill, a full border or a soft shadow instead.
 
 ## Asking the person
 
