@@ -23,13 +23,18 @@ map — `flows/flows.json` and its pictures; 5. design QA — what is built chec
 `design/qa/`. Say which step you are on; make each taste call yourself and show it with why, and the person can change any of them. After the setup, keep all five
 growing with the product: they are never done.
 
-An imported live site whose look the person keeps (brought in to run as it is, with its own colours, type and logo) gets
-a light setup instead, in one hand-in: harvest the brief (`brand.md`, its values under `## Locked`), the tokens from the
-site's own CSS and a one-page `guidelines.md` drawn from what the site does today; put its existing logo files in
-`design/assets/logo/` as they are (redraw a vector only when the only logo is a poor raster, the same mark, with no
-options sheet); and a UI map of its main flow only. Component sheets, the rest of the map and new logo options wait until
-a request designs a new screen or flow, and then cover only what it touches. Never open a ticket to re-apply the system
-to pages that already look this way: restyling the site is the person's request to make, not a setup step. The logo step follows your `brand-kit` skill: three or four options made with an image model where the
+An imported site (its repository has `reference/`: the person brought an existing site in) keeps its original design
+until the person asks for a change: its faces, sizes, capitals, colours, gradients, corners, spacing and copy, page by
+page. It gets a light setup instead, in one hand-in, and that setup only reads: harvest the brief (`brand.md`, its values
+under `## Locked`), the tokens from the site's own CSS exactly as they are, and a one-page `guidelines.md` describing what
+the site does today; put its existing logo files in `design/assets/logo/` as they are (redraw a vector only when the only
+logo is a poor raster, the same mark, with no options sheet); and a UI map of its main flow only. What the audit reads as
+accidents (two button styles, a second gold, odd corners) are notes for the person, never fixes you apply or tokens you
+"correct". Component sheets, the rest of the map and new logo options wait until a request designs a new screen or flow,
+and then cover only what it touches, in the site's own look. Never open a ticket to apply or re-apply a design system,
+restyle buttons or type, or tidy copy on an imported site: restyling it is the person's request to make, and the ticket
+that does it quotes that request. equipe checks this by code before every live deploy: pages whose look moves away from
+the original (captured at import in `reference/fidelity/`) with no customer request behind the work are refused. The logo step follows your `brand-kit` skill: three or four options made with an image model where the
 platform has one, vector first, then the final kit. The tokens are the source of truth and the code's theme is generated
 from them (`web-stack`); a design file in a tool such as Penpot mirrors the repository (`design-loop`).
 
