@@ -6332,6 +6332,11 @@ runbooks and reports live there, and work across the projects or on running them
             if let Some(squad) = squad.as_deref() {
                 env.push((crate::leftovers::RUN_ENV.to_owned(), crate::leftovers::run_tag(squad, id, ticket.map(u64::from))));
             }
+            // And which ticket it is on, for the tools it runs: equipe cloud's platform tools record it on
+            // what they start (an A/B test), so cancelling the ticket stops it.
+            if let Some(ticket) = ticket {
+                env.push(cost_levers::ticket_env(u64::from(ticket)));
+            }
             // And on which engine, for what they run outside its sandbox (`equipe design second-look`).
             env.push((crate::design::critique::MEMBER_ENGINE_ENV.to_owned(), crate::design::critique::member_engine_value(session.engine).to_owned()));
             // And who reviews its design work this turn, and why (`equipe design critique`, `second-look`).

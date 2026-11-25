@@ -112,6 +112,15 @@ pub fn headers(member: &str, role: &str, ticket: Option<u64>, kind: TurnKind) ->
     lines.join("\n")
 }
 
+/// The environment variable that names the ticket a member's run is on.
+pub const TICKET_ENV: &str = "EQUIPE_TICKET";
+
+/// [`TICKET_ENV`] for a run on `ticket`: `T-<n>`, the same token as the
+/// `x-equipe-ticket` header, so tools the run starts can pass it on.
+pub fn ticket_env(ticket: u64) -> (String, String) {
+    (TICKET_ENV.to_owned(), format!("T-{ticket}"))
+}
+
 /// The Claude Code limits on its own tools' answers, as environment pairs.
 /// Bash output in characters (Claude Code's default is 30000), MCP answers
 /// in tokens (its default is 25000; equipe's own tools are cut at 10000).
@@ -164,6 +173,12 @@ pub fn merged(existing: Option<&str>, added: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ticket_env_matches_the_header() {
+        assert_eq!(ticket_env(30), ("EQUIPE_TICKET".to_owned(), "T-30".to_owned()));
+        assert!(headers("m", "frontend", Some(30), TurnKind::Ticket).contains(&format!("x-equipe-ticket: {}", ticket_env(30).1)));
+    }
 
     #[test]
     fn the_profile_is_credits_only() {
