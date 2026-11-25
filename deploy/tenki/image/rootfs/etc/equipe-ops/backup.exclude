@@ -1,0 +1,23 @@
+# restic exclude patterns for `equipe-ops backup` (one per line, restic syntax).
+# Only what can be made again belongs here. Add site-specific lines in
+# /etc/equipe-ops/paths.d/*.exclude.
+
+# equipe's own caches and scratch: builds, thumbnails, lane temp folders.
+# ($EQUIPE_HOME is the real path of ~/.equipe; equipe-ops expands it.)
+$EQUIPE_HOME/cache
+$EQUIPE_HOME/tmp
+$EQUIPE_HOME/*.sock
+$EQUIPE_HOME/**/*.sock
+
+# Package installs and build output inside projects and worktrees.
+node_modules
+.next/cache
+__pycache__
+.pytest_cache
+.turbo
+
+# Sign-ins never go in a backup: each machine signs in for itself.
+$HOME/.claude/.credentials.json
+$HOME/.codex/auth.json
+$HOME/.config/gh/hosts.yml
+$HOME/.config/equipe-ops/backup.env

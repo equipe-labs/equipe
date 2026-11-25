@@ -1,0 +1,12 @@
+[Unit]
+Description=equipe backup (restic, incremental)
+Documentation=file:///usr/local/share/doc/equipe-ops/README.md
+# No backup target configured: nothing to do, and not a failure.
+ConditionPathExists=%h/.config/equipe-ops/backup.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/equipe-ops backup --scheduled
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=6h
