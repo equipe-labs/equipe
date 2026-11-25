@@ -9788,14 +9788,18 @@ there, end your turn, and carry on when they say they're done."
             let own = [Some(&session.cwd), session.work.as_ref().map(|w| &w.cwd), session.work.as_ref().and_then(|w| w.sandbox.as_ref()).map(|s| &s.path)];
             scratch.extend(own.into_iter().flatten().filter(|d| d.starts_with(self.config.home.join("worktrees"))).map(|d| format!("{}/", d.display())));
         }
-        // A hosted team's machine is its sandbox: every member's worktree and the whole
-        // temporary folder under equipe's home are the team's work there, not credentials
-        // (equipe's config, sign-ins and journals still are).
+        // A hosted team's machine is its sandbox: every member's worktree, the whole
+        // temporary folder, the members' memory and the squad's desk under equipe's home
+        // are the team's work there, not credentials (equipe's config, sign-ins and
+        // journals still are).
         if crate::autonomy::sandbox_machine() {
             // Spelled out and as its real path: a team's home is a link onto its volume.
             let homes = [Some(self.config.home.clone()), std::fs::canonicalize(&self.config.home).ok()];
             for home in homes.into_iter().flatten() {
                 scratch.extend(["worktrees", "tmp"].iter().map(|d| format!("{}/", home.join(d).display())));
+                // The members' own notes and memory, and the squad's desk: working files (its journal beside them is not).
+                let squad = crate::journal::squad_dir(&home, &call.squad);
+                scratch.extend(["members", "home"].iter().map(|d| format!("{}/", squad.join(d).display())));
             }
         }
         // The engine waiting on a step already under way (`Monitor`, a background command's

@@ -475,6 +475,14 @@ mod tests {
         ] {
             assert!(!allows(tool, action), "{tool} {action}");
         }
+        // On a sandbox machine the runtime counts members' worktrees, memory and the squad's desk as working areas.
+        let mut working = scratch.clone();
+        working.extend(["/home/tenki/.equipe/worktrees/".to_owned(), "/home/tenki/.equipe/squads/team/members/".to_owned(), "/home/tenki/.equipe/squads/team/home/".to_owned()]);
+        let on_machine = |tool: &str, path: &str| sandbox_machine_allows(tool, path, &json!({ "file_path": path }), engine_kind_in(tool, path, &working), &working);
+        assert!(on_machine("Read", "/home/tenki/.equipe/squads/team/members/designer/memory/MEMORY.md"));
+        assert!(on_machine("Edit", "/home/tenki/.equipe/worktrees/site/t21/src/App.tsx"));
+        assert!(!on_machine("Read", "/home/tenki/.equipe/squads/team/squad.db"), "the journal is not a working file");
+        assert!(!on_machine("Read", "/home/tenki/.equipe/worktrees/site/t21/.env"), "a key file by name still asks");
         // Every floor kind asks, whatever the tool.
         for kind in Kind::FLOOR {
             assert!(!sandbox_machine_allows("SomeNewBuiltinTool", "x", &json!({}), kind, &scratch), "{kind:?}");
