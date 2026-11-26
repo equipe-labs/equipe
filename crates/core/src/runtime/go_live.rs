@@ -269,7 +269,7 @@ Find out why and get it fixed (a ticket, if it is the project's code); then {aga
     /// confirmed — with why theirs can't now.
     pub(super) fn shipped(&self, squad: &str) -> crate::requests::Shipped {
         let Some(journal) = self.journals.get(squad) else { return crate::requests::Shipped::default() };
-        let live = journal.deploys().iter().filter(|d| d.source.is_live()).flat_map(|d| d.tickets.iter().copied()).collect();
+        let mut live: std::collections::HashSet<TicketId> = journal.deploys().iter().filter(|d| d.source.is_live()).flat_map(|d| d.tickets.iter().copied()).collect();
         let lanes = self.go_live.get(squad).cloned().unwrap_or_else(|| journal.go_live());
         let mut by_deploy: std::collections::HashMap<String, Option<String>> =
             lanes.into_iter().filter(|(_, l)| l.by_deploy()).map(|(k, l)| (k, l.stuck)).collect();
@@ -278,7 +278,69 @@ Find out why and get it fixed (a ticket, if it is the project's code); then {aga
                 by_deploy.entry(key).or_insert(None);
             }
         }
+        // A cloud team: the platform's live commits say what is live (`crate::cloud_live`).
+        if let Some(carried) = self.cloud_carried(squad) {
+            live.extend(carried.live);
+            for key in carried.by_deploy {
+                by_deploy.entry(key).or_insert(None);
+            }
+        }
         crate::requests::Shipped { live, by_deploy }
+    }
+
+    /// For a cloud team (a platform key on this machine) whose apps' live
+    /// commits are known: what they carry of its landings on main. `None`
+    /// on a desktop squad, or before the platform answered once.
+    pub(super) fn cloud_carried(&self, squad: &str) -> Option<crate::cloud_live::Carried> {
+        let commits = crate::sprint::platform::Platform::discover().and_then(|p| crate::sprint::platform::live_commits_cached(&p))?;
+        if commits.is_empty() {
+            return None;
+        }
+        let journal = self.journals.get(squad)?;
+        Some(crate::cloud_live::carried(&journal.deploys(), &commits))
+    }
+
+    /// Each minute, for a cloud team (`crate::cloud_live`): work the
+    /// platform's live version now carries moves its requests (live, the
+    /// person told as usual); work on main it still lacks past
+    /// [`crate::cloud_live::NOT_LIVE_AFTER`] is brought to the PM, once.
+    pub(super) async fn watch_cloud_live(&mut self, squad: &str) {
+        let Some(carried) = self.cloud_carried(squad) else { return };
+        let before = self.cloud_live_seen.insert(squad.to_owned(), carried.live.clone());
+        let newly: Vec<TicketId> = match &before {
+            Some(b) => carried.live.difference(b).copied().collect(),
+            None => carried.live.iter().copied().collect(),
+        };
+        if !newly.is_empty() {
+            self.requests_of_moved(squad, &newly);
+        }
+        let Some(journal) = self.journals.get(squad) else { return };
+        let mut told = journal.not_live_told();
+        let still: std::collections::HashSet<TicketId> = carried.waiting.iter().map(|(t, _)| *t).collect();
+        let was = told.len();
+        told.retain(|t| still.contains(t));
+        let now = now_secs();
+        let due = crate::cloud_live::due(&carried.waiting, &told, now);
+        if due.is_empty() {
+            if told.len() != was {
+                let _ = journal.set_not_live_told(&told);
+            }
+            return;
+        }
+        let tickets = self.tickets(squad);
+        let due: Vec<(TicketId, String, u64)> = due.into_iter().filter_map(|(t, at)| tickets.iter().find(|x| x.id == t).map(|x| (t, x.title.clone(), at))).collect();
+        told.extend(due.iter().map(|(t, _, _)| *t));
+        if let Some(Err(err)) = self.journals.get(squad).map(|j| j.set_not_live_told(&told)) {
+            crate::daemon_log!("equipe: {squad}: which work the PM was told isn't live wasn't kept: {err}");
+            return;
+        }
+        if due.is_empty() {
+            return;
+        }
+        let Some(pm) = self.pm_of(squad) else { return };
+        let ask = self.autonomy_store(squad).policy.level(Kind::Deploy) == Level::Ask;
+        crate::daemon_log!("equipe: {squad}: {} landed ticket(s) are on main but not on the live site; the PM is told", due.len());
+        self.hand_to_pm(squad, pm, crate::cloud_live::nudge_message(&due, ask, now)).await;
     }
 
     /// The requests `tickets` serve moved: told where they stand now.

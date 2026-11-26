@@ -22,6 +22,7 @@ pub mod by_words;
 pub mod call;
 pub mod check_copy;
 pub mod checks;
+pub mod cloud_live;
 pub mod command_watch;
 pub mod conversation_title;
 pub mod tidy;

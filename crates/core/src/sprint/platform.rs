@@ -105,8 +105,15 @@ impl Platform {
 
     /// Whether the team has anything live: an app deployed on the platform.
     pub async fn has_app(&self) -> Result<bool, String> {
+        Ok(self.resources_state().await?.0)
+    }
+
+    /// From one `/v1/resources` read: whether a product is live for the
+    /// sprint loop ([`live_from`]) and the commits its apps are live from
+    /// ([`live_commits_from`]).
+    pub async fn resources_state(&self) -> Result<(bool, Vec<String>), String> {
         let v = self.get("/v1/resources").await?;
-        Ok(live_from(&v, now_unix()))
+        Ok((live_from(&v, now_unix()), live_commits_from(&v)))
     }
 
     /// The `equipe.metrics/v1` snapshot over `days`.
@@ -222,6 +229,8 @@ struct Live {
     at: std::time::Instant,
     live: bool,
     busy: bool,
+    /// The commits the team's apps are live from; `None` until read once.
+    commits: Option<Vec<String>>,
 }
 
 fn live_cache() -> &'static Mutex<Option<Live>> {
@@ -249,20 +258,60 @@ fn now_unix() -> u64 {
 /// from a cache and refreshes it in the background at most every few minutes,
 /// so the loop's tick never waits on the network.
 pub fn live_cached(platform: &Platform) -> bool {
+    refresh_cached(platform, LIVE_EVERY);
+    live_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().is_some_and(|l| l.live)
+}
+
+/// The commits this machine's team's apps are live from (`live_commit` of
+/// each app in `/v1/resources`), from the same cache, refreshed in the
+/// background at most every [`COMMITS_EVERY`]. `None` until the platform
+/// answered once: nothing is known, so nothing is held back.
+pub fn live_commits_cached(platform: &Platform) -> Option<Vec<String>> {
+    refresh_cached(platform, COMMITS_EVERY);
+    live_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref().and_then(|l| l.commits.clone())
+}
+
+/// A deploy is seen this soon: the person is told "live" from it.
+const COMMITS_EVERY: Duration = Duration::from_secs(60);
+
+fn refresh_cached(platform: &Platform, every: Duration) {
     let mut guard = live_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let stale = guard.as_ref().is_none_or(|l| l.at.elapsed() > LIVE_EVERY);
+    let stale = guard.as_ref().is_none_or(|l| l.at.elapsed() > every);
     let busy = guard.as_ref().is_some_and(|l| l.busy);
-    let known = guard.as_ref().is_some_and(|l| l.live);
     if stale && !busy && tokio::runtime::Handle::try_current().is_ok() {
         match guard.as_mut() {
             Some(l) => l.busy = true,
-            None => *guard = Some(Live { at: std::time::Instant::now(), live: false, busy: true }),
+            None => *guard = Some(Live { at: std::time::Instant::now(), live: false, busy: true, commits: None }),
         }
         let p = platform.clone();
         tokio::spawn(async move {
-            let live = p.has_app().await.unwrap_or(false);
-            *live_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Live { at: std::time::Instant::now(), live, busy: false });
+            let got = p.resources_state().await;
+            let mut guard = live_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let kept = guard.as_ref().and_then(|l| l.commits.clone());
+            *guard = Some(match got {
+                Ok((live, commits)) => Live { at: std::time::Instant::now(), live, busy: false, commits: Some(commits) },
+                // Unreachable: keep what was known; try again next time.
+                Err(_) => Live { at: std::time::Instant::now(), live: false, busy: false, commits: kept },
+            });
         });
     }
-    known
+}
+
+/// The commits a team's apps are live from, as `/v1/resources` says
+/// (each app's `live_commit.commit`, set by the platform on every live
+/// deploy that named its commit).
+pub fn live_commits_from(v: &Value) -> Vec<String> {
+    let mut out: Vec<String> = v
+        .get("resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|x| x.get("kind").and_then(Value::as_str) == Some("app"))
+        .filter_map(|x| x.get("live_commit")?.get("commit")?.as_str())
+        .filter(|c| c.len() >= 7 && c.chars().all(|ch| ch.is_ascii_hexdigit()))
+        .map(str::to_owned)
+        .collect();
+    out.sort();
+    out.dedup();
+    out
 }

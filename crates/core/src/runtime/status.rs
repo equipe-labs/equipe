@@ -17,15 +17,46 @@ use super::*;
 use crate::importance;
 use crate::status::{self, Facts};
 
-/// What was told of what waits on the person in one squad.
-#[derive(Debug, Default)]
+/// What was told of what waits on the person in one squad. Kept in the
+/// journal (`Journal::waiting_told`): a daemon restart — an update, a forced
+/// restart — used to forget it, and the PM was handed the same stale wait
+/// again after each one (Golden Boot, 2026-11-25: four reminders about one
+/// Google sign-in step in 51 minutes, one per restart).
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct WaitingTold {
     /// The things the person was last told wait on them, by key.
+    #[serde(default)]
     keys: HashSet<String>,
     /// When that was.
+    #[serde(default)]
     at: Option<u64>,
-    /// The things handed to the PM as stale, by key.
-    stale: HashSet<String>,
+    /// The things handed to the PM as stale, by key, with when each was last
+    /// seen waiting: one gone for [`STALE_FORGET_AFTER`] is news again when
+    /// it comes back; a blink (a restart, a resumed ticket) is not.
+    #[serde(default)]
+    stale: HashMap<String, u64>,
+}
+
+/// A stale wait no longer seen this long is forgotten (unix seconds).
+pub(super) const STALE_FORGET_AFTER: u64 = 30 * 60;
+
+impl WaitingTold {
+    /// One pass of `keys` waiting now at `now`: what no longer waits is
+    /// forgotten — the person's line at once, the PM's stale ones once gone
+    /// for [`STALE_FORGET_AFTER`]; what still waits is marked seen.
+    pub(super) fn seen(&mut self, keys: &HashSet<String>, now: u64) {
+        self.keys.retain(|k| keys.contains(k));
+        for (k, at) in self.stale.iter_mut() {
+            if keys.contains(k) {
+                *at = now;
+            }
+        }
+        self.stale.retain(|_, at| now.saturating_sub(*at) < STALE_FORGET_AFTER);
+    }
+
+    pub(super) fn stale_keys(&self) -> HashSet<String> {
+        self.stale.keys().cloned().collect()
+    }
 }
 
 /// The screens are told of a change in a squad's status no more often than this.
@@ -214,13 +245,17 @@ impl Runtime {
         let now = now_secs();
         let list = self.waiting_now(squad);
         let keys: HashSet<String> = list.iter().map(importance::key).collect();
+        if !self.waiting_told.contains_key(squad) {
+            let kept = self.journals.get(squad).and_then(Journal::waiting_told).and_then(|j| serde_json::from_str::<WaitingTold>(&j).ok()).unwrap_or_default();
+            self.waiting_told.insert(squad.to_owned(), kept);
+        }
         let told = self.waiting_told.entry(squad.to_owned()).or_default();
+        let before = told.clone();
         // What no longer waits is forgotten: waiting again, it is news again.
-        told.keys.retain(|k| keys.contains(k));
-        told.stale.retain(|k| keys.contains(k));
+        told.seen(&keys, now);
         let tell = importance::tell_person(&list, &told.keys, told.at, now);
-        let stale: Vec<String> = importance::newly_stale(&list, &told.stale, now).into_iter().map(importance::key).collect();
-        let Some(pm) = self.pm_of(squad) else { return };
+        let stale: Vec<String> = importance::newly_stale(&list, &told.stale_keys(), now).into_iter().map(importance::key).collect();
+        let Some(pm) = self.pm_of(squad) else { return self.keep_waiting_told(squad, &before) };
         if tell && let Some(line) = importance::person_line(&list, crate::i18n::core(self.config.lang), now) {
             let told = self.waiting_told.entry(squad.to_owned()).or_default();
             told.keys = keys.clone();
@@ -230,10 +265,30 @@ impl Runtime {
         if !stale.is_empty() {
             let newly: Vec<&equipe_protocol::importance::Waiting> = list.iter().filter(|w| stale.contains(&importance::key(w))).collect();
             if let Some(text) = importance::stale_message(&newly, now) {
-                self.waiting_told.entry(squad.to_owned()).or_default().stale.extend(stale);
+                self.waiting_told.entry(squad.to_owned()).or_default().stale.extend(stale.into_iter().map(|k| (k, now)));
+                // Kept before the PM is handed it: a restart right after must not hand it again.
+                self.keep_waiting_told(squad, &before);
                 crate::daemon_log!("equipe: {squad}: {} things have waited on the person for hours; the PM is told", newly.len());
                 self.hand_to_pm(squad, pm, text).await;
+                return;
             }
+        }
+        self.keep_waiting_told(squad, &before);
+    }
+
+    /// `squad`'s [`WaitingTold`] into its journal when it changed from `before`
+    /// (the "last seen" times move every pass; they are kept at most every few minutes).
+    fn keep_waiting_told(&mut self, squad: &str, before: &WaitingTold) {
+        let Some(now) = self.waiting_told.get(squad).cloned() else { return };
+        let moved = now.keys != before.keys || now.at != before.at || now.stale.keys().collect::<HashSet<_>>() != before.stale.keys().collect::<HashSet<_>>();
+        let refresh = now.stale.iter().any(|(k, at)| before.stale.get(k).is_some_and(|b| at.saturating_sub(*b) >= STALE_FORGET_AFTER / 3));
+        if !moved && !refresh {
+            return;
+        }
+        if let (Some(journal), Ok(json)) = (self.journals.get(squad), serde_json::to_string(&now))
+            && let Err(err) = journal.set_waiting_told(&json)
+        {
+            crate::daemon_log!("equipe: {squad}: what the person was told waits wasn't kept: {err}");
         }
     }
 
@@ -287,5 +342,62 @@ impl Runtime {
             Some(Err(err)) => self.squad_error(squad, format!("{err:#}")),
             None => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod waiting_told_tests {
+    use super::*;
+    use equipe_protocol::importance::{Impact, WaitKind, Waiting};
+
+    fn wait(ticket: TicketId, since: u64) -> Waiting {
+        Waiting { kind: WaitKind::Ticket, ticket: Some(ticket), status: None, title: "Add your Google login".into(), since: Some(since), impact: Impact::default(), asks: Vec::new(), request: None }
+    }
+
+    /// Golden Boot, 2026-11-25: one Google sign-in step waited on the person;
+    /// the daemon restarted four times in 51 minutes (engine updates) and each
+    /// restart handed the PM the same stale wait again, so the person was
+    /// reminded four times. What was told now survives a restart.
+    #[test]
+    fn a_stale_wait_told_once_is_not_told_again_after_a_restart() {
+        let w = [wait(39, 1_000)];
+        let now = 1_000 + importance::STALE_AFTER + 60;
+        let keys: HashSet<String> = w.iter().map(importance::key).collect();
+        let mut told = WaitingTold::default();
+        told.seen(&keys, now);
+        let first = importance::newly_stale(&w, &told.stale_keys(), now);
+        assert_eq!(first.len(), 1, "told the first time");
+        told.stale.insert(importance::key(&w[0]), now);
+        // The restart: what was kept is read back.
+        let kept: WaitingTold = serde_json::from_str(&serde_json::to_string(&told).unwrap()).unwrap();
+        let mut again = kept;
+        for later in [now + 300, now + 1_260, now + 3_060] {
+            again.seen(&keys, later);
+            assert!(importance::newly_stale(&w, &again.stale_keys(), later).is_empty(), "not again at +{}s", later - now);
+        }
+    }
+
+    /// A wait that blinks out (a restart before the board is read, a ticket
+    /// resumed and put down again) is not news; one gone for half an hour is.
+    #[test]
+    fn a_stale_wait_is_forgotten_only_after_it_is_gone_a_while() {
+        let w = [wait(39, 1_000)];
+        let keys: HashSet<String> = w.iter().map(importance::key).collect();
+        let now = 1_000 + importance::STALE_AFTER + 60;
+        let mut told = WaitingTold::default();
+        told.stale.insert(importance::key(&w[0]), now);
+        told.seen(&HashSet::new(), now + 120);
+        told.seen(&keys, now + 180);
+        assert!(importance::newly_stale(&w, &told.stale_keys(), now + 180).is_empty(), "a blink is not news");
+        told.seen(&HashSet::new(), now + 180 + STALE_FORGET_AFTER);
+        assert!(told.stale.is_empty(), "gone half an hour: forgotten");
+        assert_eq!(importance::newly_stale(&w, &told.stale_keys(), now + 200 + STALE_FORGET_AFTER).len(), 1, "back again: news again");
+    }
+
+    /// A journal written by an older build (or none) reads as nothing told.
+    #[test]
+    fn an_older_or_missing_record_reads_as_nothing_told() {
+        assert_eq!(serde_json::from_str::<WaitingTold>("{}").unwrap(), WaitingTold::default());
+        assert!(serde_json::from_str::<WaitingTold>("not json").is_err());
     }
 }

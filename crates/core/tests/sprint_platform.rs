@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use equipe_core::protocol::growth::Better;
 use equipe_core::protocol::sprint::{Experiment, ExperimentStatus, Metric, Rule, Split, Verdict};
 use equipe_core::sprint::data::{self, ProductData};
-use equipe_core::sprint::platform::{glance, live_from, Platform};
+use equipe_core::sprint::platform::{glance, live_commits_from, live_from, Platform};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -199,4 +199,20 @@ fn live_needs_an_app_and_the_quiet_day_over() {
     assert!(!live_from(&quiet, 1_000), "the first free version's quiet day");
     assert!(live_from(&quiet, 2_001), "over");
     assert!(live_from(&json!({ "resources": [{ "kind": "app", "name": "shop" }], "quiet_until": 0 }), 1_000));
+}
+
+/// The commits a cloud team's apps are live from, as `/v1/resources` gives
+/// them (`live_commit` on each app): what `crate::cloud_live` reads to tell
+/// work on main from work on the live site.
+#[test]
+fn the_live_commits_come_from_each_apps_live_commit() {
+    let v = json!({ "resources": [
+        { "kind": "app", "name": "golden-boot-academy", "live_commit": { "commit": "a04a2464f85cbd69a2afed75a5e0b2fa1525c056", "on_main": true, "at": 1 } },
+        { "kind": "app", "name": "old", "live_commit": null },
+        { "kind": "app", "name": "twin", "live_commit": { "commit": "a04a2464f85cbd69a2afed75a5e0b2fa1525c056" } },
+        { "kind": "app", "name": "odd", "live_commit": { "commit": "not a sha" } },
+        { "kind": "database", "name": "db", "live_commit": { "commit": "b2b2b2b2" } }
+    ] });
+    assert_eq!(live_commits_from(&v), vec!["a04a2464f85cbd69a2afed75a5e0b2fa1525c056".to_owned()]);
+    assert!(live_commits_from(&json!({})).is_empty());
 }

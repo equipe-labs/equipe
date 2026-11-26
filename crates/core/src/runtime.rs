@@ -954,6 +954,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         status_told: HashMap::new(),
         escalation: HashMap::new(),
         waiting_told: HashMap::new(),
+        cloud_live_seen: HashMap::new(),
         installs: std::collections::HashSet::new(),
         codex_binary: crate::engines::codex_binary(),
         engines: Default::default(),
@@ -1837,6 +1838,9 @@ struct Runtime {
     escalation: HashMap<String, crate::escalation::Planner>,
     /// What the person and the PM were told waits on the person, per squad (`runtime/status.rs`).
     waiting_told: HashMap<String, status::WaitingTold>,
+    /// For a cloud team: the landed tickets its apps' live versions carried
+    /// at the last look (`go_live::watch_cloud_live`).
+    cloud_live_seen: HashMap<String, std::collections::HashSet<TicketId>>,
     /// Both engines' plans, and members moving between them (`engines`).
     engines: engines::Engines,
     /// Pacing to the plans' budgets, per squad and engine ([`pacing`]).

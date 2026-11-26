@@ -1112,6 +1112,29 @@ impl Journal {
         self.set_meta("stale_waits_asked_at", &at.to_string())
     }
 
+    /// What the person and the PM were last told waits on the person
+    /// (`runtime::status::WaitingTold`, as JSON): kept so a daemon restart
+    /// (an update, a forced restart) doesn't tell them all of it again.
+    pub fn waiting_told(&self) -> Option<String> {
+        self.meta("waiting_told")
+    }
+
+    pub fn set_waiting_told(&self, json: &str) -> Result<()> {
+        self.set_meta("waiting_told", json)
+    }
+
+    /// The tickets the PM was told are on main but not live
+    /// (`crate::cloud_live`), so a restart doesn't tell it again.
+    pub fn not_live_told(&self) -> std::collections::HashSet<TicketId> {
+        self.meta("not_live_told").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub fn set_not_live_told(&self, told: &std::collections::HashSet<TicketId>) -> Result<()> {
+        let mut ids: Vec<&TicketId> = told.iter().collect();
+        ids.sort();
+        self.set_meta("not_live_told", &serde_json::to_string(&ids).unwrap_or_default())
+    }
+
     fn meta(&self, key: &str) -> Option<String> {
         self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
     }
