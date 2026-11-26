@@ -1044,5 +1044,9 @@
   "news.sprint_did_not": "H-{id} “{belief}”: it didn't work ({numbers}).",
   "news.sprint_inconclusive": "H-{id} “{belief}”: inconclusive — the numbers don't settle it.",
   "news.sprint_no_events": "H-{id} “{belief}” is live, but its events ({events}) aren't arriving: it can't be measured until that's fixed.",
-  "news.sprint_budget": "Sprint S-{id} has used {pct}% of its budget ({spent} of {budget} tokens)."
+  "news.sprint_budget": "Sprint S-{id} has used {pct}% of its budget ({spent} of {budget} tokens).",
+  "guard.claim_nothing_waiting": "nothing is waiting on you|nothing waits on you|nothing new is waiting on you|nothing is waiting for you|nothing needs you|nothing for you to do|no action needed from you|nothing is needed from you",
+  "guard.claim_credits_out": "credits ran out|out of credits|credits have run out|credits are used up|add credits to continue|paused for credits",
+  "guard.claim_live": "is live now|is now live|now live at|went live|is live at|live on the real address",
+  "guard.promise": "next time|i'll fix|i will fix|we'll fix|will fix it|fix it later|in the next update|in the next change"
 }

@@ -272,19 +272,33 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
         }
     };
     let changed = changed_files(&root, base.as_deref());
-    let design = root.join(equipe_core::design::DIR);
-    let flows_rel = format!("{}/{}", equipe_core::design::DIR, flows::DIR);
     let mut input = precheck::Input { ticket: r.ticket, head, base: base.clone(), changed_files: changed.len(), ..precheck::Input::default() };
-    let map: Option<Value> = std::fs::read_to_string(design.join(flows::DIR).join(flows::FILE)).ok().and_then(|t| serde_json::from_str(&t).ok());
-    let Some(map) = map else {
-        errors.push(format!("no UI map in the worktree ({flows_rel}/{}): nothing to render", flows::FILE));
-        input.errors = errors;
+    // The apps the change is in (a repository may hold several), and the UI map: the root's, else a changed app's own.
+    let apps = precheck::app_roots(&changed, |rel| root.join(rel).is_file());
+    let map_dirs = precheck::map_dirs(&apps);
+    let found = map_dirs.iter().find_map(|dir| {
+        let text = std::fs::read_to_string(root.join(dir).join(flows::DIR).join(flows::FILE)).ok()?;
+        serde_json::from_str::<Value>(&text).ok().map(|map| (dir.clone(), map))
+    });
+    let Some((design_rel, map)) = found else {
+        let looked = map_dirs.iter().map(|d| format!("{d}/{}/{}", flows::DIR, flows::FILE)).collect::<Vec<_>>().join(", ");
         (input.touched.unmapped, input.touched.quiet) = precheck::split_unmapped(changed.iter().filter(|f| precheck::ui_file(f)).cloned().collect(), |f| read_changed(&root, f));
+        // No map: the changed app's own pages, rendered anyway.
+        if let Some(app) = apps.first() {
+            return fallback(r, &root, &out, &apps, app, &looked, input, errors, started).await;
+        }
+        errors.push(format!("no UI map in the worktree ({looked}): nothing to render"));
+        input.errors = errors;
         input.secs = started.elapsed().as_secs();
         return keep(precheck::assemble(input, &out), &out);
     };
+    let design = root.join(&design_rel);
+    // The app the map is of: its preview and commands run there (the root, for the root's map).
+    let app_rel = design_rel.strip_suffix(&format!("/{}", equipe_core::design::DIR)).unwrap_or_default().to_owned();
+    let app_dir = if app_rel.is_empty() { root.clone() } else { root.join(&app_rel) };
+    let flows_rel = format!("{design_rel}/{}", flows::DIR);
     let config = precheck::Config::of(&map);
-    let mut touched = precheck::touched(&map, &flows_rel, &changed);
+    let mut touched = precheck::touched_in_app(&map, &app_rel, &changed);
     // Unmapped files that draw nothing (helpers, type files) aren't held against the change.
     (touched.unmapped, touched.quiet) = precheck::split_unmapped(std::mem::take(&mut touched.unmapped), |f| read_changed(&root, f));
     input.unmapped_large = config.unmapped_large();
@@ -316,10 +330,10 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
     let mut preview = None;
     if !by_url.is_empty() {
         // No preview in the map: a Vite project serves itself (`precheck::default_preview`).
-        let preview_command = config.preview.clone().or_else(|| precheck::default_preview(&root));
+        let preview_command = config.preview.clone().or_else(|| precheck::default_preview(&app_dir));
         let origin = match (&r.url, &preview_command) {
             (Some(url), _) => Some(url.clone()),
-            (None, Some(command)) => match Preview::start(command, &root, config.ready.as_deref(), &out).await {
+            (None, Some(command)) => match Preview::start(command, &app_dir, config.ready.as_deref(), &out).await {
                 Ok(p) => {
                     let origin = p.origin.clone();
                     preview = Some(p);
@@ -374,7 +388,7 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
             for mode in &modes {
                 let condition = precheck::Condition::new(width, mode, precheck::Variant::Normal).code();
                 let path = out.join("shots").join(&s.flow).join(&s.screen).join(flows::picture_name(&s.state, mode, width));
-                let error = shoot_by_command(s, &root, &path, width, mode, origin.as_deref()).await.err();
+                let error = shoot_by_command(s, &app_dir, &path, width, mode, origin.as_deref()).await.err();
                 taken.push(precheck::Taken { key: key_of(s), condition, path: error.is_none().then(|| path.to_string_lossy().into_owned()), dpr: 0., error, dom: None });
             }
         }
@@ -416,6 +430,267 @@ fn keep(report: precheck::Report, out: &Path) -> Result<precheck::Report, String
     let call = design_qa::gate(Some(&report));
     precheck::write(out, &report, &report.summary(&call.headline(false))).map_err(|e| format!("{}: {e}", out.display()))?;
     Ok(report)
+}
+
+// ── no map: the changed app's own pages ──
+
+/// How long building an app (its head or its base) may take.
+const BUILD_LIMIT: Duration = Duration::from_secs(300);
+
+/// The precheck without a UI map: the changed app `app` (the first of
+/// `apps`, the one with the most changed files) served as it would be
+/// ([`precheck::serve_plan`]), its own pages ([`precheck::fallback_routes`])
+/// rendered at every condition and measured as a map's states are, and —
+/// where the base commit's app serves the same way — compared with the base
+/// rendered alike. Nothing to compare with is said, never a failure.
+#[allow(clippy::too_many_arguments)]
+async fn fallback(r: &Run, root: &Path, out: &Path, apps: &[String], app: &str, looked: &str, mut input: precheck::Input, mut errors: Vec<String>, started: Instant) -> Result<precheck::Report, String> {
+    let label = if app.is_empty() { "the repository's root".to_owned() } else { format!("`{app}/`") };
+    let app_dir = if app.is_empty() { root.to_owned() } else { root.join(app) };
+    let others: Vec<String> = apps.iter().filter(|a| a.as_str() != app).map(|a| if a.is_empty() { "the root".to_owned() } else { format!("{a}/") }).collect();
+    let others = if others.is_empty() { String::new() } else { format!(" Other changed apps not rendered: {}.", others.join(", ")) };
+    let finish = |mut input: precheck::Input, errors: Vec<String>, fallback: String| {
+        input.errors = errors;
+        input.fallback = Some(fallback);
+        input.secs = started.elapsed().as_secs();
+        keep(precheck::assemble(input, out), out)
+    };
+    let serve = match precheck::serve_plan(&app_dir) {
+        Ok(serve) => serve,
+        Err(why) => {
+            errors.push(format!("no UI map ({looked}), and the changed app at {label} can't be served: {why}"));
+            return finish(input, errors, format!("no UI map; the changed app at {label} couldn't be rendered.{others}"));
+        }
+    };
+    let builds = out.join("build");
+    let site = match serve {
+        precheck::Serve::Files => Ok(app_dir.clone()),
+        precheck::Serve::Vite => vite_build(&app_dir, &builds.join("head"), out).await,
+    };
+    let site = match site {
+        Ok(site) => site,
+        Err(why) => {
+            let _ = std::fs::remove_dir_all(&builds);
+            errors.push(format!("no UI map ({looked}), and the changed app at {label} didn't build: {why}"));
+            return finish(input, errors, format!("no UI map; the changed app at {label} ({}) couldn't be rendered.{others}", serve.says()));
+        }
+    };
+    let routes = precheck::fallback_routes(&site);
+    let flow = precheck::app_flow(app);
+    let shots_at = |origin: &str| -> Vec<flows::Shot> {
+        routes
+            .iter()
+            .map(|route| flows::Shot { flow: flow.clone(), screen: precheck::route_screen(route), state: "default".into(), url: Some(format!("{origin}{route}")), command: None, dir: PathBuf::new(), capture: flows::Capture::default() })
+            .collect()
+    };
+    let conditions = precheck::conditions(&precheck::WIDTHS, &precheck::SCHEMES);
+    let config = precheck::Config::default();
+    let mut taken: Vec<precheck::Taken> = Vec::new();
+    match Site::start(site.clone()).await {
+        Ok(served) => {
+            let axe = match crate::design_system::axe().await {
+                Ok(path) => Some(path),
+                Err(why) => {
+                    input.axe_skipped = Some(why);
+                    None
+                }
+            };
+            let shots = shots_at(&served.origin);
+            match render(&shots, &conditions, &config, &served.origin, out, axe.as_deref()).await {
+                Ok(got) => taken.extend(got),
+                Err(why) => errors.push(format!("rendering stopped: {why}")),
+            }
+            served.stop();
+        }
+        Err(why) => errors.push(format!("the changed app's pages couldn't be served: {why}")),
+    }
+    // The base, served and rendered alike, at normal size: what the pictures are compared with.
+    let compared = match (input.base.clone(), taken.iter().any(|t| t.error.is_none())) {
+        (_, false) => Err("nothing rendered to compare".to_owned()),
+        (None, _) => Err("no commit in common with the main branch".to_owned()),
+        (Some(_), _) if started.elapsed() > r.budget => Err("past the time budget".to_owned()),
+        (Some(base), true) => match base_site(root, &base, app, out, &builds).await {
+            Err(why) => Err(why),
+            Ok((base_site, base_serve)) => match Site::start(base_site).await {
+                Err(why) => Err(format!("the base couldn't be served: {why}")),
+                Ok(served) => {
+                    let normal: Vec<precheck::Condition> = conditions.iter().filter(|c| c.variant == precheck::Variant::Normal).cloned().collect();
+                    let base_out = out.join("base");
+                    let got = match std::fs::create_dir_all(&base_out) {
+                        Ok(()) => render(&shots_at(&served.origin), &normal, &config, &served.origin, &base_out, None).await,
+                        Err(e) => Err(e.to_string()),
+                    };
+                    served.stop();
+                    match got {
+                        Ok(got) => {
+                            for t in got.into_iter().filter(|t| t.error.is_none()) {
+                                if let Some(path) = t.path {
+                                    input.baselines.insert((t.key, t.condition), PathBuf::from(path));
+                                }
+                            }
+                            let short = &base[..base.len().min(10)];
+                            if input.baselines.is_empty() { Err("no picture of the base could be taken".to_owned()) } else { Ok(format!("compared with the base commit {short} ({})", base_serve.says())) }
+                        }
+                        Err(why) => Err(format!("rendering the base stopped: {why}")),
+                    }
+                }
+            },
+        },
+    };
+    let _ = std::fs::remove_dir_all(&builds);
+    let _ = std::fs::remove_dir_all(out.join("base-tree"));
+    let compared = compared.unwrap_or_else(|why| {
+        input.no_base = true;
+        format!("no base comparison ({why})")
+    });
+    input.conditions = conditions;
+    input.taken = taken;
+    let pages = routes.join(", ");
+    finish(input, errors, format!("no UI map ({looked}); rendered the changed app at {label} ({}) at {pages}; {compared}.{others}", serve.says()))
+}
+
+/// The app at `app` (from the repository's root) as it was at commit
+/// `base`, taken out of git (`git archive`, no worktree made) under
+/// `out/base-tree`, given the head's installed dependencies, and served as
+/// [`precheck::serve_plan`] says: the folder to serve, and how.
+async fn base_site(root: &Path, base: &str, app: &str, out: &Path, builds: &Path) -> Result<(PathBuf, precheck::Serve), String> {
+    let spec = if app.is_empty() { "." } else { app };
+    if !app.is_empty() && git(root, &["cat-file", "-e", &format!("{base}:{spec}")]).is_err() {
+        return Err("the app is new since the base".into());
+    }
+    let tree = out.join("base-tree");
+    let _ = std::fs::remove_dir_all(&tree);
+    std::fs::create_dir_all(&tree).map_err(|e| e.to_string())?;
+    let status = tokio::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(r#"git -C "$1" archive --format=tar "$2" -- "$3" | tar -x -C "$4""#)
+        .args(["sh"])
+        .arg(root)
+        .arg(base)
+        .arg(spec)
+        .arg(&tree)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map_err(|e| format!("git archive: {e}"))?;
+    let app_base = if app.is_empty() { tree.clone() } else { tree.join(app) };
+    if !status.success() || !app_base.is_dir() {
+        return Err(format!("the base's files couldn't be taken out of git ({status})"));
+    }
+    // The head's dependencies, linked: the base is built with what is installed.
+    let modules = if app.is_empty() { root.join("node_modules") } else { root.join(app).join("node_modules") };
+    if modules.is_dir() && !app_base.join("node_modules").exists() {
+        link(&modules, &app_base.join("node_modules")).map_err(|e| e.to_string())?;
+    }
+    let serve = precheck::serve_plan(&app_base).map_err(|why| format!("the base's app can't be served: {why}"))?;
+    let site = match serve {
+        precheck::Serve::Files => app_base,
+        precheck::Serve::Vite => vite_build(&app_base, &builds.join("base"), out).await.map_err(|why| format!("the base didn't build: {why}"))?,
+    };
+    Ok((site, serve))
+}
+
+#[cfg(unix)]
+fn link(target: &Path, at: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, at)
+}
+
+#[cfg(not(unix))]
+fn link(_target: &Path, _at: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no symbolic links here"))
+}
+
+/// The Vite app at `app` built by its own Vite into `into` — never into the
+/// worktree — with its root at `/` whatever its `base` says, so it is served
+/// from a folder as it is from its host; its log in `out/build.log`.
+async fn vite_build(app: &Path, into: &Path, out: &Path) -> Result<PathBuf, String> {
+    let _ = std::fs::remove_dir_all(into);
+    std::fs::create_dir_all(into).map_err(|e| e.to_string())?;
+    let log_path = out.join("build.log");
+    let log = std::fs::OpenOptions::new().create(true).append(true).open(&log_path).map_err(|e| e.to_string())?;
+    let vite = app.join("node_modules/.bin/vite");
+    eprintln!("{}", t!("design.precheck.preview", command = format!("{} build --outDir {}", vite.display(), into.display())));
+    let mut command = tokio::process::Command::new(&vite);
+    command
+        .args(["build", "--base", "/", "--emptyOutDir", "--logLevel", "warn", "--outDir"])
+        .arg(into)
+        .current_dir(app)
+        .stdin(Stdio::null())
+        .stdout(log.try_clone().map_err(|e| e.to_string())?)
+        .stderr(log)
+        .kill_on_drop(true);
+    // Its `#!/usr/bin/env node` finds the Node.js equipe uses.
+    if let Some(bin) = crate::design::node_tools().ok().and_then(|(node, _)| node.parent().map(Path::to_path_buf)) {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let joined = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&path))).unwrap_or(path);
+        command.env("PATH", joined);
+    }
+    let status = match tokio::time::timeout(BUILD_LIMIT, command.status()).await {
+        Ok(status) => status.map_err(|e| format!("vite: {e}"))?,
+        Err(_) => return Err(format!("`vite build` took over {} minutes", BUILD_LIMIT.as_secs() / 60)),
+    };
+    if !status.success() {
+        return Err(format!("`vite build` stopped ({status}){}; see {}", precheck::log_head(&log_path), log_path.display()));
+    }
+    if !precheck::fallback_routes(into).iter().any(|route| into.join(route.trim_matches('/')).join("index.html").is_file()) {
+        return Err("`vite build` made no page".into());
+    }
+    Ok(into.to_owned())
+}
+
+/// A folder served over HTTP on a port of its own, for Chrome to open as a
+/// site (absolute paths like `/brand/logo.svg` resolve); stopped when done.
+struct Site {
+    task: tokio::task::JoinHandle<()>,
+    origin: String,
+}
+
+impl Site {
+    async fn start(dir: PathBuf) -> Result<Site, String> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| e.to_string())?;
+        let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+        let dir = std::sync::Arc::new(dir);
+        let task = tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(serve_file(stream, dir.clone()));
+            }
+        });
+        Ok(Site { task, origin: format!("http://127.0.0.1:{port}") })
+    }
+
+    fn stop(self) {
+        self.task.abort();
+    }
+}
+
+/// One request to a [`Site`] answered: the file [`precheck::static_file`]
+/// names, or 404; the connection closed after.
+async fn serve_file(mut stream: tokio::net::TcpStream, dir: std::sync::Arc<PathBuf>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut head = Vec::new();
+    let mut buf = [0u8; 4096];
+    while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < 16 * 1024 {
+        match tokio::time::timeout(Duration::from_secs(10), stream.read(&mut buf)).await {
+            Ok(Ok(n)) if n > 0 => head.extend_from_slice(&buf[..n]),
+            _ => return,
+        }
+    }
+    let line = String::from_utf8_lossy(&head).lines().next().unwrap_or_default().to_owned();
+    let mut parts = line.split_whitespace();
+    let (method, target) = (parts.next().unwrap_or_default(), parts.next().unwrap_or("/"));
+    let found = if matches!(method, "GET" | "HEAD") { precheck::static_file(&dir, target) } else { None };
+    let (status, kind, body) = match found.and_then(|path| std::fs::read(&path).ok().map(|body| (precheck::content_type(&path), body))) {
+        Some((kind, body)) => ("200 OK", kind, body),
+        None => ("404 Not Found", "text/plain; charset=utf-8", b"not found".to_vec()),
+    };
+    let reply = format!("HTTP/1.1 {status}\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n", body.len());
+    if stream.write_all(reply.as_bytes()).await.is_ok() && method != "HEAD" {
+        let _ = stream.write_all(&body).await;
+    }
+    let _ = stream.shutdown().await;
 }
 
 /// The states shot by URL rendered at every condition by `precheck.mjs`, on
@@ -1053,6 +1328,71 @@ mod tests {
         let call = design_qa::gate(Some(&report));
         assert_eq!((call.decision, call.judgment), (Decision::Designer, Some(design_qa::Judgment::PrecheckFailed)));
         assert!(out.join(precheck::REPORT_JSON).is_file() && out.join(precheck::REPORT_MD).is_file());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_precheck_without_a_map_turns_to_the_changed_subfolder_app_and_says_how_it_went() {
+        // A multi-app repository as a real team's: the changed app is a Vite app in a subfolder, with no UI map.
+        let dir = std::env::temp_dir().join(format!("equipe-precheck-apps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let repo = dir.join("repo");
+        for (file, text) in [
+            ("cafe/index.html", "<h1>Cafe</h1>"),
+            ("o1path/package.json", r#"{ "scripts": { "build": "vite build" }, "devDependencies": { "vite": "^5" } }"#),
+            ("o1path/index.html", "<div id=root></div>"),
+            ("o1path/design/tokens.json", "{}"),
+        ] {
+            std::fs::create_dir_all(repo.join(file).parent().unwrap()).unwrap();
+            std::fs::write(repo.join(file), text).unwrap();
+        }
+        let g = |args: &[&str]| assert!(git_cmd(&repo).args(args).output().unwrap().status.success(), "{args:?}");
+        g(&["init", "-q", "-b", "main"]);
+        g(&["add", "."]);
+        g(&["-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "first"]);
+        std::fs::create_dir_all(repo.join("o1path/src")).unwrap();
+        std::fs::write(repo.join("o1path/src/App.tsx"), "export default () => <header><img src=\"/brand/logo.svg\" /></header>;\n").unwrap();
+        std::fs::create_dir_all(repo.join("o1path/design/assets/logo")).unwrap();
+        std::fs::write(repo.join("o1path/design/assets/logo/logo.svg"), "<svg/>").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let report = rt.block_on(run(&Run { worktree: repo.clone(), base: Some("main".into()), out: dir.join("out"), url: None, ticket: Some(5), budget: Duration::from_secs(30), states: Vec::new() })).unwrap();
+        // Its dependencies aren't installed here: said precisely, the app and both places a map was looked for named.
+        let fallback = report.fallback.clone().unwrap_or_default();
+        assert!(fallback.contains("`o1path/`"), "{fallback}");
+        assert!(report.errors.iter().any(|e| e.contains("o1path/design/flows/flows.json") && e.contains("dependencies aren't installed")), "{:?}", report.errors);
+        assert!(!report.errors.iter().any(|e| e.contains("nothing to render")), "{:?}", report.errors);
+        let md = std::fs::read_to_string(dir.join("out").join(precheck::REPORT_MD)).unwrap();
+        assert!(md.contains("- Fallback: no UI map; the changed app at `o1path/` couldn't be rendered."), "{md}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_precheck_serves_a_folder_as_a_site_for_chrome() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = std::env::temp_dir().join(format!("equipe-precheck-site-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("brand")).unwrap();
+        std::fs::write(dir.join("index.html"), "<h1>Home</h1>").unwrap();
+        std::fs::write(dir.join("brand/logo.svg"), "<svg/>").unwrap();
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let site = Site::start(dir.clone()).await.unwrap();
+            let get = |path: &'static str| {
+                let addr = site.origin.trim_start_matches("http://").to_owned();
+                async move {
+                    let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+                    stream.write_all(format!("GET {path} HTTP/1.1\r\nHost: x\r\n\r\n").as_bytes()).await.unwrap();
+                    let mut reply = String::new();
+                    stream.read_to_string(&mut reply).await.unwrap();
+                    reply
+                }
+            };
+            let logo = get("/brand/logo.svg").await;
+            assert!(logo.starts_with("HTTP/1.1 200") && logo.contains("image/svg+xml") && logo.ends_with("<svg/>"), "{logo}");
+            assert!(get("/start").await.ends_with("<h1>Home</h1>"), "a client-side route gets the page");
+            assert!(get("/brand/missing.png").await.starts_with("HTTP/1.1 404"));
+            site.stop();
+        });
         let _ = std::fs::remove_dir_all(dir);
     }
 }

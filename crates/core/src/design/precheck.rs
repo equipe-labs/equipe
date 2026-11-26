@@ -282,6 +282,24 @@ pub fn touched(map: &Value, flows_dir: &str, changed: &[String]) -> Touched {
     Touched { screens: screens.into_iter().collect(), unmapped, quiet: Vec::new(), source_hits }
 }
 
+/// What of the UI map of the app at `app` (from the repository's root; `""`
+/// for the root's own map, exactly [`touched`]) the `changed` files touch.
+/// An app's map names its files from the app's folder (`src/App.tsx`) and
+/// keeps its pictures in the app's own `design/flows/`; changed files outside
+/// the app that can change what users see are unmapped.
+pub fn touched_in_app(map: &Value, app: &str, changed: &[String]) -> Touched {
+    let flows_dir = format!("{}/{}", crate::design::DIR, crate::design::flows::DIR);
+    if app.is_empty() {
+        return touched(map, &flows_dir, changed);
+    }
+    let prefix = format!("{}/", app.trim_end_matches('/'));
+    let inside: Vec<String> = changed.iter().filter_map(|f| f.strip_prefix(&prefix).map(str::to_owned)).collect();
+    let mut found = touched(map, &flows_dir, &inside);
+    found.unmapped = found.unmapped.into_iter().map(|f| format!("{prefix}{f}")).collect();
+    found.unmapped.extend(changed.iter().filter(|f| !f.starts_with(&prefix) && ui_file(f)).cloned());
+    found
+}
+
 /// Order `items` by how relevant they are to the change, most first: the
 /// states of screens whose own `source` changed (most changed files first),
 /// each screen's default state before its others, the rest in their order.
@@ -355,9 +373,7 @@ fn in_dir(lower: &str, dir: &str) -> bool {
 pub fn visual_path(path: &str) -> Visual {
     let lower = path.to_ascii_lowercase();
     let name = lower.rsplit('/').next().unwrap_or(&lower);
-    let test = name.contains(".test.") || name.contains(".spec.") || name.contains(".stories.") || lower.contains("__tests__/") || lower.contains("__mocks__/") || in_dir(&lower, "tests/") || in_dir(&lower, "test/");
-    let docs = name.ends_with(".md") || name.ends_with(".txt") || name.ends_with(".rst") || in_dir(&lower, "docs/") || name.starts_with("readme") || name.starts_with("changelog") || name.starts_with("license");
-    if test || docs {
+    if test_or_docs(&lower, name) {
         return Visual::No;
     }
     let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
@@ -384,6 +400,13 @@ pub fn visual_path(path: &str) -> Visual {
         (Some(_), _) => Visual::Maybe,
         _ => Visual::No,
     }
+}
+
+/// Whether a lowercased path (`name` its last part) is a test or a document.
+fn test_or_docs(lower: &str, name: &str) -> bool {
+    let test = name.contains(".test.") || name.contains(".spec.") || name.contains(".stories.") || lower.contains("__tests__/") || lower.contains("__mocks__/") || in_dir(lower, "tests/") || in_dir(lower, "test/");
+    let docs = name.ends_with(".md") || name.ends_with(".txt") || name.ends_with(".rst") || in_dir(lower, "docs/") || name.starts_with("readme") || name.starts_with("changelog") || name.starts_with("license");
+    test || docs
 }
 
 /// Where the deepest of `dirs` that `lower` is in starts, if it is in one.
@@ -455,6 +478,235 @@ pub fn split_unmapped(unmapped: Vec<String>, read: impl Fn(&str) -> Option<Strin
         if shows { visual.push(file) } else { quiet.push(file) }
     }
     (visual, quiet)
+}
+
+// ── the app a change is in, and its pages without a map ──
+//
+// A repository may hold several apps (`cafe/`, `habits/`, `o1path/`), each
+// with its own `package.json` or `index.html` and its own `design/` folder,
+// and most small products never get a UI map at all. The precheck looks for
+// the map at the repository's root first (as it always has), then in each
+// changed app's own design folder ([`map_dirs`]). With none, it still renders
+// the changed app's own pages ([`serve_plan`], [`fallback_routes`]) at every
+// condition and measures them, so the gate gets pictures and findings instead
+// of "nothing to render".
+
+/// How many pages of an app without a UI map are rendered at most: its home
+/// and a few language versions of it.
+pub const MAX_FALLBACK_ROUTES: usize = 4;
+
+/// Image files: not code, but a changed one (a logo) is what users see.
+const IMAGES: [&str; 8] = ["png", "jpg", "jpeg", "webp", "gif", "avif", "ico", "bmp"];
+
+/// Folders whose `index.html` is an app's assets or output, never the app.
+const NOT_APP_DIRS: [&str; 8] = ["public", "static", "assets", "design", "dist", "build", "out", "node_modules"];
+
+/// Whether a changed file can change what an app's pages show, to find the
+/// app it belongs to: a UI file ([`ui_file`]), an image, or what an app's
+/// `design/` folder holds (tokens, brand, assets) — never a test or a document.
+pub fn shown_by_app(path: &str) -> bool {
+    if ui_file(path) {
+        return true;
+    }
+    let lower = path.to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    if test_or_docs(&lower, name) {
+        return false;
+    }
+    let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
+    IMAGES.contains(&ext) || (ext == "json" && in_dir(&lower, "design/"))
+}
+
+/// The app folder `file` (from the repository's root) belongs to: the
+/// nearest folder above it with a `package.json` or an `index.html` — an
+/// `index.html` inside a `public/`, `design/` or build folder being the
+/// app's assets, not the app — else the repository's root (`""`). `has`
+/// says whether a file, from the repository's root, exists.
+pub fn app_root(file: &str, has: impl Fn(&str) -> bool) -> String {
+    let mut dir = file.rsplit_once('/').map_or("", |(d, _)| d);
+    while !dir.is_empty() {
+        let assets = dir.split('/').any(|part| NOT_APP_DIRS.contains(&part.to_ascii_lowercase().as_str()));
+        if has(&format!("{dir}/package.json")) || (!assets && has(&format!("{dir}/index.html"))) {
+            return dir.to_owned();
+        }
+        dir = dir.rsplit_once('/').map_or("", |(d, _)| d);
+    }
+    String::new()
+}
+
+/// The app folders the `changed` files that can change what users see
+/// belong to ([`app_root`]), the one with the most such files first; `""` is
+/// the repository's root.
+pub fn app_roots(changed: &[String], has: impl Fn(&str) -> bool) -> Vec<String> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for file in changed.iter().filter(|f| shown_by_app(f)) {
+        *counts.entry(app_root(file, &has)).or_default() += 1;
+    }
+    let mut roots: Vec<(String, usize)> = counts.into_iter().collect();
+    roots.sort_by_key(|(_, n)| std::cmp::Reverse(*n));
+    roots.into_iter().map(|(root, _)| root).collect()
+}
+
+/// Where a change's UI map is looked for, the first found wins: the
+/// repository's own `design/` folder (as always), then each changed app's
+/// (`o1path/design`), as design folders from the repository's root.
+pub fn map_dirs(apps: &[String]) -> Vec<String> {
+    let mut out = vec![crate::design::DIR.to_owned()];
+    for app in apps.iter().filter(|a| !a.is_empty()) {
+        let dir = format!("{app}/{}", crate::design::DIR);
+        if !out.contains(&dir) {
+            out.push(dir);
+        }
+    }
+    out
+}
+
+/// How the pages of an app without a UI map are served for the precheck.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Serve {
+    /// Built by its own Vite (`vite build --base /`) into a folder of the
+    /// precheck's — never into the worktree — and that folder served as files.
+    Vite,
+    /// Its folder served as it is: plain HTML, CSS and scripts.
+    Files,
+}
+
+impl Serve {
+    /// How it was served, for the report.
+    pub fn says(self) -> &'static str {
+        match self {
+            Serve::Vite => "built with its own Vite",
+            Serve::Files => "its files served as they are",
+        }
+    }
+}
+
+/// How the pages of the app at `app` are served without a UI map, or why
+/// they can't be: a Vite app with its dependencies installed is built; an
+/// app with an `index.html` and no build step is served as it is. Any other
+/// build isn't guessed at (its pictures would be of unbuilt code).
+pub fn serve_plan(app: &Path) -> Result<Serve, String> {
+    let manifest: Option<Value> = std::fs::read_to_string(app.join("package.json")).ok().and_then(|t| serde_json::from_str(&t).ok());
+    let has_dep = |name: &str| manifest.as_ref().is_some_and(|m| ["dependencies", "devDependencies"].iter().any(|k| m.get(k).and_then(|d| d.get(name)).is_some()));
+    if has_dep("vite") {
+        return if app.join("node_modules/.bin/vite").exists() { Ok(Serve::Vite) } else { Err("it builds with Vite and its dependencies aren't installed here (no node_modules/.bin/vite)".into()) };
+    }
+    if let Some(script) = manifest.as_ref().and_then(|m| m.get("scripts")?.get("build")?.as_str()) {
+        return Err(format!("it builds with `{script}`, which the precheck runs only for Vite apps: give it a UI map with `precheck.preview`"));
+    }
+    if app.join("index.html").is_file() { Ok(Serve::Files) } else { Err("it has no index.html to serve and no Vite build".into()) }
+}
+
+/// Whether a folder's name reads as a language: `en`, `ko`, `pt-br`, `zh_Hant`.
+fn locale_like(name: &str) -> bool {
+    let (lang, region) = name.split_once(['-', '_']).unwrap_or((name, ""));
+    lang.len() == 2 && lang.bytes().all(|b| b.is_ascii_lowercase()) && (region.is_empty() || ((2..=4).contains(&region.len()) && region.bytes().all(|b| b.is_ascii_alphabetic())))
+}
+
+/// The pages of the served app at `site` to render without a UI map: its
+/// home (`/`), and the language versions its build or folder has
+/// (`en/index.html` → `/en/`), at most [`MAX_FALLBACK_ROUTES`] in all.
+pub fn fallback_routes(site: &Path) -> Vec<String> {
+    let mut locales: Vec<String> = std::fs::read_dir(site)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+        .filter(|name| locale_like(name) && site.join(name).join("index.html").is_file())
+        .collect();
+    locales.sort();
+    let home = site.join("index.html").is_file() || locales.is_empty();
+    let mut out: Vec<String> = if home { vec!["/".to_owned()] } else { Vec::new() };
+    out.extend(locales.into_iter().map(|l| format!("/{l}/")));
+    out.truncate(MAX_FALLBACK_ROUTES);
+    out
+}
+
+/// A page of an app without a map, as a screen's name: `/` is `home`, `/en/` is `en`.
+pub fn route_screen(route: &str) -> String {
+    let trimmed = route.trim_matches('/');
+    if trimmed.is_empty() { "home".to_owned() } else { trimmed.replace('/', "-") }
+}
+
+/// An app folder without a map, as a flow's name: the root is `app`, `apps/web` is `apps-web`.
+pub fn app_flow(app: &str) -> String {
+    if app.is_empty() { "app".to_owned() } else { app.trim_matches('/').replace('/', "-") }
+}
+
+/// The file the precheck's static server answers request `target` with,
+/// from the served folder `site`: the file itself, a folder's `index.html`,
+/// and for a client-side route (no extension in its last part) the app's
+/// own `index.html`. Never anything outside `site` or hidden (`.env`, `.git`).
+pub fn static_file(site: &Path, target: &str) -> Option<PathBuf> {
+    let path = percent_decode(target.split(['?', '#']).next().unwrap_or("/"));
+    let mut at = site.to_path_buf();
+    for part in path.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part.starts_with('.') || part.contains('\\') {
+            return None;
+        }
+        at.push(part);
+    }
+    if at.is_dir() {
+        at.push("index.html");
+    }
+    if at.is_file() {
+        return Some(at);
+    }
+    let last = path.rsplit('/').next().unwrap_or_default();
+    let index = site.join("index.html");
+    (!last.contains('.') && index.is_file()).then_some(index)
+}
+
+/// `%XX` escapes in a URL's path, decoded.
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = (bytes[i] == b'%').then(|| text.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(h, 16).ok())).flatten();
+        match hex {
+            Some(b) => {
+                out.push(b);
+                i += 3;
+            }
+            None => {
+                out.push(bytes[i]);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The `Content-Type` the precheck's static server sends `path` with.
+pub fn content_type(path: &Path) -> &'static str {
+    match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("html" | "htm") => "text/html; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("js" | "mjs" | "cjs") => "text/javascript; charset=utf-8",
+        Some("json" | "map") => "application/json",
+        Some("webmanifest") => "application/manifest+json",
+        Some("svg") => "image/svg+xml",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("ico") => "image/x-icon",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
+        Some("txt") => "text/plain; charset=utf-8",
+        Some("xml") => "application/xml",
+        Some("wasm") => "application/wasm",
+        Some("mp4") => "video/mp4",
+        Some("webm") => "video/webm",
+        _ => "application/octet-stream",
+    }
 }
 
 // ── what precheck.mjs measures ──
@@ -774,6 +1026,10 @@ pub struct Report {
     pub axe: AxeRun,
     /// What stopped the whole run, or part of it: no map, no preview.
     pub errors: Vec<String>,
+    /// With no UI map: which app's own pages were rendered instead, how they
+    /// were served, and what they were compared with (or why they weren't).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback: Option<String>,
     pub secs: u64,
 }
 
@@ -878,6 +1134,9 @@ impl Report {
         let mut out = vec![format!("# Design QA precheck\n\n{headline}")];
         let changed = self.changed();
         let mut facts = vec![format!("- Touched screens: {}", if self.touched.is_empty() { "none on the UI map".to_owned() } else { self.touched.join(", ") })];
+        if let Some(fallback) = &self.fallback {
+            facts.push(format!("- Fallback: {fallback}"));
+        }
         facts.push(format!("- Changed states (pixels against the base): {}", if changed.is_empty() { "none".to_owned() } else { changed.join(", ") }));
         let taken = self.shots.len() - self.failed();
         facts.push(format!("- Pictures: {taken} taken across {} conditions, {} failed", self.conditions.len(), self.failed()));
@@ -1148,6 +1407,12 @@ pub struct Input {
     pub committed: BTreeMap<(String, String), PathBuf>,
     pub axe_skipped: Option<String>,
     pub errors: Vec<String>,
+    /// With no UI map, what was rendered instead ([`Report::fallback`]).
+    pub fallback: Option<String>,
+    /// Nothing to compare the pictures with — no map's pictures and no base
+    /// rendered: whether a finding predates the change can't be told, so none
+    /// is held against it as new (a designer reads them all).
+    pub no_base: bool,
     pub secs: u64,
 }
 
@@ -1182,6 +1447,11 @@ pub fn assemble(input: Input, out: &Path) -> Report {
     // New: on a changed picture — at normal size, where what changed is
     // known, only if it is in the part that changed.
     for f in &mut found {
+        if input.no_base {
+            f.evidence.push_str(" (no base to compare with: it may predate this change)");
+            f.new = false;
+            continue;
+        }
         let Some(c) = f.conditions.first().and_then(|c| Condition::parse(c)) else { continue };
         let normal = c.normal().code();
         f.new = match shots.iter().find(|s| s.key == f.key && s.condition == normal) {
@@ -1239,6 +1509,7 @@ pub fn assemble(input: Input, out: &Path) -> Report {
         findings,
         axe: AxeRun { ran: axe_ran, skipped: input.axe_skipped },
         errors: input.errors,
+        fallback: input.fallback,
         secs: input.secs,
     }
 }
@@ -1616,6 +1887,140 @@ mod tests {
         write(&dir, &report, &md).unwrap();
         let back = read(&dir).unwrap();
         assert_eq!((back.changed(), back.findings.len(), back.ticket), (report.changed(), report.findings.len(), Some(7)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Files of a repository, from its root: `has` for [`app_root`].
+    fn files(list: &[&str]) -> impl Fn(&str) -> bool {
+        let list: Vec<String> = list.iter().map(|f| (*f).to_owned()).collect();
+        move |f: &str| list.iter().any(|l| l == f)
+    }
+
+    fn changed(list: &[&str]) -> Vec<String> {
+        list.iter().map(|f| (*f).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_change_in_a_multi_app_repository_is_in_the_app_folder_nearest_its_files() {
+        // As a real team's repository: three apps side by side, the changed one a Vite app with no UI map.
+        let repo = files(&["cafe/index.html", "habits/package.json", "habits/index.html", "o1path/package.json", "o1path/index.html", "o1path/public/index.html"]);
+        let change = changed(&["o1path/src/App.tsx", "o1path/public/brand/logo.svg", "o1path/public/brand/mark.png", "o1path/design/assets/logo/logo.svg", "cafe/style.css", "README.md", "o1path/src/App.test.tsx"]);
+        assert_eq!(app_roots(&change, &repo), ["o1path", "cafe"], "the app with the most changed files first; a README and a test are in none");
+        // An index.html inside public/ is the app's assets, not an app of its own.
+        assert_eq!(app_root("o1path/public/brand/logo.svg", &repo), "o1path");
+        assert_eq!(app_root("cafe/css/site.css", &repo), "cafe");
+        assert_eq!(app_root("tools/script.ts", &repo), "", "in no app folder: the root");
+        assert_eq!(map_dirs(&app_roots(&change, &repo)), ["design", "o1path/design", "cafe/design"], "the root's map first, as always, then each changed app's");
+    }
+
+    #[test]
+    fn a_single_app_at_the_root_is_the_root() {
+        let repo = files(&["package.json", "index.html", "public/index.html", "packages/ui/package.json"]);
+        assert_eq!(app_roots(&changed(&["src/App.tsx", "public/favicon.png", "src/styles.css"]), &repo), [""]);
+        assert_eq!(app_roots(&changed(&["packages/ui/src/Button.tsx", "src/App.tsx", "src/Nav.tsx"]), &repo), ["", "packages/ui"]);
+        assert_eq!(map_dirs(&[String::new()]), ["design"]);
+        assert!(app_roots(&changed(&["server/api.ts", "docs/guide.md", "Cargo.toml"]), &repo).is_empty(), "nothing users see: no app to render");
+    }
+
+    #[test]
+    fn a_change_only_in_design_folders_is_in_the_app_whose_design_it_is() {
+        let root_app = files(&["package.json", "index.html"]);
+        assert_eq!(app_roots(&changed(&["design/tokens.json", "design/assets/logo.svg", "design/brand.md"]), &root_app), [""]);
+        // An app's own design folder, even with a page of its own in it (a style guide), is that app's.
+        let multi = files(&["o1path/package.json", "o1path/design/index.html", "habits/package.json"]);
+        assert_eq!(app_roots(&changed(&["o1path/design/assets/logo/mark.svg", "o1path/design/brand.md", "o1path/design/index.html"]), &multi), ["o1path"]);
+        assert!(shown_by_app("o1path/design/tokens/color.json") && shown_by_app("public/brand/hero.webp"));
+        assert!(!shown_by_app("design/brand.md") && !shown_by_app("tests/fixtures/shot.png") && !shown_by_app("package.json"));
+    }
+
+    #[test]
+    fn an_apps_own_map_names_its_files_from_the_app_folder() {
+        let map = json!({ "flows": [{ "id": "home", "screens": [{ "id": "landing", "source": ["src/App.tsx"], "states": [{ "id": "default" }] }] }] });
+        let change = changed(&["o1path/src/App.tsx", "o1path/src/Footer.tsx", "cafe/style.css", "o1path/design/flows/home/landing/default.light.390.png"]);
+        let t = touched_in_app(&map, "o1path", &change);
+        assert_eq!(t.screens, [ScreenRef { flow: "home".into(), screen: "landing".into() }]);
+        assert_eq!(t.unmapped, ["o1path/src/Footer.tsx", "cafe/style.css"], "named from the repository's root again; the other app's file is unmapped");
+        // The root's own map: exactly as before.
+        let root_map = json!({ "flows": [{ "id": "home", "screens": [{ "id": "landing", "source": ["o1path/src/App.tsx"], "states": [{ "id": "default" }] }] }] });
+        assert_eq!(touched_in_app(&root_map, "", &change), touched(&root_map, "design/flows", &change));
+    }
+
+    #[test]
+    fn an_app_without_a_map_is_built_by_its_vite_served_as_files_or_said_why_not() {
+        let dir = temp("serve");
+        let app = |name: &str, files: &[(&str, &str)]| {
+            let at = dir.join(name);
+            for (file, text) in files {
+                let path = at.join(file);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, text).unwrap();
+            }
+            at
+        };
+        let vite = r#"{ "scripts": { "build": "tsc -b && vite build" }, "devDependencies": { "vite": "^5" } }"#;
+        assert_eq!(serve_plan(&app("vite", &[("package.json", vite), ("index.html", "<div id=root>"), ("node_modules/.bin/vite", "")])), Ok(Serve::Vite));
+        let missing = serve_plan(&app("vite-bare", &[("package.json", vite), ("index.html", "<div id=root>")])).unwrap_err();
+        assert!(missing.contains("dependencies aren't installed"), "{missing}");
+        let other = serve_plan(&app("webpack", &[("package.json", r#"{ "scripts": { "build": "webpack" } }"#), ("index.html", "")])).unwrap_err();
+        assert!(other.contains("`webpack`") && other.contains("precheck.preview"), "{other}");
+        assert_eq!(serve_plan(&app("static", &[("index.html", "<h1>Cafe</h1>")])), Ok(Serve::Files));
+        assert_eq!(serve_plan(&app("tooling", &[("package.json", r#"{ "scripts": { "lint": "eslint ." } }"#), ("index.html", "")])), Ok(Serve::Files), "no build step: served as it is");
+        assert!(serve_plan(&app("nothing", &[("main.py", "")])).is_err());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_pages_of_an_app_without_a_map_are_its_home_and_its_language_versions() {
+        let dir = temp("routes");
+        for page in ["index.html", "en/index.html", "ko/index.html", "pt-br/index.html", "zh_Hant/index.html", "assets/index.html", "about/index.html", "fr/notes.txt"] {
+            let path = dir.join(page);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "<p>").unwrap();
+        }
+        assert_eq!(fallback_routes(&dir), ["/", "/en/", "/ko/", "/pt-br/"], "a handful at most, languages only");
+        assert_eq!(fallback_routes(&dir.join("about")), ["/"]);
+        assert_eq!(fallback_routes(&dir.join("nowhere")), ["/"], "the home page is always asked for");
+        assert_eq!((route_screen("/"), route_screen("/pt-br/"), app_flow(""), app_flow("apps/web")), ("home".into(), "pt-br".into(), "app".into(), "apps-web".into()));
+        // The static server: files, a folder's page, a client-side route, nothing hidden or outside.
+        assert_eq!(static_file(&dir, "/"), Some(dir.join("index.html")));
+        assert_eq!(static_file(&dir, "/ko/?utm=x"), Some(dir.join("ko/index.html")));
+        assert_eq!(static_file(&dir, "/zh%5FHant"), Some(dir.join("zh_Hant/index.html")));
+        assert_eq!(static_file(&dir, "/settings/profile"), Some(dir.join("index.html")), "a client-side route gets the app's page");
+        assert_eq!(static_file(&dir, "/brand/logo.svg"), None, "a missing file is a 404, not the page");
+        std::fs::write(dir.join(".env"), "SECRET=1").unwrap();
+        assert_eq!(static_file(&dir, "/.env"), None);
+        assert_eq!(static_file(&dir, "/../etc/passwd"), None);
+        assert_eq!(content_type(Path::new("a/logo.svg")), "image/svg+xml");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn with_nothing_to_compare_with_findings_are_told_but_not_held_against_the_change() {
+        let dir = temp("nobase");
+        let picture = png(&dir.join("home.png"), 400, 200, None);
+        let normal = Condition::new(390, "light", Variant::Normal);
+        let lost = Clip { rect: Rect { x: 5., y: 2., w: 20., h: 10. }, ..clip("Sign up", true, false) };
+        let taken = vec![Taken { key: "o1path/home/default".into(), condition: normal.code(), path: Some(picture.to_string_lossy().into()), dpr: 1., dom: Some(dom(vec![lost])), error: None }];
+        let input = |no_base: bool| Input {
+            touched: Touched { unmapped: vec!["o1path/src/App.tsx".into()], ..Touched::default() },
+            conditions: vec![normal.clone()],
+            taken: taken.clone(),
+            fallback: Some("no UI map; rendered the changed app at `o1path/` (built with its own Vite) at /; no base comparison (the app is new since the base)".into()),
+            no_base,
+            ..Input::default()
+        };
+        let report = assemble(input(true), &dir);
+        assert_eq!(report.taken(), 1);
+        assert!(!report.findings.is_empty() && report.new_blockers().is_empty(), "{:?}", report.findings);
+        assert!(report.findings.iter().all(|f| f.evidence.contains("may predate this change")));
+        let md = report.summary("A designer checks what this report flags.");
+        assert!(md.contains("- Fallback: no UI map; rendered the changed app at `o1path/`") && md.contains("no base comparison"), "{md}");
+        // Kept and read back with it; a report without one says nothing of it.
+        write(&dir, &report, &md).unwrap();
+        assert_eq!(read(&dir).unwrap().fallback, report.fallback);
+        assert!(!serde_json::to_string(&Report::default()).unwrap().contains("fallback"));
+        // Without the flag, as for a new state on a map, the finding is the change's.
+        assert_eq!(assemble(input(false), &dir).new_blockers().len(), 1);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

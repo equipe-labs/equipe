@@ -42,6 +42,8 @@ impl Runtime {
             let watch: BTreeMap<String, Watch> = self.journals.get(&squad).map(Journal::deploy_watch).unwrap_or_default();
             // Projects that go live by a command of their own: what they deployed is told when it ran (`go_live`).
             let confirmed: HashSet<String> = self.lanes(&squad).iter().filter(|(_, l)| l.confirmed.is_some()).map(|(k, _)| k.clone()).collect();
+            // A cloud team's projects go live by the platform's tool after each landing (`go_live::CLOUD_COMMAND`).
+            let cloud = crate::go_live::cloud();
             self.deploys_looking.insert(squad.clone());
             let internal = self.internal.clone();
             tokio::task::spawn_blocking(move || {
@@ -51,7 +53,7 @@ impl Runtime {
                     let Ok(repo) = worktree::repo_root(&path) else { continue };
                     let before = watch.get(&key_of(&path)).cloned().unwrap_or_default();
                     // A deploy file that can't be read still says the project goes live by one.
-                    let file = !matches!(crate::go_live::declared_on_main(&repo), Ok(None));
+                    let file = cloud || !matches!(crate::go_live::declared_on_main(&repo), Ok(None));
                     declared.push((key_of(&path), file));
                     let by_command = confirmed.contains(&key_of(&path)) || file;
                     // Pushed isn't live for them: never noted as "on main" news, once watching started.
@@ -175,11 +177,16 @@ impl Runtime {
         }
         let words = crate::i18n::core(self.config.lang);
         let pm = self.pm_of(squad);
+        let cloud = crate::go_live::cloud();
         // The oldest first, as they happened.
         for &i in due.iter().rev() {
             let d = deploys[i].clone();
             // Only work nobody sees: listed, not told.
             if d.items.is_empty() {
+                continue;
+            }
+            // On a cloud team main isn't live: its deploy is told when it went live (or why not), never "no deploy seen".
+            if cloud && d.source == equipe_protocol::deploys::DeploySource::Main {
                 continue;
             }
             let line = rules::line(&d, words, None);

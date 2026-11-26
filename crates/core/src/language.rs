@@ -7,6 +7,23 @@
 
 use whatlang::Script;
 
+/// The person's own words in `text`: what comes before a hidden note equipe
+/// put under them (a line starting `[equipe`: the project a message from the
+/// team web is about, a monitor's nudge) and without the tags of the files
+/// they attached (`[image: …]`). The note is English whatever the person
+/// writes in, and long: read with their words, a short French message reads
+/// as English, and everything the squad wrote for them followed it.
+pub fn persons_words(text: &str) -> String {
+    text.lines()
+        .take_while(|l| !l.trim_start().starts_with("[equipe"))
+        .filter(|l| {
+            let l = l.trim();
+            !(l.starts_with('[') && l.ends_with(']') && l[1..].split_once(':').is_some_and(|(tag, _)| !tag.is_empty() && tag.chars().all(|c| c.is_ascii_lowercase())))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// The language `text` is written in, by its English name: `Korean`, `French`.
 pub fn detect(text: &str) -> Option<&'static str> {
     // Scripts first, counted by hand: a message mixing Hangul with code or
@@ -48,6 +65,14 @@ mod tests {
         assert_eq!(detect("Let's build the website for the launch next week"), Some("English"));
         assert_eq!(detect("Construisons le site web pour le lancement de la semaine prochaine"), Some("French"));
         assert_eq!(detect("ok"), None, "too short to say");
+    }
+
+    #[test]
+    fn a_hidden_note_and_attachment_tags_are_not_the_persons_words() {
+        let said = "Rends le site plus rapide\n\n[image: /home/x/uploads/a.png]\n\n[equipe: project shop. The person wrote this while looking at the project \"Shop\" (app name shop), live at https://shop.example in the team web, so it is about that product.]";
+        assert_eq!(persons_words(said).trim(), "Rends le site plus rapide");
+        assert_eq!(persons_words("[equipe monitor] Project shop has no confirmed goal yet. Call propose_goal once."), "");
+        assert_eq!(detect(&persons_words("[equipe monitor] Weekly review of the shop, last seven days, with the numbers below")), None);
     }
 
     #[test]

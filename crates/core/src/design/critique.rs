@@ -68,6 +68,44 @@ pub fn critic_engine(caller: Option<Engine>) -> Engine {
     caller.map_or(Engine::Codex, other_engine)
 }
 
+/// How many critiques one piece of work (a ticket) gets. The first always
+/// runs — fresh eyes on the work are the point — and a second and third
+/// check what the revisions did; past that, more critique rounds were only
+/// cost: a logo ticket at o1path (2026-11-26) ran nine Opus critiques in 35
+/// minutes, each answered by another generation round.
+pub const ROUNDS_PER_TICKET: u32 = 3;
+
+/// Where a ticket's critiques are counted: in the repository's git folder,
+/// shared by every worktree (and lane) of the ticket, never committed.
+pub fn rounds_file(git_common: &Path, ticket: &str) -> PathBuf {
+    let name: String = ticket.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    git_common.join("equipe-rounds").join(format!("critique-{name}"))
+}
+
+/// Count one more critique of a ticket in `file`: its number, or — past
+/// [`ROUNDS_PER_TICKET`] — why not, and what to do instead. A file that
+/// can't be read or written counts nothing: the critique goes on.
+pub fn take_round(file: &Path, ticket: &str) -> Result<u32, String> {
+    let done: u32 = std::fs::read_to_string(file).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+    if done >= ROUNDS_PER_TICKET {
+        return Err(over_cap(ticket, done));
+    }
+    if let Some(parent) = file.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(file, (done + 1).to_string());
+    Ok(done + 1)
+}
+
+/// What a member asking for one critique too many is told.
+pub fn over_cap(ticket: &str, done: u32) -> String {
+    format!(
+        "No more critiques: {ticket} has had {done}, the most one piece of work gets. Stop revising and reviewing. If what is left is a \
+choice between options, pick the two strongest and ask the person with ONE `ask_decision` card whose two options each carry their \
+`images`; otherwise finish with what you have. Then hand in what is done (what is left in one line each) and end your turn."
+    )
+}
+
 /// What the critic is given.
 #[derive(Debug, Default, Clone)]
 pub struct Ask {
@@ -218,6 +256,21 @@ pub fn kept_at(design: &Path, stamp: &str) -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_ticket_gets_three_critiques_then_is_told_to_ask_the_person() {
+        let dir = std::env::temp_dir().join(format!("equipe-rounds-{}", std::process::id()));
+        let file = rounds_file(&dir, "T-16");
+        let _ = std::fs::remove_file(&file);
+        assert_eq!(take_round(&file, "T-16"), Ok(1), "the first critique always runs");
+        assert_eq!(take_round(&file, "T-16"), Ok(2));
+        assert_eq!(take_round(&file, "T-16"), Ok(3));
+        let refused = take_round(&file, "T-16").unwrap_err();
+        assert!(refused.contains("ask_decision") && refused.contains("images") && refused.contains("T-16"), "{refused}");
+        assert_eq!(take_round(&rounds_file(&dir, "T-17"), "T-17"), Ok(1), "another ticket counts its own");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     fn env(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
