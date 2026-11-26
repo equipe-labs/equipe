@@ -1698,6 +1698,60 @@ fn is_waiting(e: &Event, id: u32) -> bool {
     matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == id && ticket.status == TicketStatus::Waiting)
 }
 
+/// Build ahead (`build_ahead`): on a hosted team's squad, whose members have equipe's platform tools, connecting an outside
+/// business account never puts a ticket down — one Connect card and the rest built now — while a real gate still can.
+#[tokio::test]
+async fn on_a_hosted_team_connecting_an_outside_account_never_puts_the_ticket_down() {
+    let repo = repo();
+    let (claude, _recorded) = recording_claude(&working_turn("WIP.md"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Let players pay when they book", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let stripe = serde_json::json!({ "ask": "Connect your Stripe", "effort_minutes": 1, "needs": ["Connect your Stripe in Growth > Payments so customers can pay"] });
+    // The hosted team's platform tools (they carry ask_to_connect).
+    let platform = equipe_core::squad_mcp::stdio_server("equipe-platform", &["node".to_owned(), "/nonexistent/platform-mcp/server.mjs".to_owned()], None).unwrap();
+    handle.send(Command::AddMcpServer { squad: "acme".into(), server: platform, sign_in: false });
+    let refused = tool_on(&handle, "frontend", 1, "block_on_person", stripe).await;
+    assert!(refused.is_error && refused.text.contains("ask_to_connect") && refused.text.contains("enable_payments") && refused.text.contains("opens soon"), "{refused:?}");
+    let still = handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == 1).unwrap();
+    assert_eq!(still.status, TicketStatus::InProgress, "the ticket stays with its member, being built");
+    // A token only the person can issue still gates the work.
+    let token = tool_on(&handle, "frontend", 1, "block_on_person", serde_json::json!({ "ask": "Issue a GitHub token", "effort_minutes": 2, "needs": ["Issue a GitHub token with repo scope"] })).await;
+    assert!(!token.is_error, "{token:?}");
+    handle.shutdown().await;
+}
+
+/// Build ahead: the person's answers to the PM's fact card come back to the PM with the members working on placeholders,
+/// once, so each swaps them at once.
+#[tokio::test]
+async fn answers_to_the_pms_fact_card_name_the_members_on_placeholders_once() {
+    use equipe_core::protocol::autonomy::Autonomy;
+    let repo = repo();
+    let (claude, recorded) = recording_claude(&working_turn("WIP.md"));
+    let (handle, mut events) = runtime::start(config(&claude, &squad_home(&[&repo]), false));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+    tool(&handle, "pm", "create_ticket", serde_json::json!({ "title": "Show the packages with prices", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    handle.send(Command::SetAutonomyMode { squad: "acme".into(), mode: Autonomy::Full });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.mode == Autonomy::Full)).await;
+    let fact = tool_on(&handle, "frontend", 1, "ask_decision", serde_json::json!({ "questions": [{ "question": "What are the real package prices?" }] })).await;
+    assert!(!fact.is_error && fact.text.contains("placeholder"), "{fact:?}");
+    // The PM asks the person once; the person answers.
+    let asked = tool(&handle, "pm", "ask_decision", serde_json::json!({ "questions": [{ "question": "What do your packages cost?" }] })).await;
+    assert!(asked.text.starts_with("Asked"), "{}", asked.text);
+    let seen = until(&mut events, |e| matches!(e, Event::QuestionsAsked { .. })).await;
+    let set = seen.iter().find_map(|e| if let Event::QuestionsAsked { questions, .. } = e { Some(questions.clone()) } else { None }).unwrap();
+    let answer = equipe_core::protocol::decide::Answer { other: Some("Single review $49, monthly $149".into()), ..Default::default() };
+    handle.send(Command::AnswerQuestions { squad: "acme".into(), id: set.id, answers: vec![answer], about: None });
+    let call = latest_call(&recorded, |p| p.contains("placeholders for facts")).await;
+    let prompt = arg(&call, "-p").unwrap();
+    assert!(prompt.contains("T-1 · Show the packages with prices (frontend)") && prompt.contains("What are the real package prices?") && prompt.contains("`comment`"), "{prompt}");
+    handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_member_waiting_on_the_person_takes_its_next_ticket_and_comes_back_to_the_same_worktree() {
     let repo = repo();

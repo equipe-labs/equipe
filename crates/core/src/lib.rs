@@ -16,6 +16,7 @@ pub mod autopilot;
 pub mod awake;
 pub mod bless;
 pub mod blocked_on;
+pub mod build_ahead;
 pub mod board;
 pub mod briefs;
 pub mod by_words;

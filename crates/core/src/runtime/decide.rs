@@ -104,7 +104,7 @@ their placeholders.",
                 self.save_waiting(pm);
             }
             if let (Some(ticket), Some(journal)) = (ticket, self.journal(squad)) {
-                let _ = journal.ticket_event(ticket, member, "needs a fact", &wanted.join("\n"));
+                let _ = journal.ticket_event(ticket, member, crate::build_ahead::NEEDS_A_FACT, &wanted.join("\n"));
             }
             return Ok(crate::worth_asking::FACT_TO_PM.to_owned());
         }
@@ -366,6 +366,11 @@ min it is taken and comes to you as the answer; if they pick otherwise, change c
             // Growth cards: tickets for the accepted ones, the rest remembered; the PM told what came of each.
             None => Box::pin(self.growth_settled(squad, &set, Some(&answers))).await.unwrap_or(message),
         };
+        // The PM's card answered where the squad runs on its own: who works on placeholders for facts, to hand the answers on now.
+        let message = match self.placeholders_waiting(squad, &set) {
+            Some(line) => format!("{message}\n\n{line}"),
+            None => message,
+        };
         // Its ticket waited for this answer: it goes back to its member with the answers.
         if self.resume_asked(squad, &set, &message).await {
             return;
@@ -374,6 +379,31 @@ min it is taken and comes to you as the answer; if they pick otherwise, change c
             self.note_screen(to);
             Box::pin(self.submit(to, message)).await;
         }
+    }
+
+    /// For an answered card the PM asked, in a squad that runs on its own:
+    /// the open tickets whose members work on placeholders for facts only the
+    /// person knows (`build_ahead`), as the line the PM reads under the
+    /// answers; each is marked handed on, so it is listed once.
+    fn placeholders_waiting(&mut self, squad: &str, set: &QuestionSet) -> Option<String> {
+        let by_pm = self.sessions.get(&set.session).map_or_else(|| self.pm_of(squad).and_then(|pm| self.sessions.get(&pm)).and_then(|s| s.member.as_ref()).is_some_and(|m| m.name == set.member), Session::is_pm);
+        if !by_pm || self.autonomy_mode(squad) != equipe_protocol::autonomy::Autonomy::Full {
+            return None;
+        }
+        let open: Vec<Ticket> = self.tickets(squad).iter().filter(|t| !matches!(t.status, TicketStatus::Done | TicketStatus::Cancelled)).cloned().collect();
+        let journal = self.journal(squad)?;
+        let mut waiting = Vec::new();
+        for t in open {
+            let record = journal.ticket_entries(t.id).unwrap_or_default();
+            let facts = crate::build_ahead::facts_open(record.iter().map(|e| (e.kind.as_str(), e.text.as_str())));
+            if !facts.is_empty() {
+                waiting.push(crate::build_ahead::OnPlaceholders { ticket: t.id, title: t.title.clone(), owner: t.owner.clone(), facts });
+            }
+        }
+        for w in &waiting {
+            let _ = journal.ticket_event(w.ticket, "equipe", crate::build_ahead::FACTS_ANSWERED, "the person answered the PM's card; the PM hands it on");
+        }
+        crate::build_ahead::placeholders_line(&waiting)
     }
 
     /// Add `entry` to the person's design taste in the squad's memory, as

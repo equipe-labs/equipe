@@ -11691,6 +11691,13 @@ know, a question without options. `block_on_person` is for what only they can do
                         clip(question, 120)
                     ));
                 }
+                // Connecting an outside business account never puts the work down where the squad has equipe's platform
+                // tools: one Connect card (`ask_to_connect`) and the rest built ahead (`build_ahead`).
+                if self.mcp_servers_of(&squad).iter().any(|s| s.name == crate::build_ahead::PLATFORM_SERVER)
+                    && let Some(why) = crate::build_ahead::account_ask(&asked, board::arg_str(&args, "ask"))
+                {
+                    return Err(why);
+                }
                 // Steps asking the person to change macOS privacy permissions: refused when
                 // equipe's desktop tools already hold them, else one card with one button.
                 let ready = self.desktop_auto.as_ref().and_then(desktop::auto::Auto::latest);

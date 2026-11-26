@@ -668,7 +668,15 @@ problem, and a designer judges it. You can run it yourself first: `equipe design
 
 pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let base = charter_base(role, name, ctx);
-    if ctx.hands_off && ctx.board_tools { format!("{base}\n\n{}", if role.id == PM { HANDS_OFF_PM } else { HANDS_OFF }) } else { base }
+    if !(ctx.hands_off && ctx.board_tools) {
+        return base;
+    }
+    // Where the squad runs on its own: internal matters are the team's, and what only the person can give never stops the work (`build_ahead`).
+    if role.id == PM {
+        format!("{base}\n\n{HANDS_OFF_PM}\n\n{} {}", crate::build_ahead::RULE, crate::build_ahead::RULE_PM)
+    } else {
+        format!("{base}\n\n{HANDS_OFF}\n\n{}", crate::build_ahead::RULE)
+    }
 }
 
 /// What every member is told where the squad runs on its own (full autonomy):

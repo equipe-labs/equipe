@@ -981,7 +981,10 @@ again with `waive_findings` saying why they aren't real.",
         json!({
             "name": BLOCK_ON_PERSON,
             "description": "Put the ticket you are on down when you can't go on without something only the person \
-can do — a token or secret to issue, an account or a setting to change. Never for a question or a choice: a choice goes \
+can do — a token or secret to issue, an account or a setting to change — and it truly gates everything on the ticket. When \
+only one piece needs it, don't put the ticket down: ask for it, build everything else with that piece behind its switch or \
+a marked placeholder, hand in what you built, and finish the piece when equipe tells you it arrived. Connecting an outside \
+business account (Stripe, PayPal, a calendar, a social account) is `ask_to_connect` where you have it, never this. Never for a question or a choice: a choice goes \
 to ask_decision with your `recommended` option and you carry on with it; a question only they can answer is an \
 ask_decision question without options. The ticket waits for them with what you \
 list as their checklist; you are free for other work meanwhile, and get it back, in the same worktree, once they \
@@ -1031,7 +1034,8 @@ a label (`[AWS sign-in](https://…)`), which the card draws as a button. In the
             "description": "Hand back the ticket you are on when it isn't yours to finish now — never end a turn with \
 only a comment saying so. `waiting_on`: it can't start until other tickets are done (name them in `tickets`): it waits on \
 the board and comes back to you, in the same worktree, once they are. `duplicate`: another ticket does or did the same \
-(name it). `not_my_role`: it is another role's work (`suggest` who). `cannot`: it can't be done as asked. Those three go \
+(name it). `not_my_role`: it is another role's work (`suggest` who). `cannot`: it can't be done as asked — never because \
+the person hasn't connected an account or answered yet: build around it (the piece behind its switch or a marked placeholder). Those three go \
 to the PM with your note, to cancel, reassign or reshape. `blocked_on`: work another role or project must do first doesn't \
 exist yet — an API or endpoint, a contract, a permission, data: name it in `blocked_on` ({ role, what }) rather than passing the \
 ticket around or saying it in a note — equipe makes that ticket for the role (or finds the one on the board) under the same \
