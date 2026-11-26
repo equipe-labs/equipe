@@ -361,6 +361,12 @@ pub struct TurnCollector {
     /// each): input, output, cache read, cache write, of it kept an hour.
     /// The result's own `usage` is the member's alone.
     subagent_use: std::collections::HashMap<String, [u64; 5]>,
+    /// What the member's own requests used, by message id (the latest word
+    /// on each), in the same order: for the turn's running total
+    /// ([`Activity::Spent`]) and for a turn ended before its `result`.
+    own_use: std::collections::HashMap<String, [u64; 5]>,
+    /// The running total last said ([`Activity::Spent`]).
+    spent_said: u64,
     /// The member's latest request ended its turn — stop reason `end_turn`,
     /// no tool called — as far as the stream told.
     answered: bool,
@@ -527,13 +533,23 @@ impl TurnCollector {
                         n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens") + n("output_tokens"),
                     );
                 }
-                if parent(event).is_some()
-                    && let (Some(id), Some(u)) = (event.get("message").and_then(|m| m.get("id")).and_then(Value::as_str), event.get("message").and_then(|m| m.get("usage")))
-                {
+                // Each request's use, the member's and its subagents': what a budget on the turn counts.
+                let mut spent = None;
+                if let (Some(id), Some(u)) = (event.get("message").and_then(|m| m.get("id")).and_then(Value::as_str), event.get("message").and_then(|m| m.get("usage"))) {
                     let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
                     let write = n("cache_creation_input_tokens");
                     let long = u.get("cache_creation").and_then(|c| c.get("ephemeral_1h_input_tokens")).and_then(Value::as_u64).unwrap_or(0).min(write);
-                    self.subagent_use.insert(id.to_owned(), [n("input_tokens"), n("output_tokens"), n("cache_read_input_tokens"), write, long]);
+                    let used = [n("input_tokens"), n("output_tokens"), n("cache_read_input_tokens"), write, long];
+                    if parent(event).is_some() {
+                        self.subagent_use.insert(id.to_owned(), used);
+                    } else {
+                        self.own_use.insert(id.to_owned(), used);
+                    }
+                    let total = self.spent_total();
+                    if total > self.spent_said {
+                        self.spent_said = total;
+                        spent = Some(Activity::Spent(total));
+                    }
                 }
                 // Inside a subagent: its words and steps, as the subagent's —
                 // each call waiting for its answer, timed from now.
@@ -553,7 +569,7 @@ impl TurnCollector {
                         Activity::Tool { name, target, .. } => Some(Activity::SubagentStep { id: id.clone(), step: format!("{name} {}", target.unwrap_or_default()).trim().to_owned() }),
                         _ => None,
                     });
-                    return said.into_iter().chain(steps).collect();
+                    return said.into_iter().chain(steps).chain(spent).collect();
                 }
                 let text = message_text(event);
                 if !text.is_empty() {
@@ -600,6 +616,7 @@ impl TurnCollector {
                         out.push(Activity::SubagentStarted { id: id.to_owned(), what: what.chars().take(80).collect(), brief });
                     }
                 }
+                out.extend(spent);
                 out
             }
             // The person's own message, read: the prompt first, then whatever
@@ -677,6 +694,34 @@ impl TurnCollector {
         !self.background.is_empty()
     }
 
+    /// Every token the turn's requests processed so far, the member's and its
+    /// subagents': input, output, cache reads and writes.
+    fn spent_total(&self) -> u64 {
+        self.own_use.values().chain(self.subagent_use.values()).map(|u| u[0] + u[1] + u[2] + u[3]).sum()
+    }
+
+    /// What the turn's requests used as heard so far, for a turn ended before
+    /// its `result` came (wound down, settled without one): the ledger still
+    /// bills those calls, so the ticket's spend must count them.
+    fn heard_usage(&self) -> Option<TurnUsage> {
+        let sum: [u64; 5] = self.own_use.values().chain(self.subagent_use.values()).fold([0; 5], |a, u| std::array::from_fn(|i| a[i] + u[i]));
+        if sum[..4].iter().all(|n| *n == 0) {
+            return None;
+        }
+        let some = |n: u64| (n > 0).then_some(n);
+        Some(TurnUsage {
+            input_tokens: Some(sum[0]),
+            output_tokens: Some(sum[1]),
+            cache_tokens: some(sum[2] + sum[3]),
+            cache_read_tokens: some(sum[2]),
+            cache_write_tokens: some(sum[3]),
+            cache_write_long_tokens: some(sum[4]),
+            calls: (!self.calls.is_empty()).then_some(self.calls.len() as u64),
+            context_tokens: self.context,
+            context_window: None,
+        })
+    }
+
     /// The turn ended here: without a `result` since the member last spoke,
     /// its last message is its answer, with `status` — `completed` for one
     /// settled ([`Self::settled`]).
@@ -686,7 +731,7 @@ impl TurnCollector {
         }
         let usage = match &self.result {
             Some(Ok(earlier)) => earlier.usage.clone(),
-            _ => None,
+            _ => self.heard_usage(),
         };
         let text = if self.last_message.is_empty() { self.streamed.clone() } else { self.last_message.clone() };
         self.result = Some(Ok(TurnResult { text, status: status.into(), usage }));
@@ -1983,6 +2028,25 @@ mod tests {
         assert_eq!((usage.cache_read_tokens, usage.cache_write_tokens, usage.cache_write_long_tokens), (Some(1000), Some(300), Some(300)));
         assert_eq!(usage.cache_tokens, Some(1300), "the sum, as before");
         assert_eq!(usage.context_window, Some(1_000_000));
+    }
+
+    #[test]
+    fn a_turn_says_its_running_total_as_its_requests_come_and_a_wound_down_turn_keeps_it() {
+        let message = |id: &str, parent: Option<&str>, usage: Value| json!({ "type": "assistant", "parent_tool_use_id": parent, "message": { "id": id, "content": [{ "type": "tool_use", "id": format!("t-{id}"), "name": "Bash", "input": { "command": "ls" } }], "usage": usage } });
+        let mut collector = TurnCollector::new();
+        let spent = |acts: Vec<Activity>| acts.into_iter().filter_map(|a| if let Activity::Spent(n) = a { Some(n) } else { None }).collect::<Vec<_>>();
+        let first = json!({ "input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 200 });
+        assert_eq!(spent(collector.on_event(&message("m1", None, first.clone()))), [1215]);
+        assert!(spent(collector.on_event(&message("m1", None, first))).is_empty(), "the same request again: nothing new");
+        let sub = json!({ "input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": 100 });
+        assert_eq!(spent(collector.on_event(&message("s1", Some("toolu_1"), sub))), [1320], "a subagent's request counts");
+        let second = json!({ "input_tokens": 1, "output_tokens": 9, "cache_read_input_tokens": 1300 });
+        assert_eq!(spent(collector.on_event(&message("m2", None, second))), [2630]);
+        // Ended before any `result` (wound down): what was heard is its usage, so the ticket's spend counts it.
+        collector.end_here("incomplete");
+        let usage = collector.finish("").unwrap().result.usage.expect("the requests heard");
+        assert_eq!((usage.input_tokens, usage.output_tokens, usage.cache_read_tokens, usage.cache_write_tokens), (Some(14), Some(16), Some(2400), Some(200)));
+        assert_eq!(usage.calls, Some(3));
     }
 
     #[test]

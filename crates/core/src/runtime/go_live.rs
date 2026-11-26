@@ -338,6 +338,12 @@ Find out why and get it fixed (a ticket, if it is the project's code); then {aga
             return;
         }
         let Some(pm) = self.pm_of(squad) else { return };
+        // Main goes live by itself after each landing here: its deploy tells the PM how it went (`go_live_ran`).
+        // A nudge to deploy by hand made the PM file tickets only to deploy, and came again after deploys.
+        if crate::go_live::cloud() {
+            crate::daemon_log!("equipe: {squad}: {} landed ticket(s) not on the live site yet; main deploys by itself, no nudge", due.len());
+            return;
+        }
         let ask = self.autonomy_store(squad).policy.level(Kind::Deploy) == Level::Ask;
         crate::daemon_log!("equipe: {squad}: {} landed ticket(s) are on main but not on the live site; the PM is told", due.len());
         self.hand_to_pm(squad, pm, crate::cloud_live::nudge_message(&due, ask, now)).await;

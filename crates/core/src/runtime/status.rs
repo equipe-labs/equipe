@@ -219,7 +219,7 @@ impl Runtime {
 
     /// Everything waiting on the person, the most blocking first, each with
     /// the request it holds up ([`importance::waiting_list`]).
-    fn waiting_now(&mut self, squad: &str) -> Vec<equipe_protocol::importance::Waiting> {
+    pub(super) fn waiting_now(&mut self, squad: &str) -> Vec<equipe_protocol::importance::Waiting> {
         let tickets = self.tickets(squad);
         let asks = self.waiting_asks(squad);
         let pm_accepts = self.journals.get(squad).is_none_or(Journal::pm_accepts);

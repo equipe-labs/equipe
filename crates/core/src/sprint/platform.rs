@@ -297,6 +297,105 @@ fn refresh_cached(platform: &Platform, every: Duration) {
     }
 }
 
+// ── what the person sees on the platform, for the PM's reply guard ──
+
+/// What the platform knows that the PM may speak of: what waits on the person
+/// on the platform's pages (a goal to confirm, this week's plan, a bigger idea
+/// to say yes to) and whether the team's credits pause its work now. The PM's
+/// replies are checked against it before the person reads them
+/// (`runtime::reply_guard`): at o1path the PM said "nothing is waiting on
+/// you" right after it proposed a weekly plan that waited on them.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CloudFacts {
+    /// Each thing waiting on the person, in a few plain English words.
+    pub waiting: Vec<String>,
+    /// Whether the team's credits pause its work (`/v1/credits`); `None`: not known.
+    pub paused: Option<bool>,
+}
+
+/// The apps in a `/v1/resources` answer, by name (archived ones left out).
+pub fn apps_from(v: &Value) -> Vec<String> {
+    v.get("resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|x| x.get("kind").and_then(Value::as_str) == Some("app") && x.get("app_archived").and_then(Value::as_bool) != Some(true))
+        .filter_map(|x| x.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect()
+}
+
+/// What of one app's operating loop (`/v1/oploop?app=`) waits on the person.
+pub fn waiting_from(app: &str, v: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    let live = v.get("live").and_then(Value::as_bool).unwrap_or(false);
+    if live && v.pointer("/goal/status").and_then(Value::as_str).is_some_and(|s| s != "confirmed") {
+        out.push(format!("confirming the goal for {app} (Goal page)"));
+    }
+    if v.pointer("/plan/status").and_then(Value::as_str) == Some("proposed") {
+        let open = v.pointer("/plan/bets").and_then(Value::as_array).map_or(0, |b| b.iter().filter(|x| x.get("state").and_then(Value::as_str) == Some("proposed")).count());
+        if open > 0 {
+            out.push(format!("this week's plan for {app}: {open} idea(s) to say go to (Goal page)"));
+        }
+    }
+    let asked = v.get("signals").and_then(Value::as_array).map_or(0, |s| s.iter().filter(|x| x.get("state").and_then(Value::as_str) == Some("asked") && x.pointer("/proposal/worth").and_then(Value::as_bool) == Some(true)).count());
+    if asked > 0 {
+        out.push(format!("{asked} bigger idea(s) for {app} to say yes or no to"));
+    }
+    out
+}
+
+impl Platform {
+    /// [`CloudFacts`], read now: `/v1/resources`, each app's `/v1/oploop`, `/v1/credits`.
+    pub async fn cloud_facts(&self) -> Result<CloudFacts, String> {
+        let apps = apps_from(&self.get("/v1/resources").await?);
+        let mut waiting = Vec::new();
+        for app in apps.iter().take(8) {
+            if let Ok(v) = self.get(&format!("/v1/oploop?app={app}")).await {
+                waiting.extend(waiting_from(app, &v));
+            }
+        }
+        let paused = self.get("/v1/credits").await.ok().and_then(|v| v.get("paused").and_then(Value::as_bool));
+        Ok(CloudFacts { waiting, paused })
+    }
+}
+
+struct FactsCache {
+    at: std::time::Instant,
+    busy: bool,
+    facts: Option<CloudFacts>,
+}
+
+fn facts_cache() -> &'static Mutex<Option<FactsCache>> {
+    static C: OnceLock<Mutex<Option<FactsCache>>> = OnceLock::new();
+    C.get_or_init(|| Mutex::new(None))
+}
+
+/// How fresh the platform's facts are kept for the reply guard.
+const FACTS_EVERY: Duration = Duration::from_secs(90);
+
+/// The platform's [`CloudFacts`] as last read, refreshed in the background at
+/// most every [`FACTS_EVERY`] so a reply is never held on the network. `None`
+/// until the platform answered once: nothing is known, so nothing is checked.
+pub fn cloud_facts_cached(platform: &Platform) -> Option<CloudFacts> {
+    let mut guard = facts_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let stale = guard.as_ref().is_none_or(|c| c.at.elapsed() > FACTS_EVERY);
+    let busy = guard.as_ref().is_some_and(|c| c.busy);
+    if stale && !busy && tokio::runtime::Handle::try_current().is_ok() {
+        match guard.as_mut() {
+            Some(c) => c.busy = true,
+            None => *guard = Some(FactsCache { at: std::time::Instant::now(), busy: true, facts: None }),
+        }
+        let p = platform.clone();
+        tokio::spawn(async move {
+            let got = p.cloud_facts().await;
+            let mut guard = facts_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let kept = guard.as_ref().and_then(|c| c.facts.clone());
+            *guard = Some(FactsCache { at: std::time::Instant::now(), busy: false, facts: got.ok().or(kept) });
+        });
+    }
+    guard.as_ref().and_then(|c| c.facts.clone())
+}
+
 /// The commits a team's apps are live from, as `/v1/resources` says
 /// (each app's `live_commit.commit`, set by the platform on every live
 /// deploy that named its commit).
@@ -314,4 +413,23 @@ pub fn live_commits_from(v: &Value) -> Vec<String> {
     out.sort();
     out.dedup();
     out
+}
+
+#[cfg(test)]
+mod facts_tests {
+    use super::*;
+
+    #[test]
+    fn what_waits_on_the_person_on_the_platforms_pages() {
+        let resources = json!({ "resources": [{ "kind": "app", "name": "o1path" }, { "kind": "app", "name": "old", "app_archived": true }, { "kind": "database", "name": "main" }] });
+        assert_eq!(apps_from(&resources), ["o1path"]);
+        let loop_ = json!({ "live": true, "goal": { "status": "proposed" }, "plan": { "status": "proposed", "bets": [{ "state": "proposed" }, { "state": "proposed" }, { "state": "skipped" }] }, "signals": [{ "state": "asked", "proposal": { "worth": true } }] });
+        let waiting = waiting_from("o1path", &loop_);
+        assert_eq!(waiting.len(), 3, "{waiting:?}");
+        assert!(waiting[1].contains("2 idea"), "{waiting:?}");
+        let settled = json!({ "live": true, "goal": { "status": "confirmed" }, "plan": { "status": "approved", "bets": [] }, "signals": [] });
+        assert!(waiting_from("o1path", &settled).is_empty());
+        let not_live = json!({ "live": false, "goal": { "status": "proposed" } });
+        assert!(waiting_from("o1path", &not_live).is_empty(), "no Goal page before the product is live");
+    }
 }

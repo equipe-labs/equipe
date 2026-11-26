@@ -1044,5 +1044,9 @@
   "news.sprint_did_not": "H-{id} «{belief}»: no funcionó ({numbers}).",
   "news.sprint_inconclusive": "H-{id} «{belief}»: no concluyente — los números no lo deciden.",
   "news.sprint_no_events": "H-{id} «{belief}» está en producción, pero sus eventos ({events}) no llegan: no se puede medir hasta arreglarlo.",
-  "news.sprint_budget": "El sprint S-{id} ha usado el {pct} % de su presupuesto ({spent} de {budget} tokens)."
+  "news.sprint_budget": "El sprint S-{id} ha usado el {pct} % de su presupuesto ({spent} de {budget} tokens).",
+  "guard.claim_nothing_waiting": "nada te espera|nada le espera|no tienes que hacer nada|no necesitas hacer nada|nada pendiente de tu parte|nada pendiente por tu parte",
+  "guard.claim_credits_out": "se acabaron los créditos|sin créditos|créditos agotados|añade créditos|agregar créditos",
+  "guard.claim_live": "ya está en línea|está en vivo|ya está publicado|ya está publicada|se publicó",
+  "guard.promise": "la próxima vez|lo arreglaré|lo corregiré|lo arreglaremos|lo corregiremos|en el próximo cambio"
 }

@@ -1032,5 +1032,9 @@
   "news.sprint_did_not": "H-{id}「{belief}」：無效（{numbers}）。",
   "news.sprint_inconclusive": "H-{id}「{belief}」：尚無定論 — 數據還不足以下結論。",
   "news.sprint_no_events": "H-{id}「{belief}」已上線，但它的事件（{events}）沒有到達：修好之前無法測量。",
-  "news.sprint_budget": "衝刺 S-{id} 已用掉預算的 {pct}%（{spent} / {budget} 個 token）。"
+  "news.sprint_budget": "衝刺 S-{id} 已用掉預算的 {pct}%（{spent} / {budget} 個 token）。",
+  "guard.claim_nothing_waiting": "沒有需要您|沒有等您|無需您|不需要您處理",
+  "guard.claim_credits_out": "額度用完|點數用完|餘額不足|請儲值|請加值",
+  "guard.claim_live": "已上線|已經上線|已發布到正式|已部署上線",
+  "guard.promise": "下次|之後再修|稍後修復|下次修改時"
 }

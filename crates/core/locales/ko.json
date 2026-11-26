@@ -1032,5 +1032,9 @@
   "news.sprint_did_not": "H-{id} “{belief}”: 효과가 없었어요 ({numbers}).",
   "news.sprint_inconclusive": "H-{id} “{belief}”: 판단 보류 — 숫자로는 아직 결론이 안 나요.",
   "news.sprint_no_events": "H-{id} “{belief}” 라이브 중이지만 이벤트({events})가 들어오지 않아요: 고치기 전엔 측정할 수 없어요.",
-  "news.sprint_budget": "스프린트 S-{id}: 예산의 {pct}%를 썼어요 ({spent} / {budget} 토큰)."
+  "news.sprint_budget": "스프린트 S-{id}: 예산의 {pct}%를 썼어요 ({spent} / {budget} 토큰).",
+  "guard.claim_nothing_waiting": "기다리는 건 없어요|기다리는 것은 없어요|기다리는 일은 없어요|기다리고 있는 건 없어요|확인하실 건 없어요|하실 일은 없어요|하실 건 없어요|필요한 건 없어요",
+  "guard.claim_credits_out": "크레딧이 떨어|크레딧이 다 떨어|크레딧이 부족|크레딧을 충전|크레딧이 없어|크레딧 때문에 멈",
+  "guard.claim_live": "실제 주소에 올라갔|실제 주소에 들어갔|사이트에 반영됐|실제 사이트에 나가",
+  "guard.promise": "다음 수정 때|다음에 고칠|다음 작업에서|다음 번에|나중에 고칠|함께 고칠게요|고칠게요|손볼게요|고치겠습니다|반영할게요"
 }

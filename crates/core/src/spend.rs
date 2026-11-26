@@ -109,6 +109,51 @@ pub fn parse_tokens(text: &str) -> Option<u64> {
     (n.is_finite() && n >= 0.0).then(|| (n * scale).round() as u64)
 }
 
+/// Where a turn running on a ticket stands against the ticket's budget, mid-turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MidTurn {
+    /// Under the budget.
+    Under,
+    /// Past it: the member is told, once, to finish with what it has.
+    WrapUp,
+    /// Well past it, the member not finishing: the turn is ended where it is
+    /// ([`HARD_OVER`]); its conversation and worktree are kept.
+    Stop,
+}
+
+/// How far past its budget a turn told to finish may go on before it is ended:
+/// this share of the budget, at least [`HARD_OVER_MIN`] tokens.
+pub const HARD_OVER: (u64, u64) = (3, 10);
+pub const HARD_OVER_MIN: u64 = 2_000_000;
+
+/// A ticket's turns used `before` tokens before this one, which has used `now`
+/// so far; `limit` is where the ticket stops ([`limit`]). A logo turn at
+/// o1path (2026-11-26) used 19.4M tokens against an 8M budget in one turn:
+/// the budget was read only between turns.
+pub fn mid_turn(before: u64, now: u64, limit: u64) -> MidTurn {
+    let spent = before.saturating_add(now);
+    let hard = limit.saturating_add((limit / HARD_OVER.1 * HARD_OVER.0).max(HARD_OVER_MIN));
+    if spent >= hard {
+        MidTurn::Stop
+    } else if spent >= limit {
+        MidTurn::WrapUp
+    } else {
+        MidTurn::Under
+    }
+}
+
+/// What a member past its ticket's budget mid-turn is told.
+pub fn wrap_up_prompt(spent: u64, limit: u64) -> String {
+    format!(
+        "[equipe: this ticket has used its budget ({} of {} tokens). Start nothing new and run no more rounds or reviews. \
+Commit what you have now. If what is left is a choice between options (designs, logos, wordings), pick the two strongest and ask the \
+person with ONE `ask_decision` card whose two options each carry their `images`; then hand in what is done with \
+`submit_for_review`, what is left in one line each, and end your turn. If you go on, the turn is ended for you.]",
+        amount(spent),
+        amount(limit)
+    )
+}
+
 /// What a stop's record line says was spent when it stopped.
 pub fn stopped_at(text: &str) -> Option<u64> {
     let digits: String = text.trim_start().chars().take_while(char::is_ascii_digit).collect();
@@ -364,6 +409,20 @@ pub fn headroom_step(told: &mut u8, level: Option<u8>) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_turn_past_its_tickets_budget_is_told_to_finish_then_ended() {
+        let limit = 8_000_000;
+        assert_eq!(super::mid_turn(0, 7_900_000, limit), super::MidTurn::Under);
+        assert_eq!(super::mid_turn(3_000_000, 5_000_000, limit), super::MidTurn::WrapUp, "earlier turns count");
+        assert_eq!(super::mid_turn(0, 10_300_000, limit), super::MidTurn::WrapUp);
+        assert_eq!(super::mid_turn(0, 10_400_000, limit), super::MidTurn::Stop, "8M + 30%");
+        assert_eq!(super::mid_turn(0, 19_375_280, limit), super::MidTurn::Stop, "o1path's logo turn");
+        assert_eq!(super::mid_turn(0, 2_900_000, 1_000_000), super::MidTurn::WrapUp, "a small budget gets at least 2M more");
+        let said = super::wrap_up_prompt(8_100_000, limit);
+        assert!(said.contains("ask_decision") && said.contains("submit_for_review") && said.contains("8.1M"), "{said}");
+    }
+
     use super::*;
     use equipe_protocol::{PlanWindow, TicketKind, TicketStatus};
 
