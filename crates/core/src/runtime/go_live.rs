@@ -1,5 +1,6 @@
 //! Going live after a landing (`crate::go_live`): once work lands and main is
-//! pushed — a member's own landing, the PM's acceptance, the person's merge —
+//! pushed (or, for a project with no remote, merged: its main is all there
+//! is) — a member's own landing, the PM's acceptance, the person's merge —
 //! the project's go-live command runs in its main checkout, off the loop,
 //! once for landings close together and one run at a time per project.
 //! What it deployed is noted as a deploy (`crate::deploys`), told like any
@@ -239,6 +240,13 @@ Find out why and get it fixed (a ticket, if it is the project's code); then {aga
                     Some(shown),
                 );
             }
+            // Nothing live to update yet (a product never deployed): not news, not a failure; the next landing tries again.
+            Outcome::NothingYet { command, tail } => {
+                crate::daemon_log!("equipe: {squad}: {name}: `{command}` {after} had nothing to put live yet: {}", tail.lines().last().unwrap_or_default());
+                if let Some(lane) = self.lanes(squad).get_mut(&key) {
+                    lane.nothing_yet();
+                }
+            }
             Outcome::Invalid(err) => {
                 crate::daemon_log!("equipe: {squad}: {name} wasn't deployed: {err}");
                 let lane = self.lanes(squad).entry(key).or_default();
@@ -279,6 +287,24 @@ Find out why and get it fixed (a ticket, if it is the project's code); then {aga
             }
         }
         crate::requests::Shipped { live, by_deploy }
+    }
+
+    /// What a member on a ticket in `project` is told when the project goes
+    /// live by itself after each landing — its command declared or confirmed,
+    /// run by equipe with success at least once, and the squad not asking
+    /// before deploys: landing is how the work reaches production, so no
+    /// deploy of its own, no ticket to (re)deploy, and fixes go live with it.
+    pub(super) fn goes_live_note(&mut self, squad: &str, project: &Path) -> Option<String> {
+        let key = key_of(project);
+        let lane = match self.go_live.get(squad) {
+            Some(lanes) => lanes.get(&key).cloned(),
+            None => self.journals.get(squad).and_then(|j| j.go_live().remove(&key)),
+        }?;
+        let by_itself = (lane.declared || lane.confirmed.is_some()) && lane.deployed.is_some();
+        if !by_itself || self.autonomy_store(squad).policy.level(Kind::Deploy) == Level::Ask {
+            return None;
+        }
+        Some(goes_live_words(&board::project_name(project)))
     }
 
     /// The requests `tickets` serve moved: told where they stand now.
@@ -363,6 +389,16 @@ together) and tells you and the person how it went. A {} on main wins over it.",
         }
         Ok(said.join(" "))
     }
+}
+
+/// [`Runtime::goes_live_note`]'s words.
+fn goes_live_words(name: &str) -> String {
+    format!(
+        "\n\n[equipe] {name} goes live by itself: once this ticket is accepted and lands on main, equipe runs its go-live command \
+and puts main live — that is how this work reaches production, inside this ticket. So never deploy it to production yourself, \
+never add a checklist item or ask for a ticket to deploy or redeploy it, and never hand it back for a deploy; what you fix here \
+goes live with it. To show the change before it lands, put it on a preview.\n"
+    )
 }
 
 /// What a go was run for, for a line: `after T-3, T-4 landed`, or the PM's word.
