@@ -557,7 +557,7 @@ async fn a_resting_member_takes_no_new_work_until_woken_and_stays_resting_across
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     add(&handle, &mut events, 3, member(&repo, "frontend")).await;
     // The person rests frontend-2: what it owns by name waits, the role's work goes to the other.
-    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: true, stop: false });
+    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: true, stop: false, why: None });
     until(&mut events, |e| matches!(e, Event::RestingChanged { resting, .. } if resting == &["frontend-2".to_owned()])).await;
     ticket_for(&handle, "frontend-2", "Mine").await;
     ticket_for(&handle, "frontend", "The role's").await;
@@ -581,12 +581,12 @@ async fn a_resting_member_takes_no_new_work_until_woken_and_stays_resting_across
     assert_eq!(snapshot.resting, ["frontend-2"]);
     assert!(runs(&snapshot).iter().all(|r| r.0 != 3), "{:#?}", runs(&snapshot));
     // Woken: what waited for it starts at once.
-    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: false, stop: false });
+    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: false, stop: false, why: None });
     assert_eq!(started(&mut events, 1).await, [(3, 1)]);
     assert!(handle.snapshot("acme").await.resting.is_empty());
     // Rested with its work stopped: its run's turn ends there.
     let run = key(&handle.snapshot("acme").await, 1).session;
-    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: true, stop: true });
+    handle.send(Command::SetResting { squad: "acme".into(), member: "frontend-2".into(), resting: true, stop: true, why: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { session, outcome: TurnOutcome::Interrupted, .. } if *session == run)).await;
     handle.shutdown().await;
 }

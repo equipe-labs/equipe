@@ -288,7 +288,7 @@ impl Runtime {
                 if resting && self.sessions.get(&id).is_some_and(Session::is_pm) {
                     return Err("You can't rest yourself: the PM stays on duty.".to_owned());
                 }
-                Command::SetResting { squad: squad_name, member, resting, stop: false }
+                Command::SetResting { squad: squad_name, member, resting, stop: false, why: None }
             }
             Change::McpServer { action: McpAction::Add, name, url, roles, transport } => {
                 let server = crate::squad_mcp::server(&name, url.as_deref(), roles.as_deref(), transport.as_deref())?;

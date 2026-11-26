@@ -1331,13 +1331,18 @@ pub enum Command {
     /// member takes no new work: the board hands it nothing and no run of
     /// its opens. What it works on now finishes, unless `stop`: then its runs
     /// are stopped too. Kept in the squad's journal; only ever the person's.
-    /// Answered by [`Event::RestingChanged`].
+    /// `why`: what put it on hold or lifted that, in a few plain English
+    /// words, when a platform did (its team ran out of credits; credits are
+    /// back) — the PM is told it with the change, so it never goes on from
+    /// an older reason. Answered by [`Event::RestingChanged`].
     SetResting {
         squad: SquadName,
         member: String,
         resting: bool,
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         stop: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        why: Option<String>,
     },
     /// The person pins a ticket to watch on the Status screen, or lets it go.
     /// Kept in the squad's journal; only ever the person's. The Status
@@ -5635,12 +5640,15 @@ mod tests {
 
     #[test]
     fn resting_travels_by_name_and_is_left_out_when_nobody_rests() {
-        let rest = Command::SetResting { squad: "acme".into(), member: "designer".into(), resting: true, stop: false };
+        let rest = Command::SetResting { squad: "acme".into(), member: "designer".into(), resting: true, stop: false, why: None };
         let wire = serde_json::to_value(&rest).unwrap();
         assert_eq!(wire, json!({ "type": "set_resting", "squad": "acme", "member": "designer", "resting": true }), "letting work finish: no stop on the wire");
         assert_eq!(serde_json::from_value::<Command>(wire).unwrap(), rest);
-        let stop = Command::SetResting { squad: "acme".into(), member: "designer".into(), resting: true, stop: true };
+        let stop = Command::SetResting { squad: "acme".into(), member: "designer".into(), resting: true, stop: true, why: None };
         assert_eq!(serde_json::from_value::<Command>(serde_json::to_value(&stop).unwrap()).unwrap(), stop);
+        // A platform says why (credits out, credits back); an older daemon reads the rest as before.
+        let paid = json!({ "type": "set_resting", "squad": "acme", "member": "designer", "resting": false, "why": "credits are back" });
+        assert!(matches!(serde_json::from_value::<Command>(paid).unwrap(), Command::SetResting { why: Some(ref w), resting: false, .. } if w == "credits are back"));
         let told = Event::RestingChanged { squad: "acme".into(), resting: vec!["designer".into()] };
         let wire = serde_json::to_value(&told).unwrap();
         assert_eq!(wire, json!({ "type": "resting_changed", "squad": "acme", "resting": ["designer"] }));

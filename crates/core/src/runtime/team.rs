@@ -348,8 +348,10 @@ to the person, or reassign them."
     /// (`dispatch_to`); what it works on finishes, unless `stop` — then its
     /// runs are stopped too, their tickets waiting for the person as any
     /// stopped run's. Woken, it takes work again at once. The PM is told, to
-    /// plan around it.
-    pub(super) async fn set_resting(&mut self, squad: &str, name: &str, resting: bool, stop: bool) {
+    /// plan around it — with `why`, when a platform gave one (its team ran
+    /// out of credits; credits are back), so the PM never goes on from an
+    /// older reason it was told.
+    pub(super) async fn set_resting(&mut self, squad: &str, name: &str, resting: bool, stop: bool, why: Option<&str>) {
         let Some(id) = self.member_id(squad, name) else {
             return self.squad_error(squad, say!(self, "error.no_member", name = name));
         };
@@ -368,22 +370,51 @@ to the person, or reassign them."
                 self.interrupt(run).await;
             }
         }
+        let because = why.map(reason).filter(|w| !w.is_empty()).map(|w| format!(" ({w})")).unwrap_or_default();
         let (line, shown) = if resting {
             (
                 format!(
-                    "{name} is on hold: it takes no new work for now{}. Don't hand it tickets meanwhile: give its role's \
+                    "{name} is on hold{because}: it takes no new work for now{}. Don't hand it tickets meanwhile: give its role's \
 work to another member of the role, or leave what it owns by name waiting. If the person asks, say in plain words that it is on \
 hold — never that it is resting, asleep or waiting to be woken, and never that the person put it on hold.",
                     if stop { ", and its work in progress was stopped" } else { "; what it works on now, it finishes" }
                 ),
                 say!(self, "news.resting", name = name),
             )
-        } else {
+        } else if because.is_empty() {
             (format!("{name} takes work again."), say!(self, "news.awake", name = name))
+        } else {
+            (
+                format!("{name} takes work again{because}. Whatever you were told before about why it was on hold no longer holds."),
+                say!(self, "news.awake", name = name),
+            )
         };
         self.brief_pm(squad, line, Some(shown));
         if !resting {
             self.dispatch(squad).await;
         }
+    }
+}
+
+/// A platform's reason for a hold, as the PM is told it: one line, at most
+/// [`REASON_MAX`] characters.
+fn reason(why: &str) -> String {
+    let line: String = why.split_whitespace().collect::<Vec<_>>().join(" ");
+    match line.char_indices().nth(REASON_MAX) {
+        Some((at, _)) => format!("{}…", &line[..at]),
+        None => line,
+    }
+}
+
+const REASON_MAX: usize = 240;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_platforms_reason_is_one_short_line() {
+        assert_eq!(super::reason("  credits are back:\n the team can spend again "), "credits are back: the team can spend again");
+        let long = super::reason(&"크레딧 ".repeat(200));
+        assert_eq!(long.chars().count(), super::REASON_MAX + 1, "cut on a character, with an ellipsis");
+        assert!(long.ends_with('…'));
     }
 }

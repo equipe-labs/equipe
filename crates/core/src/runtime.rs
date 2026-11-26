@@ -860,6 +860,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         said_about: None,
         system_said: Vec::new(),
         pm_woken: HashSet::new(),
+        unseen_told: HashMap::new(),
         pm_batch: None,
         previews: crate::live_preview::Watched::default(),
         design_sessions: HashMap::new(),
@@ -1365,6 +1366,9 @@ enum Internal {
     HomeUndone { squad: String, session: SessionId, result: Result<(squad_home::Change, squad_home::Change), String> },
     /// A design decision kept in a squad's record off the loop.
     DecisionKept(String),
+    /// The pictures a conversation's reply just showed that the person won't
+    /// see, as written and why (`check_pictures`).
+    UnseenPictures { session: SessionId, unseen: Vec<(String, String)> },
     /// A note of the person's taste saved off the loop, or why not.
     TasteSaved { squad: String, project: Option<String>, result: Result<(), crate::taste::store::Refused> },
     /// A fact remembered or forgotten off the loop: the notice its member's conversation shows.
@@ -1607,6 +1611,9 @@ struct Runtime {
     /// PMs equipe itself woke (a notice, a hand-in, a routine) whose turn hasn't started yet:
     /// that turn is a `pm_wake` in the spend ledger, not the person's conversation.
     pm_woken: HashSet<SessionId>,
+    /// The pictures each conversation was last told the person can't see
+    /// (`check_pictures`): the same ones again aren't told twice in a row.
+    unseen_told: HashMap<SessionId, Vec<String>>,
     /// While the heartbeat's pass runs: what it hands each PM, kept to go in one wake
     /// when the pass ends (`runtime::heartbeat`).
     pm_batch: Option<Vec<(String, SessionId, String)>>,
@@ -2028,6 +2035,7 @@ impl Wake {
             Wake::Internal(Internal::HomePutDown(..)) => Borrowed("work landed in the squad's folder"),
             Wake::Internal(Internal::HomeUndone { .. }) => Borrowed("a change taken back"),
             Wake::Internal(Internal::DecisionKept(..)) => Borrowed("a design decision kept"),
+            Wake::Internal(Internal::UnseenPictures { .. }) => Borrowed("a reply's pictures checked"),
             Wake::Internal(Internal::TasteSaved { .. }) => Borrowed("a taste note saved"),
             Wake::Internal(Internal::Remembered { .. }) => Borrowed("a fact remembered"),
             Wake::Internal(Internal::ClosedGit { .. }) => Borrowed("a closed ticket's git work"),
@@ -2354,6 +2362,7 @@ impl Runtime {
                         self.look_at_design(&squad, true);
                     }
                 }
+                Internal::UnseenPictures { session, unseen } => self.unseen_pictures(session, unseen).await,
                 Internal::TasteSaved { squad, project, result } => self.taste_saved(squad, project, result),
                 Internal::Remembered { session, undo, text } => self.publish(Event::Notice { undo: Some(undo), session, text }),
                 Internal::ClosedGit { squad, ticket, status, closed } => {
@@ -2727,6 +2736,7 @@ impl Runtime {
         let mut squad = squad.map(str::to_owned);
         let mut no_room = false;
         let mut to_draw = None;
+        let mut to_check = None;
         // A ticket whose premium-family spend just grew: told to the screens after.
         let mut premium_spent = None;
         if let Some(id) = event.session()
@@ -2739,6 +2749,13 @@ impl Runtime {
                 && finished.iter().any(|line| matches!(line, Entry::Reply { text } if has_visuals(text)))
             {
                 to_draw = Some((id, name.clone(), finished.clone()));
+            }
+            // A conversation's reply that shows pictures (not a ticket's run): each one checked, off the loop.
+            if let Some(name) = &squad
+                && session.work.is_none()
+                && finished.iter().any(|line| matches!(line, Entry::Reply { text } if text.contains("![")))
+            {
+                to_check = Some((id, name.clone(), session.cwd.clone(), finished.clone()));
             }
             // A member's turn, kept for the week's retro: who, on what, how long, how it ended.
             let turn = match (&event, &session.member, session.turn_began) {
@@ -2847,6 +2864,9 @@ impl Runtime {
         }
         if let Some((id, name, finished)) = to_draw {
             self.draw_visuals(id, &name, &finished);
+        }
+        if let Some((id, name, cwd, finished)) = to_check {
+            self.check_pictures(id, &name, cwd, &finished);
         }
         if let Some((squad, ticket)) = premium_spent
             && let Some(t) = self.find_ticket(&squad, ticket)
@@ -3478,7 +3498,7 @@ impl Runtime {
             Command::DeclineRoutine { squad, id } => self.decline_routine(&squad, id),
             Command::SetIdleWake { squad, hours } => self.set_idle_wake(&squad, hours).await,
             Command::SetNotify { squad, settings } => self.set_notify(&squad, settings),
-            Command::SetResting { squad, member, resting, stop } => self.set_resting(&squad, &member, resting, stop).await,
+            Command::SetResting { squad, member, resting, stop, why } => self.set_resting(&squad, &member, resting, stop, why.as_deref()).await,
             Command::WatchTicket { squad, ticket, watch } => self.watch_ticket(&squad, ticket, watch),
             Command::SetSignalOn { squad, project, name, on } => self.set_signal_on(&squad, &project, &name, on),
             Command::NewConversation { squad, session, project } => self.new_conversation(&squad, session, project),
@@ -11849,6 +11869,54 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             }
             crate::visuals::cache::prune(&crate::visuals::diagram::dir(&home, &squad), &shown, crate::visuals::cache::Quota::default());
         });
+    }
+
+    /// The pictures replies just ended show, checked off the loop
+    /// (`visuals::unseen`): one the person won't see is told back to the
+    /// conversation ([`Internal::UnseenPictures`]).
+    fn check_pictures(&self, session: SessionId, squad: &str, cwd: PathBuf, finished: &[Entry]) {
+        let texts: Vec<String> = finished.iter().filter_map(|line| match line {
+            Entry::Reply { text } if text.contains("![") => Some(text.clone()),
+            _ => None,
+        }).collect();
+        let (home, squad, internal) = (self.config.home.clone(), squad.to_owned(), self.internal.clone());
+        tokio::task::spawn_blocking(move || {
+            let mut unseen: Vec<(String, String)> = Vec::new();
+            for text in texts {
+                for one in crate::visuals::unseen(&home, &squad, &cwd, &text) {
+                    if !unseen.iter().any(|(w, _)| *w == one.0) {
+                        unseen.push(one);
+                    }
+                }
+            }
+            let _ = internal.send(Internal::UnseenPictures { session, unseen });
+        });
+    }
+
+    /// A reply showed pictures the person won't see: its conversation is
+    /// told at once, in a note the person never sees, to show them again —
+    /// unless it was told of the very same ones last time (it tried, and
+    /// can't: it is not asked again and again).
+    async fn unseen_pictures(&mut self, session: SessionId, unseen: Vec<(String, String)>) {
+        let paths: Vec<String> = unseen.iter().map(|(w, _)| w.clone()).collect();
+        if unseen.is_empty() {
+            self.unseen_told.remove(&session);
+            return;
+        }
+        if self.unseen_told.get(&session) == Some(&paths) || !self.sessions.contains_key(&session) {
+            return;
+        }
+        self.unseen_told.insert(session, paths);
+        let list: Vec<String> = unseen.iter().map(|(written, why)| format!("- `{written}`: {why}")).collect();
+        let prompt = format!(
+            "[equipe: the person can't see {} of the pictures your last reply showed — where each one is, they see nothing:\n{}\n\
+Show each again now, in a short reply: `![what it is](/full/path.png)` with the full path of a file that exists (in your \
+worktree, the squad's folder, a project or a temp folder; make it again if it is gone). If it isn't ready, say so plainly \
+instead. Don't apologise at length or explain this note.]",
+            unseen.len(),
+            list.join("\n")
+        );
+        self.set_going(session, prompt).await;
     }
 
     fn snapshot(&mut self, squad: &str) -> Snapshot {

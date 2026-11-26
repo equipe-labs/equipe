@@ -626,7 +626,7 @@ mod tests {
             Command::SetSignalOn { squad: s(), project: "p".into(), name: "n".into(), on: false },
             Command::SetIdleWake { squad: s(), hours: 0 },
             Command::SetNotify { squad: s(), settings: Default::default() },
-            Command::SetResting { squad: s(), member: "qa".into(), resting: true, stop: false },
+            Command::SetResting { squad: s(), member: "qa".into(), resting: true, stop: false, why: None },
             Command::WatchTicket { squad: s(), ticket: 3, watch: true },
             Command::SaveLogin { draft: login },
             Command::DeleteLogin { id: 1 },

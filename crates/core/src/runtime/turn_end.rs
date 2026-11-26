@@ -445,12 +445,24 @@ impl Runtime {
 
     /// A turn of run `id` ended well (it didn't fail, and its engine had
     /// room): its ticket's failures in a row are over, and a test turn of
-    /// its squad's breaker passed.
+    /// its squad's breaker passed. A PM told the ticket kept failing hears
+    /// it is over, so it never tells the person of a failure that has
+    /// passed (credits that ran out and came back, a provider down a while).
     pub(super) fn ended_well(&mut self, id: SessionId) {
         let Some(s) = self.sessions.get(&id) else { return };
         let (Some(squad), Some(ticket)) = (s.squad.clone(), s.work.as_ref().map(|w| w.ticket)) else { return };
+        let name = s.name().unwrap_or_default().to_owned();
         self.turn_ends.failures.remove(&(squad.clone(), ticket));
-        self.turn_ends.told.remove(&(squad.clone(), ticket));
+        if self.turn_ends.told.remove(&(squad.clone(), ticket)) {
+            self.brief_pm(
+                &squad,
+                format!(
+                    "T-{ticket}: {name}'s engine works again — its last turn ended well. The failure you were told about is over: \
+don't tell the person this work is failing or stopped for it."
+                ),
+                None,
+            );
+        }
         if self.turn_ends.breakers.get(&squad).is_some_and(|b| b.probing == Some(id)) {
             self.close_breaker(&squad);
         }

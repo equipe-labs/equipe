@@ -548,6 +548,50 @@ fn card_page(path: &Path) -> Result<ImageRead, String> {
     Ok(ImageRead { mime: "text/html".into(), size: bytes.len() as u64, width: None, height: None, data, scaled: false })
 }
 
+/// The pictures a reply embeds that the person won't see: each local
+/// image (`![…](path)`) whose file is gone, isn't a picture, lies outside
+/// the folders a screen is given pictures from (the squad's folder, its
+/// projects, the worktrees, the uploads, a temp folder), or is written by a
+/// path relative to where the member works (a screen in a browser has no
+/// such place to read it from) — as written, with why. Read right when the
+/// reply ends, so the member hears it and shows it again before the person
+/// is left looking at a "here it is" with nothing under it.
+pub fn unseen(home: &Path, squad: &str, cwd: &Path, text: &str) -> Vec<(String, String)> {
+    let images = markdown::local_images(text);
+    if images.is_empty() {
+        return Vec::new();
+    }
+    let db = crate::journal::squad_dir(home, squad).join("squad.db");
+    let projects = if db.exists() { crate::journal::naming(&db, "").map(|n| n.projects).unwrap_or_default() } else { Vec::new() };
+    let mut roots = vec![crate::squad_home::path(home, squad), design_qa_dir(home, squad), crate::gateway::uploads_dir(home), keep::dir(home, squad)];
+    roots.extend(homes(home).iter().map(|h| h.join("worktrees")));
+    roots.extend(projects);
+    roots.extend(scratch_folders());
+    let mut out: Vec<(String, String)> = Vec::new();
+    for image in images {
+        let written = image.path.trim().to_owned();
+        if out.iter().any(|(w, _)| *w == written) {
+            continue;
+        }
+        let bare = written.trim_start_matches('<').trim_end_matches('>');
+        let bare = bare.strip_prefix("file://").map(|r| r.strip_prefix("localhost").unwrap_or(r)).unwrap_or(bare);
+        if !Path::new(bare).is_absolute() {
+            let full = markdown::lexical(&written, cwd).map(|p| format!(" (here: {})", p.display())).unwrap_or_default();
+            out.push((written, format!("a relative path: the person's screen needs the picture's full path{full}")));
+            continue;
+        }
+        let Some(path) = markdown::lexical(&written, cwd) else {
+            out.push((written, "not a path a screen can read — give the full path, without `..` or `~`".to_owned()));
+            continue;
+        };
+        if let Err(why) = check(&path, &roots) {
+            let why = why.strip_prefix(&format!("{}: ", path.display())).map(str::to_owned).unwrap_or(why);
+            out.push((written, why));
+        }
+    }
+    out
+}
+
 /// The folders a member drops a quick render or chart in: this Mac's temp folders.
 fn scratch_folders() -> Vec<PathBuf> {
     vec![std::env::temp_dir(), PathBuf::from("/tmp"), PathBuf::from("/private/tmp")]
@@ -1020,6 +1064,22 @@ mod tests {
     fn decoded(read: &ImageRead) -> image::DynamicImage {
         use base64::Engine as _;
         image::load_from_memory(&base64::engine::general_purpose::STANDARD.decode(&read.data).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn a_reply_hears_of_each_picture_the_person_wont_see() {
+        let home = dir("unseen");
+        let work = home.join("worktrees/site/t16-1");
+        std::fs::create_dir_all(work.join("logo")).unwrap();
+        png(&work.join("logo/lockup.png"), 4, 4, false);
+        let shown = format!("Here it is:\n\n![Logo]({}/logo/lockup.png)\n\n![Korean]({}/logo/lockup-ko.png)\n\n![Mark](logo/mark.png) ![site](https://example.com/a.png)", work.display(), work.display());
+        let unseen = unseen(&home, "acme", &work, &shown);
+        assert_eq!(unseen.len(), 2, "{unseen:?}");
+        assert_eq!(unseen[0].0, format!("{}/logo/lockup-ko.png", work.display()));
+        assert!(unseen[0].1.contains(rpc::IMAGE_MISSING), "{unseen:?}");
+        assert_eq!(unseen[1].0, "logo/mark.png");
+        assert!(unseen[1].1.contains("full path") && unseen[1].1.contains(&work.join("logo/mark.png").display().to_string()), "{unseen:?}");
+        assert!(super::unseen(&home, "acme", &work, "No pictures here, only `![x](/nope.png)` in code.").is_empty());
     }
 
     #[test]

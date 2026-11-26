@@ -1946,6 +1946,34 @@ async fn memos_and_the_pms_briefing_survive_a_restart() {
 }
 
 #[tokio::test]
+async fn a_reply_showing_a_picture_that_is_gone_is_told_to_show_it_again_once() {
+    // The PM shows a logo whose file isn't there; told so, it shows it again — the same gone file, so it is
+    // not told twice in a row.
+    let claude = fake_claude(
+        true,
+        &format!(
+            "case \"$*\" in *\"can't see\"*) T='Again: ![Logo](/nonexistent/equipe-test/logo.png)';; *) T='Here it is: ![Logo](/nonexistent/equipe-test/logo.png)';; esac\n{}",
+            answering("$T")
+        ),
+    );
+    let cwd = scratch("cwd");
+    let home = squad_home(&[&cwd]);
+    let (handle, mut events) = runtime::start(config(&claude, &home, true));
+    add(&handle, &mut events, 1, member(&cwd, "pm")).await;
+    handle.send(Command::Submit { session: 1, text: "Can I see the logo?".into(), about: None });
+    let first = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert!(text_of(&first).starts_with("Here it is"), "{first:#?}");
+    // Told at once, in a turn of its own the person never sees as their message.
+    let second = until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    assert!(text_of(&second).starts_with("Again"), "{}", text_of(&second));
+    assert!(!second.iter().any(|e| matches!(e, Event::UserMessage { .. })), "{second:?}");
+    // The same gone picture again: no third turn.
+    let third = tokio::time::timeout(Duration::from_millis(1500), until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. }))).await;
+    assert!(third.is_err(), "told only once for the same pictures");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn the_journal_keeps_finished_replies_not_streaming_fragments() {
     // Three fragments stream; one reply is kept.
     let claude = fake_claude(

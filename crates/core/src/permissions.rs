@@ -1126,7 +1126,7 @@ mod tests {
             Command::SetPmAccepts { squad: "a".into(), on: true },
             Command::SetSelfLand { squad: "a".into(), on: true },
             Command::RevertLanded { squad: "a".into(), ticket: 1 },
-            Command::SetResting { squad: "a".into(), member: "qa".into(), resting: true, stop: false },
+            Command::SetResting { squad: "a".into(), member: "qa".into(), resting: true, stop: false, why: None },
             Command::WatchTicket { squad: "a".into(), ticket: 3, watch: true },
             Command::Disallow { squad: "a".into(), rule: "Bash(rm:*)".into() },
             Command::DeleteLogin { id: 1 },

@@ -2803,7 +2803,7 @@ impl Shell {
     pub fn rest_member(&mut self, name: &str, resting: bool, stop: bool, cx: &mut Context<Self>) {
         self.board.member_menu = None;
         if self.can_act() {
-            self.send_command(equipe_core::protocol::Command::SetResting { squad: self.model.squad.clone(), member: name.to_owned(), resting, stop });
+            self.send_command(equipe_core::protocol::Command::SetResting { squad: self.model.squad.clone(), member: name.to_owned(), resting, stop, why: None });
         }
         cx.notify();
     }

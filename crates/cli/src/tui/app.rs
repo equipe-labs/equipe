@@ -3645,7 +3645,7 @@ what to do with each — close, merge into another, or keep, and why. Don't canc
             self.flash = Some(t!("app.pm_rests").into());
             return Vec::new();
         }
-        vec![Command::SetResting { squad, member: name.to_owned(), resting, stop }]
+        vec![Command::SetResting { squad, member: name.to_owned(), resting, stop, why: None }]
     }
 
     /// `/add designer frontend`, `/add qa codex`, `/add custom writer`,
@@ -4307,7 +4307,7 @@ mod tests {
             type_text(app, text);
             enter(app)
         };
-        let rest = |member: &str, resting: bool, stop: bool| vec![Command::SetResting { squad: "acme".into(), member: member.into(), resting, stop }];
+        let rest = |member: &str, resting: bool, stop: bool| vec![Command::SetResting { squad: "acme".into(), member: member.into(), resting, stop, why: None }];
         assert_eq!(run(&mut app, "/rest frontend"), rest("frontend", true, false), "its work in progress finishes");
         assert_eq!(run(&mut app, "/rest frontend stop"), rest("frontend", true, true));
         assert_eq!(run(&mut app, "/rest frontend off"), rest("frontend", false, false));
