@@ -47,6 +47,16 @@
 //!   hosted teams' PM calls this took their cache cost 11% below an hour
 //!   throughout (one busy team: 10%; the busiest squad: 2%). The prompt itself
 //!   is unchanged: this is the same work, cached for a different time.
+//! - **Claude Code's small model named** ([`small_model`]): behind the
+//!   gateway (a base URL that isn't Anthropic's) Claude Code doesn't assume
+//!   its small model is served, so its side calls run on the turn's own model.
+//!   The dearest of them is WebFetch: every fetched page (up to ~25k tokens)
+//!   goes in one call with no cache breakpoint, to be read once and summed up.
+//!   On a hosted team's first eight minutes (2026-11-26, a PM researching for
+//!   a medical document) that was 28 Opus calls, 450k uncached tokens: $3.43
+//!   of $8.78, several pages at once as the PM fetched them in parallel. Named
+//!   (Haiku, Claude Code's own small model on Anthropic's API) the same calls
+//!   cost a fifth. The turn's own model and its subagents are unchanged.
 use crate::roles;
 
 /// The environment variable that turns the profile on.
@@ -189,6 +199,19 @@ pub fn cache_ttl(kind: TurnKind, idle: Option<u64>, last_short: bool) -> Vec<(St
     }
 }
 
+/// The model Claude Code's small-model work runs on, behind the gateway.
+pub const SMALL_MODEL: &str = "claude-haiku-5-5";
+/// Claude Code's variables for its small model: the current one, and the one
+/// older versions read.
+pub const SMALL_MODEL_VARS: [&str; 2] = ["ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL"];
+
+/// Claude Code's small model for a turn on the gateway, as environment pairs:
+/// [`SMALL_MODEL`] for each of [`SMALL_MODEL_VARS`] that `set` says isn't set
+/// already (by the turn or the machine), so a choice made elsewhere stays.
+pub fn small_model(set: impl Fn(&str) -> bool) -> Vec<(String, String)> {
+    SMALL_MODEL_VARS.iter().filter(|v| !set(v)).map(|v| ((*v).to_owned(), SMALL_MODEL.to_owned())).collect()
+}
+
 /// `existing` custom headers with `added` after them: nothing the person or
 /// the machine already set is dropped.
 pub fn merged(existing: Option<&str>, added: &str) -> String {
@@ -297,6 +320,16 @@ mod tests {
         for kept in ["Bash", "Read", "Edit", "Write", "Glob", "Grep", "Task", "Agent", "Monitor", "TaskStop", "SendMessage", "ToolSearch", "Skill", "WebSearch", "WebFetch"] {
             assert!(!UNUSED_TOOLS.contains(&kept), "{kept}");
         }
+    }
+
+    #[test]
+    fn the_small_model_is_named_unless_already_chosen() {
+        let named = small_model(|_| false);
+        assert_eq!(named, [("ANTHROPIC_DEFAULT_HAIKU_MODEL".to_owned(), SMALL_MODEL.to_owned()), ("ANTHROPIC_SMALL_FAST_MODEL".to_owned(), SMALL_MODEL.to_owned())]);
+        assert!(crate::models::CLAUDE_MODELS.iter().any(|m| m.id == SMALL_MODEL && m.family == "haiku"), "a Haiku the engine knows");
+        let kept = small_model(|v| v == "ANTHROPIC_DEFAULT_HAIKU_MODEL");
+        assert_eq!(kept, [("ANTHROPIC_SMALL_FAST_MODEL".to_owned(), SMALL_MODEL.to_owned())], "a choice made elsewhere stays");
+        assert!(small_model(|_| true).is_empty());
     }
 
     #[test]
