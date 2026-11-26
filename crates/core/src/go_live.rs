@@ -284,7 +284,10 @@ pub fn checkout(repo: &Path, go: &GoLive) -> Result<(PathBuf, String), Blocked> 
         return Err(Blocked::From { from: from.clone(), main });
     }
     let dir = worktree::checked_out_at(repo, &main).ok_or_else(|| Blocked::NotCheckedOut { main: main.clone() })?;
-    let status = worktree::git(&dir, &["status", "--porcelain", "--untracked-files=all"]).map_err(|err| Blocked::NoMain(err.to_string()))?;
+    // The platform's tool deploys exact commits (untracked files never reach it), and a cloud team's main checkout
+    // holds files equipe keeps there uncommitted for a while (its team notes): only changed tracked files block it.
+    let untracked = if go.command == CLOUD_COMMAND { "--untracked-files=no" } else { "--untracked-files=all" };
+    let status = worktree::git(&dir, &["status", "--porcelain", untracked]).map_err(|err| Blocked::NoMain(err.to_string()))?;
     let files: Vec<String> =
         status.lines().filter_map(|l| l.trim_start().split_once(' ').map(|(_, path)| path.trim().to_owned())).filter(|p| !p.is_empty()).collect();
     if !files.is_empty() {
@@ -720,6 +723,9 @@ mod tests {
         git_in(&plain, &["add", "-A"]);
         git_in(&plain, &["commit", "-q", "-m", "local"]);
         assert!(checkout(&plain, &GoLive::cloud()).is_ok());
+        std::fs::write(plain.join("CLAUDE.md"), "notes").unwrap();
+        assert!(checkout(&plain, &GoLive::cloud()).is_ok(), "an untracked file never reaches the platform's deploy");
+        assert!(matches!(checkout(&plain, &GoLive::confirmed("true")), Err(Blocked::Dirty { .. })), "a project's own command still wants it clean");
         for dir in [plain, declared] {
             let _ = std::fs::remove_dir_all(dir);
         }
