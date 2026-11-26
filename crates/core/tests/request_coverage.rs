@@ -229,6 +229,7 @@ async fn three_requests_in_a_row_each_get_their_own_work_none_is_dropped_nor_clo
     let told = told.unwrap();
     assert!(told.contains("R-3 — asked of pm at ") && told.contains("“An admin-only page showing who used MCP, and how many calls per task”"), "{told}");
     assert!(!told.contains("R-1") && !told.contains("R-2"), "{told}");
+    assert!(told.contains("send no message for it") && told.contains("one message for everyone it concerns"), "settling is quiet: {told}");
     let listed = requests(&handle).await;
     let r3 = request(&listed, 3);
     assert!(r3.status.uncovered && r3.closed_at.is_none(), "{r3:#?}");

@@ -232,13 +232,18 @@ fn live_cache() -> &'static Mutex<Option<Live>> {
 const LIVE_EVERY: Duration = Duration::from_secs(5 * 60);
 
 /// Whether `/v1/resources` says the team has a product live for the sprint
-/// loop: an app, and the first free version's quiet day over (`quiet_until`,
-/// unix seconds: the day after a free team's first version went live, nothing
-/// starts by itself on the person's free credit).
+/// loop: an app, the first free version's quiet day over (`quiet_until`,
+/// unix seconds: the day after a free team's first version went live), and
+/// the team off free credit (`free_credit`: never paid). On free credit the
+/// loop's planning wake is a paid PM turn nobody asked for — one found
+/// "nothing to plan yet" for $0.90 — so it waits for the person: their ask,
+/// or the loop turned on by hand (`sprint::Settings::on`), or their first
+/// purchase.
 pub fn live_from(v: &Value, now: u64) -> bool {
     let app = v.get("resources").and_then(Value::as_array).is_some_and(|r| r.iter().any(|x| x.get("kind").and_then(Value::as_str) == Some("app")));
     let quiet = v.get("quiet_until").and_then(Value::as_u64).is_some_and(|until| until > now);
-    app && !quiet
+    let free = v.get("free_credit").and_then(Value::as_bool) == Some(true);
+    app && !quiet && !free
 }
 
 fn now_unix() -> u64 {

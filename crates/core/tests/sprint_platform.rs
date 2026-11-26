@@ -189,7 +189,8 @@ fn the_glance_is_short_and_in_plain_words() {
 }
 
 /// A cloud team's product counts as live for the sprint loop only with an app on
-/// the platform and its first free version's quiet day over.
+/// the platform, its first free version's quiet day over and the team off free
+/// credit.
 #[test]
 fn live_needs_an_app_and_the_quiet_day_over() {
     let app = json!({ "resources": [{ "kind": "database", "name": "db" }, { "kind": "app", "name": "shop" }] });
@@ -199,4 +200,7 @@ fn live_needs_an_app_and_the_quiet_day_over() {
     assert!(!live_from(&quiet, 1_000), "the first free version's quiet day");
     assert!(live_from(&quiet, 2_001), "over");
     assert!(live_from(&json!({ "resources": [{ "kind": "app", "name": "shop" }], "quiet_until": 0 }), 1_000));
+    let free = json!({ "resources": [{ "kind": "app", "name": "shop" }], "quiet_until": 0, "free_credit": true });
+    assert!(!live_from(&free, 1_000), "on free credit no planning starts by itself");
+    assert!(live_from(&json!({ "resources": [{ "kind": "app", "name": "shop" }], "free_credit": false }), 1_000), "paid");
 }

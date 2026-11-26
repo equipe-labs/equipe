@@ -454,7 +454,9 @@ impl Runtime {
             "[Uncovered requests] No ticket serves these requests of the person's, {minutes} minutes or more after they asked:\n{}\n\n\
 Settle each first: put its work on the board (`create_ticket` with its number as `request`, or `update_ticket` with `request` \
 on a ticket that already does it) — or, when it asks for no work, `close_request` with why, which the person sees. Until then \
-it stays open, shown to the person as not on the board.",
+it stays open, shown to the person as not on the board. Settling is board work the people see on their list: send no \
+message for it, and never repeat a status you already gave — write only if one of these asks a question nobody has \
+answered yet, then in one message for everyone it concerns.",
             lines.join("\n")
         );
         self.hand_to_pm(squad, pm, text).await;
