@@ -32,8 +32,14 @@
 //! ([`Lane::landed`]); once landings stop coming for the quiet time — or
 //! [`MAX_WAIT`] after the first of them — the command runs once for all of
 //! them ([`Lane::due_at`]), one run at a time per project. It runs only on a
-//! clean checkout of main that is where origin's main is ([`checkout`]);
-//! otherwise nothing runs and the reason is said.
+//! clean checkout of main that is where origin's main is ([`checkout`]) — or,
+//! for a project kept on this machine only (no `origin` remote: an equipe
+//! cloud team's product), on its clean main checkout, landed there and so
+//! as far as main goes; otherwise nothing runs and the reason is said.
+//!
+//! A command that has nothing to put live yet (a product never deployed, so
+//! no site to update) exits with [`NOTHING_YET`]: nothing is noted live and
+//! nobody is told; the next landing tries again.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -58,6 +64,9 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 pub const MAX_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 /// Set for the command, so a project's scripts can tell equipe runs them.
 pub const ENV: &str = "EQUIPE_DEPLOY";
+/// The exit code a command uses to say it has nothing to put live yet (no
+/// site deployed to update): not a failure, and not a deploy.
+pub const NOTHING_YET: i32 = 78;
 /// The largest deploy file read.
 const MAX_FILE: u64 = 16 * 1024;
 /// How much of a failing command's output is kept: its last lines.
@@ -237,7 +246,9 @@ pub fn short(sha: &str) -> &str {
 }
 
 /// Where the command runs for `repo` and the commit it deploys: main's
-/// checkout, clean, at origin's main. Runs git: off the loop.
+/// checkout, clean, at origin's main — or, with no `origin` remote at all,
+/// main's checkout itself (landings merge there: nothing to be behind).
+/// Runs git: off the loop.
 pub fn checkout(repo: &Path, go: &GoLive) -> Result<(PathBuf, String), Blocked> {
     let main = worktree::main_branch(repo).map_err(Blocked::NoMain)?;
     if let Some(from) = go.from.as_ref().filter(|f| **f != main) {
@@ -255,6 +266,9 @@ pub fn checkout(repo: &Path, go: &GoLive) -> Result<(PathBuf, String), Blocked> 
         return Err(Blocked::Dirty { dir, files: named });
     }
     let head = worktree::git(&dir, &["rev-parse", "HEAD"]).map_err(|err| Blocked::NoMain(err.to_string()))?;
+    if !worktree::has_origin(repo) {
+        return Ok((dir, head));
+    }
     let origin = worktree::git(repo, &["rev-parse", "-q", "--verify", &format!("refs/remotes/origin/{main}^{{commit}}")]).ok();
     if origin.as_deref() != Some(head.as_str()) {
         return Err(Blocked::NotAtOrigin { dir, main, head, origin });
@@ -355,6 +369,8 @@ pub enum Outcome {
     Blocked { command: String, blocked: Blocked },
     /// It ran and failed (or ran out of time) on `sha`.
     Failed { command: String, sha: String, ran: Ran, timeout: Duration },
+    /// It ran and said it has nothing to put live yet ([`NOTHING_YET`]): what it printed last.
+    NothingYet { command: String, tail: String },
     /// The project's file can't be read.
     Invalid(String),
     /// The project declares no command any more, and none is confirmed.
@@ -384,6 +400,9 @@ pub fn go(project: &Path, confirmed: Option<&str>, from: Option<&str>, log: &Pat
         };
         crate::daemon_log!("equipe: deploying {} at {}: `{command}` in {}", project.display(), short(&sha), dir.display());
         let ran = run(&dir, &command, go.timeout, log);
+        if ran.code == Some(NOTHING_YET) {
+            return Outcome::NothingYet { command, tail: ran.tail };
+        }
         if !ran.ok {
             return Outcome::Failed { command, sha, ran, timeout: go.timeout };
         }
@@ -411,7 +430,8 @@ pub fn tool() -> serde_json::Value {
 command equipe then runs in the project's main checkout after work lands and main is pushed (once for several landings \
 close together) — `npm run deploy:prod`, `make deploy`. Only the command the project itself deploys to production with, \
 as its files, its docs or the person say; never one you made up. The project's file wins over it; `command: \"\"` \
-stops it. `deploy_now: true` runs it at once: to retry after a fix, or on the person's yes where deploys wait for them.",
+stops it. `deploy_now: true` runs it at once: to retry after a fix, or on the person's yes where deploys wait for them. \
+Never make a ticket only to deploy or redeploy a project that goes live this way: each landing deploys it.",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -510,6 +530,12 @@ impl Lane {
     pub fn start(&mut self) -> Vec<TicketId> {
         self.running = true;
         self.pending.take().map(|p| p.tickets).unwrap_or_default()
+    }
+
+    /// Its command said it has nothing to put live yet: no run any more, and
+    /// nothing else changes — not deployed, not failed.
+    pub fn nothing_yet(&mut self) {
+        self.running = false;
     }
 
     /// Its command ended: `Ok(commit)` deployed, or why not. Whether this is
@@ -689,6 +715,36 @@ mod tests {
         // Main checked out nowhere: the squad's folder is on another branch.
         git_in(&dir, &["checkout", "-q", "-b", "side"]);
         assert_eq!(checkout(&dir, &go).unwrap_err(), Blocked::NotCheckedOut { main: "main".into() });
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_project_kept_on_this_machine_only_goes_live_from_its_clean_main() {
+        // An equipe cloud team's product: no origin; landings merge into its main checkout, and that is main.
+        let dir = repo("local", &[]);
+        git_in(&dir, &["remote", "remove", "origin"]);
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        git_in(&dir, &["add", "-A"]);
+        git_in(&dir, &["commit", "-q", "-m", "landed"]);
+        let go = GoLive::confirmed("true");
+        assert_eq!(checkout(&dir, &go).unwrap(), (dir.clone(), git_in(&dir, &["rev-parse", "HEAD"])));
+        std::fs::write(dir.join("stray.txt"), "x").unwrap();
+        assert!(matches!(checkout(&dir, &go).unwrap_err(), Blocked::Dirty { .. }), "still only from a clean checkout");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_command_with_nothing_to_put_live_yet_is_neither_a_deploy_nor_a_failure() {
+        let dir = repo("nothing-yet", &[(FILE, r#"{ "command": "echo 'no site deployed yet'; exit 78" }"#)]);
+        git_in(&dir, &["remote", "remove", "origin"]);
+        let log = dir.join(".git/deploy.log");
+        assert_eq!(go(&dir, None, None, &log), Outcome::NothingYet { command: "echo 'no site deployed yet'; exit 78".into(), tail: "no site deployed yet".into() });
+        let mut lane = Lane { declared: true, ..Lane::default() };
+        lane.landed(Some(1), 0);
+        lane.start();
+        lane.nothing_yet();
+        assert!(!lane.running && lane.deployed.is_none() && lane.failed.is_none() && lane.stuck.is_none());
         let _ = std::fs::remove_dir_all(dir);
     }
 

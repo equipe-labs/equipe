@@ -8015,6 +8015,12 @@ runbooks and reports live there, and work across the projects or on running them
         if designer && branding {
             prompt.push_str(&crate::design::brand::note(board_tools));
         }
+        // A project that goes live by itself after each landing: the member neither deploys nor asks for a deploy ticket.
+        if !lite && !ticket.kind.in_home() && self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role != crate::roles::PM)
+            && let Some(note) = self.goes_live_note(&squad, &project)
+        {
+            prompt.push_str(&note);
+        }
         // The kinds of work the person stopped: nothing of them is filed from this work either.
         if let Some(stops) = self.stops_context(&squad) {
             prompt.push_str(&format!("\n\n{stops}\n"));
@@ -9109,10 +9115,12 @@ with what else waits.]"
                 news = "news.merged_pushed";
                 went_out = true;
             }
-            // A project kept on this machine only: merged is all there is to do.
+            // A project kept on this machine only: merged is all there is to do,
+            // so its go-live command (an equipe cloud product's) runs after it.
             Some(Err(err)) if err == worktree::NO_ORIGIN => {
                 line.push_str(" (it has no remote to push to)");
                 news = "news.merged_local";
+                went_out = true;
             }
             Some(Err(err)) => {
                 let message = match worktree::conflicts_with_origin(&err) {
@@ -9142,7 +9150,7 @@ with what else waits.]"
         // Work it was built on came along with it.
         self.settle_all_merged();
         self.brief_pm(squad, format!("{line}."), Some(shown));
-        // Pushed is on main, not live: the project's go-live command, if it has one, runs next.
+        // Pushed (or merged, with no remote) is on main, not live: the project's go-live command, if it has one, runs next.
         if went_out && let Some(project) = project {
             self.go_live_landed(squad, project, Some(ticket));
         }

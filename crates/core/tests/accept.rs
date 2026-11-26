@@ -889,19 +889,27 @@ async fn the_pms_card_never_holds_work_its_member_lands() {
 /// members landing their own work. `{runs}` in it is a file outside the
 /// repository the command may write to.
 async fn going_live_squad(deploy: &str) -> (Handle, UnboundedReceiver<Event>, PathBuf, PathBuf) {
+    going_live_squad_at(deploy, true, &claude()).await
+}
+
+/// [`going_live_squad`], its repository pushed to an origin or (`origin`
+/// false) kept on this machine only, as an equipe cloud team's product is.
+async fn going_live_squad_at(deploy: &str, origin: bool, claude: &Path) -> (Handle, UnboundedReceiver<Event>, PathBuf, PathBuf) {
     let repo = repo();
     let runs = scratch("runs").join("runs.txt");
     std::fs::create_dir_all(repo.join(".equipe")).unwrap();
     std::fs::write(repo.join(".equipe/deploy.json"), deploy.replace("{runs}", runs.to_str().unwrap())).unwrap();
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-q", "-m", "declare how it goes live"]);
-    let origin = scratch("origin");
-    git(&origin, &["init", "-q", "--bare", "-b", "main"]);
-    git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
-    git(&repo, &["push", "-q", "origin", "main"]);
+    if origin {
+        let origin = scratch("origin");
+        git(&origin, &["init", "-q", "--bare", "-b", "main"]);
+        git(&repo, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git(&repo, &["push", "-q", "origin", "main"]);
+    }
     let home = scratch("home");
     squads::create(&home, "acme", &repo).unwrap();
-    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    let (handle, mut events) = runtime::start(config(claude, &home));
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
     add(&handle, &mut events, 2, member(&repo, "frontend")).await;
     add(&handle, &mut events, 3, member(&repo, "backend")).await;
@@ -976,6 +984,46 @@ async fn a_go_live_command_that_fails_reaches_the_pm_with_why() {
         !seen.iter().any(|e| matches!(e, Event::DeploysChanged { deploys, .. } if deploys.iter().any(|d| d.source.is_live()))),
         "a failed deploy is no deploy: {seen:#?}"
     );
+    handle.shutdown().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_project_with_no_remote_goes_live_after_each_landing_and_its_next_ticket_is_told_so() {
+    // An equipe cloud team's product: nothing to push to; landing merges into its main, and that goes live.
+    // The fake engine keeps every prompt it is given, to read the members' briefs.
+    let fake = claude();
+    let asked = scratch("asked").join("asked.txt");
+    let script = std::fs::read_to_string(&fake).unwrap().replacen("\ncase ", &format!("\nprintf '%s\\n' \"$*\" >> '{}'\ncase ", asked.display()), 1);
+    write_script(&fake, &script);
+    let (handle, mut events, repo, runs) = going_live_squad_at(r#"{ "command": "git rev-parse HEAD >> {runs}", "quietSeconds": 1 }"#, false, &fake).await;
+    let brief_of = |ticket: u32| {
+        let asked = asked.clone();
+        async move {
+            for _ in 0..300 {
+                let text = std::fs::read_to_string(&asked).unwrap_or_default();
+                if let Some(at) = text.find(&format!("You're on T-{ticket}:")) {
+                    return text[at..].to_owned();
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            panic!("T-{ticket}'s brief never reached the engine");
+        }
+    };
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Hero", "body": "-", "owner": "frontend" })).await;
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let first = brief_of(1).await;
+    assert!(!first.contains("goes live by itself"), "not before its command was seen to work: {first}");
+    let handed = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": false })).await;
+    assert!(!handed.is_error, "{handed:?}");
+    until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.merged == Some(true))).await;
+    let ran = deploy_runs(&runs).await;
+    assert_eq!(ran, [git(&repo, &["rev-parse", "main"])], "it deployed main as landed");
+    until(&mut events, |e| matches!(e, Event::DeploysChanged { deploys, .. } if deploys.iter().any(|d| d.source == equipe_core::protocol::deploys::DeploySource::Command))).await;
+    // The next ticket in it: landing is how it reaches production — no deploy of its own, no ticket to redeploy.
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Footer", "body": "-", "owner": "frontend" })).await;
+    let brief = brief_of(2).await;
+    assert!(brief.contains("goes live by itself") && brief.contains("never add a checklist item or ask for a ticket to deploy"), "{brief}");
     handle.shutdown().await;
 }
 
