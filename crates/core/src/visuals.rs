@@ -723,7 +723,7 @@ fn named_picture(home: &Path, ask: &ReadImage, max: Option<u32>) -> Option<Resul
     }
     let folder = crate::squad_home::path(home, &ask.squad);
     let homes = homes(home);
-    let mut roots = vec![folder.clone(), design_qa_dir(home, &ask.squad)];
+    let mut roots = vec![folder.clone(), design_qa_dir(home, &ask.squad), crate::browser::squad_output(&ask.squad)];
     roots.extend(naming.projects.iter().cloned());
     roots.extend(homes.iter().map(|h| h.join("worktrees")));
     let asked = Path::new(&ask.path);

@@ -10681,7 +10681,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
         if self.windows.handoffs.paused(browser::split_profile(name).1.unwrap_or_default()) {
             return None;
         }
-        let output = std::env::temp_dir().join("equipe-browser").join(squad).join(name);
+        let output = browser::output_dir(squad, name);
         let profile = browser::profile(&self.config.home, squad, name);
         let key = (squad.to_owned(), name.to_owned());
         let member = (squad.to_owned(), browser::member_of(name).to_owned());
@@ -10836,7 +10836,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             let name = key.1;
             self.framing.insert(id);
             let (client, internal) = (self.client.clone(), self.internal.clone());
-            let output = std::env::temp_dir().join("equipe-browser").join(&squad).join(&name);
+            let output = browser::output_dir(&squad, &name);
             tokio::spawn(async move {
                 let frame = browser::screenshot(&client, port).await;
                 // Its screenshots land beside the member's: those are equipe's to clear.
@@ -11295,7 +11295,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             board::CREATE_TICKET => {
                 let title = board::arg_str(&args, "title").ok_or("A ticket needs a title.")?.trim();
                 let written = self.squad_language(&squad);
-                glance::check_title(written, title)?;
+                glance::check_title_call(written, board::CREATE_TICKET, title, &args)?;
                 let label = glance::label_arg(&args)?;
                 let body = board::arg_str(&args, "body").unwrap_or_default();
                 let kind = kind_arg(&args)?;
@@ -11563,11 +11563,10 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let mut ticket = journal.ticket(ticket_id).ok().flatten().ok_or_else(|| format!("There is no T-{ticket_id}."))?;
                 if !matches!(ticket.status, TicketStatus::Proposed | TicketStatus::Idea | TicketStatus::Todo | TicketStatus::Waiting) {
-                    let status = ticket.status.label();
-                    return Err(format!("T-{ticket_id} is {status} — from here it's the person's to change."));
+                    return Err(board::locked_ticket(&ticket, &args));
                 }
                 if let Some(title) = board::arg_str(&args, "title").map(str::trim).filter(|t| *t != ticket.title) {
-                    glance::check_title(lang, title)?;
+                    glance::check_title_call(lang, board::UPDATE_TICKET, title, &args)?;
                     // The old one stays in its history.
                     let _ = journal.ticket_event(ticket_id, &member, glance::RETITLED, &ticket.title);
                     ticket.title = title.to_owned();
@@ -11673,7 +11672,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 // Its pictures, found where it works; one that isn't there is said, to fix.
                 let (cwd, roots) = self.picture_places(&squad, id);
                 let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
-                    .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then hand in again."))?;
+                    .map_err(|e| design_qa::pictures_refused(board::SUBMIT_FOR_REVIEW, &args, &cwd, &roots, &e))?;
                 // Their thumbnails made now, off the loop: the hand-in's card shows them at once.
                 crate::visuals::thumbs::warm(&self.config.home, shown.clone());
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;

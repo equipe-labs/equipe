@@ -216,6 +216,62 @@ pub(super) fn over_budget(calls: u32, secs: u64, (max_calls, max_secs): (u32, u6
     calls >= max_calls || secs >= max_secs
 }
 
+/// The four coverage confirmations a screen-changing hand-in gives.
+const SCREEN_CHECKS: [&str; 4] = ["languages", "widths", "light_dark", "large_text"];
+
+/// The member's `submit_for_review` call again with `with` set: what a
+/// refusal shows so the next call goes through.
+pub(super) fn retry_call(args: &Value, with: Value) -> String {
+    retry_call_of(board::SUBMIT_FOR_REVIEW, args, with)
+}
+
+/// [`retry_call`] for any tool ([`board::retry`]).
+pub(super) fn retry_call_of(tool: &str, args: &Value, with: Value) -> String {
+    board::retry(tool, args, with)
+}
+
+/// Why `tool` took none of the pictures `args` names (`err`, the first
+/// refused), and how to make each right: a web address is no picture, one
+/// saved where screens aren't given pictures from is copied into the
+/// worktree — the exact commands and the call again, with the paths fixed.
+pub(super) fn pictures_refused(tool: &str, args: &Value, cwd: &Path, roots: &[PathBuf], err: &str) -> String {
+    let given = board::arg_strs(args, "images");
+    let most = crate::visuals::HAND_IN;
+    if given.len() > most {
+        let kept: Vec<String> = given.iter().take(most).cloned().collect();
+        return format!("Nothing was handed in: {err} Keep the {most} that show it best, like {}.", retry_call_of(tool, args, json!({ "images": kept })));
+    }
+    let (mut fixed, mut copies, mut notes) = (Vec::new(), Vec::new(), Vec::new());
+    for g in &given {
+        let name = Path::new(g.trim_end_matches('/')).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "shot.png".into());
+        match crate::visuals::resolve(g, cwd, roots) {
+            Ok(_) => fixed.push(g.clone()),
+            Err(_) if g.starts_with("http://") || g.starts_with("https://") => {
+                notes.push(format!("{g} is a web address, not a picture: open it in your browser, take a screenshot, and give the file's path."));
+                fixed.push(format!("handin-shots/{}.png", name.trim_end_matches(".png")));
+            }
+            Err(why) if crate::protocol::rpc::ImageWhy::of(&why) == crate::protocol::rpc::ImageWhy::Outside => {
+                copies.push(format!("cp '{g}' handin-shots/{name}"));
+                fixed.push(format!("handin-shots/{name}"));
+            }
+            Err(why) => {
+                notes.push(format!("{why}."));
+                fixed.push(g.clone());
+            }
+        }
+    }
+    let copy = if copies.is_empty() {
+        String::new()
+    } else {
+        format!(" Copy {} into your worktree: `mkdir -p handin-shots && {}`.", if copies.len() == 1 { "it" } else { "them" }, copies.join(" && "))
+    };
+    let notes = if notes.is_empty() { String::new() } else { format!(" {}", notes.join(" ")) };
+    format!(
+        "Nothing was handed in: {err}. Pictures go by their path in your worktree (relative, like handin-shots/home-390.png) or the squad's folder; your browser's screenshots are taken where they land.{copy}{notes} Then: {}.",
+        retry_call_of(tool, args, json!({ "images": fixed }))
+    )
+}
+
 impl Runtime {
     /// A tool call of `id`'s turn: on a design QA ticket, a daily review or
     /// an audit, counted against its budget — once past it, the member is
@@ -392,12 +448,33 @@ Undo them, propose that work as a ticket for an engineer (create_ticket), and ha
         if kind != TicketKind::Code || role == DESIGNER {
             return Ok(false);
         }
-        match args.get("changes_screens").and_then(Value::as_bool) {
-            None => Err("Say whether this changes what users see (changes_screens: true or false). Then hand in again."
-                .into()),
-            Some(true) if pictures == 0 => Err("Screens changed: save fresh screenshots of each changed screen in \
-your worktree, name them in images, and hand in again."
-                .into()),
+        // `"true"`/`"false"` as text means the same.
+        let said = args.get("changes_screens").and_then(|v| v.as_bool().or_else(|| v.as_str().and_then(|t| t.trim().parse().ok())));
+        match said {
+            None => {
+                let touched = self.sessions.get(&id).and_then(|s| s.work.as_ref()).and_then(|w| w.sandbox.as_ref()).and_then(|s| s.touched_files().ok()).unwrap_or_default();
+                let ui: Vec<&String> = touched.iter().filter(|f| precheck::ui_file(f)).collect();
+                let branch = match ui.as_slice() {
+                    [] => " Your branch changes no screen file, so it is most likely false.".to_owned(),
+                    some => format!(
+                        " Your branch changes {} screen file{} ({}), so it is most likely true.",
+                        some.len(),
+                        if some.len() == 1 { "" } else { "s" },
+                        some.iter().take(4).map(|f| f.as_str()).collect::<Vec<_>>().join(", ")
+                    ),
+                };
+                Err(format!(
+                    "Nothing was handed in: say whether this changes what users see — `changes_screens`, true or false.{branch} \
+Nobody sees it: {}. Users see it: {}, with fresh screenshots of each changed screen saved in your worktree.",
+                    retry_call(args, json!({ "changes_screens": false })),
+                    retry_call(args, json!({ "changes_screens": true, "images": ["handin-shots/<screen>-390-light.png", "handin-shots/<screen>-1280-dark.png"], "screen_checks": SCREEN_CHECKS })),
+                ))
+            }
+            Some(true) if pictures == 0 => Err(format!(
+                "Nothing was handed in: screens changed, so it needs fresh screenshots of each changed screen, saved in your worktree \
+(a browser screenshot is fine where it lands). Then: {}.",
+                retry_call(args, json!({ "images": ["handin-shots/<screen>-390-light.png", "handin-shots/<screen>-1280-dark.png"], "screen_checks": SCREEN_CHECKS }))
+            )),
             Some(true) => {
                 const ALL: [(&str, &str); 4] = [
                     ("languages", "languages"),
@@ -412,8 +489,9 @@ your worktree, name them in images, and hand in again."
                 if !missing.is_empty() && !light {
                     return Err(format!(
                         "Screens changed: the hand-in screenshots must cover the same range as design QA. Add every \
-screen_checks value; missing: {}. Then hand in again.",
-                        missing.join(", ")
+screen_checks value; missing: {}. Once your screenshots cover them: {}.",
+                        missing.join(", "),
+                        retry_call(args, json!({ "screen_checks": SCREEN_CHECKS }))
                     ));
                 }
                 Ok(self.has_designer(squad))
@@ -1035,7 +1113,7 @@ truncation with the whole text available), hand in again with `waive_findings` s
         // The precheck's pictures count as the designer's own.
         roots.push(precheck_dir(&self.config.home, squad, on));
         let shown = crate::visuals::resolve_all(&board::arg_strs(args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
-            .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then finish again."))?;
+            .map_err(|e| pictures_refused(board::DESIGN_QA, args, &cwd, &roots, &e))?;
         crate::visuals::thumbs::warm(&self.config.home, shown.clone());
         // Its own look, not the engineer's screenshots handed on.
         let own = shown.iter().filter(|s| !checked.images.contains(s)).count();

@@ -229,6 +229,43 @@ pub fn check(title: &str, script: &str, language: &str) -> Result<(), String> {
     Err(format!("{} A title is a short outcome in {language} — what changes or is checked, for whom — like \"Share the 3 sheets with the service account\".", said.join(" ")))
 }
 
+/// `title` with what [`problems`] finds that can be taken out as it is
+/// written taken out — ids and codes, a bracketed prefix, a closing
+/// ellipsis — and, for an arrow chain, its last step (where a chain ends is
+/// usually its outcome): a title to offer whoever wrote it, when that leaves
+/// one that passes for `script`. `None` when only rewriting it would do
+/// (another language, too long).
+pub fn suggest(title: &str, script: &str) -> Option<String> {
+    let mut out = title.trim().to_owned();
+    // A bracketed prefix: `[QA] …`, `(T-3) …`.
+    if starts_with_bracket(&out) {
+        let close = out.char_indices().find(|(_, c)| matches!(c, ']' | '】' | '］' | '〕' | ')')).map(|(at, c)| at + c.len_utf8());
+        if let Some(close) = close {
+            out = out[close..].trim_start_matches([' ', ':', '-', '–', '—']).to_owned();
+        }
+    }
+    // Ids and codes, with what holds them on: `(T-3)`, `T-3:`, `#12 `.
+    while let Some(found) = find_id(&out) {
+        let at = out.find(&found)?;
+        let (mut start, mut end) = (at, at + found.len());
+        let bytes = out.as_bytes();
+        if start > 0 && end < out.len() && bytes[start - 1] == b'(' && bytes[end] == b')' {
+            start -= 1;
+            end += 1;
+        }
+        while end < out.len() && matches!(out.as_bytes()[end], b':' | b',') {
+            end += 1;
+        }
+        out = format!("{} {}", out[..start].trim_end(), out[end..].trim_start()).trim().trim_start_matches([':', '-', '–', '—', ' ']).trim().to_owned();
+    }
+    // An arrow chain: its last step.
+    if let Some(last) = ARROWS.iter().filter_map(|a| out.rfind(a).map(|at| at + a.len())).max() {
+        out = out[last..].trim().to_owned();
+    }
+    let out = out.trim_end_matches('…').trim_end_matches("...").trim().to_owned();
+    (out != title.trim() && problems(&out, script, "").is_empty()).then_some(out)
+}
+
 /// Whether a title is longer than reads at a glance, though it passes.
 pub fn is_long(title: &str) -> bool {
     title.chars().count() > GOOD_CHARS || title.split_whitespace().count() > GOOD_WORDS
@@ -284,6 +321,18 @@ pub fn check_ask(ask: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_can_be_taken_out_of_a_title_is_and_the_rest_is_left_to_its_writer() {
+        assert_eq!(suggest("T-12: Sign-up works on phones", "latin").as_deref(), Some("Sign-up works on phones"));
+        assert_eq!(suggest("Sign-up works on phones (T-12)", "latin").as_deref(), Some("Sign-up works on phones"));
+        assert_eq!(suggest("[QA] Sign-up works on phones", "latin").as_deref(), Some("Sign-up works on phones"));
+        assert_eq!(suggest("Open the form → sign-up works on phones", "latin").as_deref(), Some("sign-up works on phones"));
+        assert_eq!(suggest("#12 Sign-up works on phones…", "latin").as_deref(), Some("Sign-up works on phones"));
+        // Only rewriting does: another language, or nothing to take out.
+        assert_eq!(suggest("가입이 휴대폰에서 됩니다", "latin"), None);
+        assert_eq!(suggest("Sign-up works on phones", "latin"), None);
+    }
 
     fn ko(title: &str) -> Vec<Problem> {
         problems(title, "hangul", "Korean")
