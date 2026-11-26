@@ -90,6 +90,18 @@ impl Runtime {
             || Platform::discover().is_some_and(|p| platform::live_cached(&p))
     }
 
+    /// Whether `squad` is a cloud team on free credit (`platform::free_from`):
+    /// then what equipe would start by itself — a routine, an idle wake, a look
+    /// at old ideas or waits — waits for the person's ask, or their first
+    /// purchase. `what` names it for the log.
+    pub(super) fn free_hold(&self, squad: &str, what: &str) -> bool {
+        let free = data::registered(squad).is_none() && Platform::discover().is_some_and(|p| platform::free_cached(&p));
+        if free {
+            crate::daemon_log!("equipe: {squad}: {what} waits: the team is on free credit, so nothing starts without the person");
+        }
+        free
+    }
+
     /// Whether the loop runs for the squad; why not.
     pub(super) fn sprint_on(&mut self, squad: &str) -> Result<(), String> {
         let settings = self.sprint_store(squad).settings;

@@ -192,6 +192,10 @@ don't ask them in words meanwhile."
             crate::daemon_log!("equipe: {squad}: the stale waits' ask wasn't kept: {err}");
             return;
         }
+        // Stamped above, so on free credit it is let go until the next time it would come.
+        if self.free_hold(squad, "the stale waits' ask") {
+            return;
+        }
         crate::daemon_log!("equipe: {squad}: {} tickets wait on the person past {} days; the PM is asked to check them", stale.len(), rules::STALE_WAIT_AFTER / 86_400);
         self.hand_to_pm(squad, pm, rules::stale_waits_message(&stale)).await;
     }
@@ -213,6 +217,9 @@ don't ask them in words meanwhile."
         if let Some(Err(err)) = self.journal(squad).map(|j| j.set_ideas_woken_at(now)) {
             crate::daemon_log!("equipe: {squad}: the ideas' look wasn't kept: {err}");
             return false;
+        }
+        if self.free_hold(squad, "the look at kept ideas") {
+            return true;
         }
         crate::daemon_log!("equipe: {squad}: the board is light and {} ideas wait; the PM is asked about them", ideas.len());
         let text = rules::ideas_message(&ideas, open);
@@ -268,6 +275,9 @@ don't ask them in words meanwhile."
         if let Some(Err(err)) = self.journal(squad).map(|j| j.set_idle_woken_at(now)) {
             crate::daemon_log!("equipe: {squad}: the idle wake's time wasn't kept: {err}");
             return false;
+        }
+        if self.free_hold(squad, "the idle wake") {
+            return true;
         }
         crate::daemon_log!("equipe: {squad}: the board lay empty for {hours}h; the PM is woken");
         let ideas = rules::kept_ideas(&tickets, now);

@@ -231,6 +231,10 @@ impl Runtime {
             let newly: Vec<&equipe_protocol::importance::Waiting> = list.iter().filter(|w| stale.contains(&importance::key(w))).collect();
             if let Some(text) = importance::stale_message(&newly, now) {
                 self.waiting_told.entry(squad.to_owned()).or_default().stale.extend(stale);
+                // The person's own list already shows them; on free credit the PM's turn about them waits.
+                if self.free_hold(squad, "the PM's word on long waits") {
+                    return;
+                }
                 crate::daemon_log!("equipe: {squad}: {} things have waited on the person for hours; the PM is told", newly.len());
                 self.hand_to_pm(squad, pm, text).await;
             }
