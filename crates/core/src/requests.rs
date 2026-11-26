@@ -72,10 +72,12 @@ const WAITS_SHOWN: usize = 3;
 
 /// What the person said, as a request's name: its first line that says
 /// something — joined by the next ones while it is too short to say much
-/// alone — cut short.
+/// alone — cut short. A hidden note equipe adds under their words (a line
+/// starting `[equipe:`, like `[equipe: project …]`) and all after it are not
+/// theirs, so never part of the title.
 pub fn title_of(words: &str) -> String {
     let mut line = String::new();
-    for l in words.lines().map(str::trim).filter(|l| !l.is_empty()) {
+    for l in words.lines().map(str::trim).take_while(|l| !l.starts_with("[equipe:")).filter(|l| !l.is_empty()) {
         if !line.is_empty() {
             line.push(' ');
         }
@@ -1546,6 +1548,16 @@ mod tests {
         assert!(title_of(&long).ends_with('…'));
         assert_eq!(title_of("Hi!\nThe login page errors when I log out\n[image]"), "Hi! The login page errors when I log out");
         assert_eq!(words_line("Hi!\nThe login page   errors\n[image]"), "Hi! The login page errors [image]");
+    }
+
+    #[test]
+    fn a_title_never_carries_equipes_hidden_notes() {
+        // o1path: "로고를 좀 개선하고 싶어." came with "[equipe: project o1path. The person wrote this while looking at …]".
+        let words = "로고를 좀 개선하고 싶어.\n\n[equipe: project o1path. The person wrote this while looking at the project]";
+        assert_eq!(title_of(words), "로고를 좀 개선하고 싶어.");
+        // Nothing after the note counts either, even a line of the person's.
+        assert_eq!(title_of("Hi\n[equipe: project cafe.]\nMake the menu bigger"), "Hi");
+        assert_eq!(title_of("[equipe: project cafe.]"), "");
     }
 
     #[test]
