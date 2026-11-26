@@ -35,11 +35,15 @@
 //! | Actions in an app or the browser | strong | Opus · medium | Sol · medium |
 //!
 //! A hosted squad (on equipe credits, [`Work::hosted`]) differs in a few
-//! cells ([`hosted`]): a faithful copy (an imported site) and server-side
-//! work that is not a foundation run standard, deployed or not, and so do a
-//! fix to existing screens, a finished asset put on them and making a live
-//! site load faster; a few words or a link run light. Screens a person sees keep the table's tiers. Its role defaults are
-//! equipe's, not the person's, so they are no floor.
+//! cells ([`hosted`]): a deploy to the team's own address is no release risk
+//! (connecting a person's own domain still is); a faithful copy (an imported
+//! site) and server-side work that is not a foundation run standard, and so
+//! do a fix to existing screens, a finished asset put on them and making a
+//! live site load faster; a few words or a link run light. Its role models
+//! are no floor, but they are a ceiling ([`Rule::capped`]): a ticket with no
+//! risk runs no higher than its member's own model, except new screens and
+//! design work, which keep the table's tier, and the cells never lowered.
+//! Escalation still goes above it.
 //!
 //! The squad's choice [`ModelChoice::Best`] puts every lane on strong at
 //! least — the person's "most careful" setting.
@@ -118,6 +122,10 @@ pub struct Rule {
     /// It runs at exactly its tier, below its member's own model included:
     /// design QA's policy, where nobody but equipe set the member's model.
     pub below_floor: bool,
+    /// It runs no higher than its member's own model ([`ceiling`]): a credits
+    /// team's ticket with no risk, so the model set for the member is what it
+    /// runs on. Escalation still goes above it.
+    pub capped: bool,
 }
 
 /// What the rules ask for `w`. `None` for the PM, whose work keeps its own model.
@@ -126,9 +134,12 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
         return None;
     }
     let text = format!("{}\n{}", w.title, w.body);
-    let risk = risk_tags(&text);
+    let shown = risk_tags(&text);
+    // On a credits team a deploy is the platform's own step to the team's own address: a release tag alone
+    // raises nothing there. Connecting a person's own domain still does.
+    let risk: Vec<RiskTag> = if w.hosted && !own_domain(&text) { shown.iter().copied().filter(|r| *r != RiskTag::Release).collect() } else { shown.clone() };
     let checked = checkable(w.body);
-    let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: risk.clone(), never_lower: never_lower || !risk.is_empty(), below_floor: false };
+    let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: shown.clone(), never_lower: never_lower || !risk.is_empty(), below_floor: false, capped: false };
     // The starter brand is the platform's tools and one art-direction turn: the strong tier (a blind review scored the
     // standard tier's look at 6/10 against 8), under its own small budget (`crate::design_tier`), never lowered.
     if w.role == "designer"
@@ -140,11 +151,11 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
     if w.hosted
         && let Some((tier, reason)) = hosted(w, &text, &risk)
     {
-        return Some(at(tier, reason, false));
+        return Some(capped(w, &text, &risk, at(tier, reason, false)));
     }
-    Some(if let (true, Some(q)) = (w.design_qa, w.qa_tier) {
+    let rule = if let (true, Some(q)) = (w.design_qa, w.qa_tier) {
         // Kept at the member's own where the person set it, the policy's tier recorded beside it.
-        Rule { tier: q.tier, reason: TierReason::DesignQa, risk: risk.clone(), never_lower: q.below_floor, below_floor: q.below_floor }
+        Rule { tier: q.tier, reason: TierReason::DesignQa, risk: shown.clone(), never_lower: q.below_floor, below_floor: q.below_floor, capped: false }
     } else if w.design_qa {
         // A checklist over what changed on screen; a redesign or a second round goes up by the policy or by escalation.
         at(ModelTier::Standard, TierReason::DesignQa, false)
@@ -181,7 +192,27 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
             TicketKind::Task => at(ModelTier::Strong, TierReason::Task, false),
             TicketKind::Action => at(ModelTier::Strong, TierReason::Action, true),
         }
-    })
+    };
+    Some(capped(w, &text, &risk, rule))
+}
+
+/// `r` capped at its member's own model where a credits team's ticket allows it: no risk that raises,
+/// not a cell that is never lowered (the starter brand, acting in an app, a broad change), not design QA
+/// (its own policy), and not new screens or design work — the look a person judges first, where a blind
+/// review preferred Opus (`docs/COST-LEVERS.md`: routine screens on Sonnet lost 3 of 3 pairs). Those keep
+/// the table's tier until a blind A/B with the current UI library says otherwise.
+fn capped(w: &Work<'_>, text: &str, risk: &[RiskTag], r: Rule) -> Rule {
+    let new_look = r.reason == TierReason::Design || (w.kind == TicketKind::Code && r.reason == TierReason::Code && r.tier >= ModelTier::Strong && on_screen(text));
+    let capped = w.hosted && risk.is_empty() && !r.never_lower && !w.design_qa && !new_look;
+    Rule { capped, ..r }
+}
+
+/// Connecting a person's own domain, as a ticket says: DNS that is theirs, costly to get wrong.
+fn own_domain(text: &str) -> bool {
+    has_word(
+        text,
+        &["connect_domain", "custom domain", "own domain", "domain name", "connect a domain", "connect the domain", "connect their domain", "connect my domain", "point the domain", "dns", "cname", "nameserver"],
+    )
 }
 
 /// A hosted squad's own cells, where they differ from the table above;
@@ -192,8 +223,9 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
 /// - a faithful copy (an imported site put live as it is) and server-side
 ///   work with nothing on screen that is not a foundation ([`foundation`])
 ///   run standard: as good for a fraction of the cost;
-/// - shipping a copy or server work through the platform's deploy tool is a
-///   step, not a release engineering job: standard, never lower;
+/// - a deploy through the platform's own tool to the team's own address is
+///   a step, not a release: the release tag raises nothing ([`rule`]); only
+///   connecting a person's own domain keeps it a risk;
 /// - a few words, a link, a status check run light, checked or not;
 /// - a fix to screens that exist, or a designer's finished asset (a logo,
 ///   icons) put on them, runs standard, deployed or not: the look is
@@ -207,18 +239,23 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
 ///   the same work on Sonnet · medium (two Lighthouse tickets) merged on
 ///   its first pass at 98–99.
 ///
-/// New screens a person sees keep the table's tiers: on standard, and on strong
-/// at medium effort, the first versions came out plainer in a blind review,
-/// and the first screen is what the person judges.
-/// Reviews, design, broad changes and every other risk keep the table's
-/// tier, and escalation stays the safety net: work that comes back wrong
-/// runs one tier up.
+/// Every other ticket with no risk runs no higher than its member's own
+/// model ([`Rule::capped`]): the model set for the role is what it runs on.
+///
+/// New screens a person sees keep the table's tier (strong, Opus · medium)
+/// and are not capped: routine screens on Sonnet lost a blind review 3 of 3
+/// (2026-11-22), and the first screen is what the person judges. Until
+/// 2026-11-26 a new screen shipped live ran deep for the word "deploy" (an
+/// A/B of 2026-11-24 found first versions plainer at medium effort); Sonnet
+/// · high against Opus · medium for first versions waits on a blind A/B
+/// with the current UI library. Design, broad changes and every risk keep
+/// the table's tier, and escalation stays the safety net: work that comes
+/// back wrong runs one tier up.
 fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, TierReason)> {
     if w.design_qa || REVIEWERS.contains(&w.role) || w.role == "designer" || w.kind == TicketKind::Action {
         return None;
     }
-    let release_only = !risk.is_empty() && risk.iter().all(|r| *r == RiskTag::Release);
-    if !risk.is_empty() && !release_only {
+    if !risk.is_empty() {
         return None;
     }
     let code = w.kind == TicketKind::Code;
@@ -232,10 +269,6 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
     }
     // Work a cheaper tier does as well: copying what exists, or the server side of a known stack.
     let standard = settled || (code && !foundation(text) && (faithful_copy(text) || (SERVER_ROLES.contains(&w.role) && !on_screen(text))));
-    if release_only {
-        // A new screen shipped live keeps the table's deep tier: on strong or standard the first versions came out plainer.
-        return standard.then_some((ModelTier::Standard, TierReason::Risk));
-    }
     if (trivial(w.title) || few_words(w.title)) && !read_only(w) {
         return Some((ModelTier::Light, TierReason::Small));
     }
@@ -596,6 +629,14 @@ impl Member<'_> {
     }
 }
 
+/// The strongest tier `m`'s own model reaches, whatever its effort: how
+/// high a capped ticket ([`Rule::capped`]) runs. `None` when equipe can't
+/// tell how strong its model is.
+pub fn ceiling(m: &Member<'_>) -> Option<ModelTier> {
+    let model = model_rank(m.engine, m.model?)?;
+    ModelTier::ALL.into_iter().rev().find(|t| family_rank(m.engine, target(*t, m.engine).0).is_some_and(|r| r <= model))
+}
+
 /// The strongest tier `m`'s own model and effort already cover — the floor
 /// a ticket never goes below without the person. `None` when equipe can't
 /// tell how strong its model is.
@@ -687,10 +728,17 @@ pub fn choose(prev: Option<&TicketModel>, rule: Option<&Rule>, m: &Member<'_>, c
                 let floor = if rule.below_floor && choice != ModelChoice::Best { ModelTier::Light } else { floor };
                 // The person's "most careful": nothing below strong.
                 let floor = if choice == ModelChoice::Best { floor.max(ModelTier::Strong) } else { floor };
-                let tier = rule.tier.max(floor).max(raised.unwrap_or(ModelTier::Light));
-                let escalated = raised.is_some_and(|r| r >= rule.tier.max(floor));
+                // A credits team's ticket with no risk: no higher than its member's own model.
+                let asked = match ceiling(m).filter(|_| rule.capped && choice != ModelChoice::Best) {
+                    Some(cap) => rule.tier.min(cap),
+                    None => rule.tier,
+                };
+                let tier = asked.max(floor).max(raised.unwrap_or(ModelTier::Light));
+                let escalated = raised.is_some_and(|r| r >= asked.max(floor));
                 let reason = if escalated {
                     TierReason::Escalated
+                } else if tier < rule.tier {
+                    TierReason::MemberOwn
                 } else if floor > rule.tier && !rule.never_lower {
                     TierReason::MemberFloor
                 } else {
@@ -962,7 +1010,7 @@ mod tests {
                 assert_ne!(resolve(tier, &fable, kept).0.as_deref(), Some("fable"), "{tier:?} {kept}");
             }
         }
-        let rule = Rule { tier: ModelTier::Strong, reason: TierReason::Code, never_lower: false, below_floor: false, risk: Vec::new() };
+        let rule = Rule { tier: ModelTier::Strong, reason: TierReason::Code, never_lower: false, below_floor: false, capped: false, risk: Vec::new() };
         let prev = TicketModel { tier: Some(ModelTier::Max), by: TierBy::Escalation, ..TicketModel::default() };
         for prev in [None, Some(&prev)] {
             assert_ne!(choose(prev, Some(&rule), &fable, ModelChoice::QualityFirst).model.as_deref(), Some("fable"));
@@ -975,7 +1023,7 @@ mod tests {
     #[test]
     fn a_ticket_pick_makes_premium_explicit_for_that_ticket_alone() {
         let member = Member { engine: Engine::Claude, model: Some("sonnet"), effort: None, catalog: &[], person: false };
-        let rule = Rule { tier: ModelTier::Strong, reason: TierReason::Code, never_lower: false, below_floor: false, risk: Vec::new() };
+        let rule = Rule { tier: ModelTier::Strong, reason: TierReason::Code, never_lower: false, below_floor: false, capped: false, risk: Vec::new() };
         let picked = set_pick(None, Some("claude-fable-5-1[1m]"), "you", 7).unwrap();
         let pick = picked.pick.clone().unwrap();
         assert_eq!((pick.model.as_str(), pick.by.as_str(), pick.at, picked.pinned), ("fable", "you", 7, true));
@@ -1232,14 +1280,17 @@ mod tests {
 
     #[test]
     fn a_hosted_squad_keeps_screens_strong_and_routes_the_rest() {
-        // The first-run build: a screen shipped live keeps Opus · high (the A/B's finding).
-        let first = hosted_tier("backend", TicketKind::Code, "Build the dog walking booking page and deploy it", "One page, a form that saves bookings. Deploy with the platform tool.");
-        assert_eq!(first, (ModelTier::Deep, TierReason::Risk, true));
+        // The first-run build: a deploy to the team's own address is no risk, so a new screen runs the table's strong tier.
+        let first = rule(&Work { hosted: true, ..work("backend", TicketKind::Code, "Build the dog walking booking page and deploy it", "One page, a form that saves bookings. Deploy with the platform tool.") }).unwrap();
+        assert_eq!((first.tier, first.reason, first.never_lower, first.capped), (ModelTier::Strong, TierReason::Code, false, false), "a new screen is not capped");
+        assert_eq!(first.risk, [RiskTag::Release], "the tag is still read and shown");
+        // Connecting the person's own domain stays a risk.
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Connect the custom domain and deploy", ""), (ModelTier::Deep, TierReason::Risk, true));
         assert_eq!(hosted_tier("backend", TicketKind::Code, "Add an endpoint that lists bookings by day and deploy it", "").0, ModelTier::Standard);
         assert_eq!(tier("backend", TicketKind::Code, "Build the dog walking booking page and deploy it", "").0, ModelTier::Deep, "self-hosted squads keep the table");
         // An imported site put live as it is: standard, deploy and all.
         let import = hosted_tier("frontend", TicketKind::Code, "Put the imported site live as it is and deploy it", "A static site that looks and reads exactly like the original. Do not redesign.");
-        assert_eq!(import, (ModelTier::Standard, TierReason::Risk, true));
+        assert_eq!(import, (ModelTier::Standard, TierReason::Code, false));
         // Server work with nothing on screen: standard; a screen stays strong.
         assert_eq!(hosted_tier("backend", TicketKind::Code, "Add an endpoint that lists bookings by day", "").0, ModelTier::Standard);
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Add a pricing section", "").0, ModelTier::Strong);
@@ -1252,10 +1303,10 @@ mod tests {
         assert_eq!(hosted_tier("qa", TicketKind::Task, "QA the booking flow", "").0, tier("qa", TicketKind::Task, "QA the booking flow", "").0);
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Refactor the layout across all pages", "").0, ModelTier::Deep);
         assert_eq!(hosted_tier("marketing", TicketKind::Action, "Reply on the forum", "").0, ModelTier::Strong);
-        // A few words or a link: light, checked or not; never on a release.
+        // A few words or a link: light, checked or not, deployed or not.
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix a typo in the hero", ""), (ModelTier::Light, TierReason::Small, false));
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix broken link in the footer", "").0, ModelTier::Light);
-        assert!(hosted_tier("frontend", TicketKind::Code, "Fix a typo and deploy", "").0 > ModelTier::Light);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix a typo and deploy", "").0, ModelTier::Light);
         // The PM keeps its own model.
         assert!(rule(&Work { hosted: true, ..work("pm", TicketKind::Task, "Plan the first version", "") }).is_none());
     }
@@ -1269,7 +1320,7 @@ mod tests {
             "Fix three slips on the live pages",
             "1. Capitalise the intro. 2. The Season Plan reads \"$1,450\" everywhere. 3. Point the FAQ link at the Apply page. Once it lands, the site is deployed to the live address.",
         );
-        assert_eq!(slips, (ModelTier::Standard, TierReason::Risk, true));
+        assert_eq!(slips, (ModelTier::Standard, TierReason::Code, false));
         let logo = hosted_tier("frontend", TicketKind::Code, "Put the vector logo and icons on the site", "Header, favicon and the package cards. Deploy after review.");
         assert_eq!(logo.0, ModelTier::Standard);
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix the booking button on phones", "").0, ModelTier::Standard);
@@ -1279,7 +1330,7 @@ mod tests {
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix the layout by refactoring it across all pages", "").0, ModelTier::Deep);
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Apply the new design system to the site", "Every page, before and after.").0, tier("frontend", TicketKind::Code, "Apply the new design system to the site", "Every page, before and after.").0);
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix the sign-in form", "").0, ModelTier::Deep);
-        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Build the booking page and deploy it", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Build the booking page and deploy it", "").0, ModelTier::Strong);
         // A few words stay light.
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix a typo in the hero", "").0, ModelTier::Light);
     }
@@ -1288,14 +1339,14 @@ mod tests {
     fn a_hosted_speed_up_runs_standard_and_deploys() {
         // The speed monitor's ticket, as it reached a team (2026-11-26): Opus · high only for "redeploy".
         let monitor = "Every customer product keeps a speed score of 95 or more on phones. The live site measures 82: main content after 3.8 s, blocked 70 ms, layout shift 0.145.\n\nUsual causes: images not resized or not in a modern format, fonts without font-display: swap or too many weights, one big script (split it, load the rest on demand), third-party scripts on first load. Do not remove content or features to hit the number.\n\nThen redeploy with `deploy_site`; the platform measures again by itself a few minutes later and closes this when it is at 95 or more.";
-        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Speed up \"hannun\": score 82, goal 95", monitor), (ModelTier::Standard, TierReason::Risk, true));
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Speed up \"hannun\": score 82, goal 95", monitor), (ModelTier::Standard, TierReason::Code, false));
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Make the site load fast on phones", "Deploy once it scores 95.").0, ModelTier::Standard);
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Raise the Lighthouse mobile performance on /webinar", "").0, ModelTier::Standard);
         // Self-hosted squads keep the table.
         assert_eq!(tier("frontend", TicketKind::Code, "Speed up \"hannun\": score 82, goal 95", monitor).0, ModelTier::Deep);
         // New behaviour, a rebuild, a foundation or another risk keeps its tier.
-        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Build a page speed dashboard and deploy it", "").0, ModelTier::Deep);
-        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Rebuild the bookshop as a fast, modern site and deploy it", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Build a page speed dashboard and deploy it", "").0, ModelTier::Strong);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Rebuild the bookshop as a fast, modern site and deploy it", "").0, ModelTier::Strong);
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Speed up the site by refactoring it across all pages", "").0, ModelTier::Deep);
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Speed up the sign-in page", "").0, ModelTier::Deep);
         // A send-back still runs the next lane a tier up: Opus.
@@ -1318,6 +1369,54 @@ mod tests {
         let up = step_up(&c.ticket).unwrap();
         let again = choose(Some(&up), Some(&api), &CLAUDE, ModelChoice::QualityFirst);
         assert_eq!(again.model.as_deref(), Some("opus"));
+    }
+
+    #[test]
+    fn a_hosted_members_model_caps_work_with_no_risk() {
+        let hosted = |role, kind, title| rule(&Work { hosted: true, ..work(role, kind, title, "") }).unwrap();
+        let on = |r: &Rule, m: &Member<'_>| {
+            let c = choose(None, Some(r), m, ModelChoice::QualityFirst);
+            (c.ticket.tier, c.model, c.effort, c.ticket.reason)
+        };
+        let s = |x: &str| Some(x.to_owned());
+        // QA, a task and a foundation on a Sonnet member: Sonnet · medium, the rule's own reason kept beside it.
+        let qa = hosted("qa", TicketKind::Task, "Review T-9");
+        assert_eq!(on(&qa, &CLAUDE), (Some(ModelTier::Standard), s("sonnet"), s("medium"), TierReason::MemberOwn));
+        assert_eq!(choose(None, Some(&qa), &CLAUDE, ModelChoice::QualityFirst).ticket.classified, Some(TierReason::Review));
+        assert_eq!(on(&hosted("backend", TicketKind::Task, "Write the FAQ answers"), &CLAUDE).1, s("sonnet"));
+        assert_eq!(on(&hosted("backend", TicketKind::Code, "Set up the data model for bookings"), &CLAUDE).1, s("sonnet"));
+        // A member set to Haiku runs its tasks there; one on Opus runs the rule's tier.
+        let haiku = Member { model: Some("haiku"), ..CLAUDE };
+        assert_eq!(on(&hosted("marketing", TicketKind::Task, "Draft the launch post"), &haiku).1, s("haiku"));
+        let opus = Member { model: Some("opus"), ..CLAUDE };
+        assert_eq!(on(&qa, &opus).0, Some(ModelTier::Strong));
+        // Cheaper rules stay cheaper: a typo on a Sonnet member is still Haiku.
+        assert_eq!(on(&hosted("frontend", TicketKind::Code, "Fix a typo in the hero"), &CLAUDE).1, s("haiku"));
+        // Risk, new screens, design, the starter brand, acting in an app and broad changes go above it.
+        for (role, kind, title) in [
+            ("frontend", TicketKind::Code, "Add sign-in with email"),
+            ("frontend", TicketKind::Code, "Build the booking page and deploy it"),
+            ("designer", TicketKind::Task, "Finish design setup: brief, system gaps, UI map"),
+            ("designer", TicketKind::Task, "Starter brand"),
+            ("marketing", TicketKind::Action, "Reply on the forum"),
+            ("frontend", TicketKind::Code, "Refactor the layout across all pages"),
+        ] {
+            let r = hosted(role, kind, title);
+            assert!(!r.capped, "{title}");
+            assert_eq!(on(&r, &CLAUDE).1, s("opus"), "{title}");
+        }
+        // Escalation goes above it: Standard, then Opus.
+        let first = choose(None, Some(&qa), &CLAUDE, ModelChoice::QualityFirst);
+        let up = step_up(&first.ticket).unwrap();
+        let again = choose(Some(&up), Some(&qa), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((again.ticket.tier, again.model.as_deref(), again.ticket.reason), (Some(ModelTier::Strong), Some("opus"), TierReason::Escalated));
+        // A model the person chose is the floor and the ceiling; most careful and self-hosted squads ignore the cap.
+        let person = Member { person: true, ..CLAUDE };
+        assert_eq!(on(&qa, &person).1, s("sonnet"));
+        assert_eq!(choose(None, Some(&qa), &CLAUDE, ModelChoice::Best).model.as_deref(), Some("opus"));
+        let own = rule(&work("qa", TicketKind::Task, "Review T-9", "")).unwrap();
+        assert!(!own.capped);
+        assert_eq!(on(&own, &CLAUDE).1, s("opus"));
     }
 
     #[test]

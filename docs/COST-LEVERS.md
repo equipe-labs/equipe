@@ -29,6 +29,25 @@ money for nothing.
 - Everything that needs a decision still wakes the PM at once: the person's messages, questions, a ticket handed in, a
   ticket handed back, a signal that fails, a lane that couldn't start.
 
+## Which model a ticket runs on
+
+Code: `crates/core/src/tiers.rs` (`hosted`, `capped`, `ceiling`).
+
+- **A deploy is not a release risk.** Nearly every hosted ticket says it deploys through the platform to the team's own
+  address, and the `release` tag sent those tickets to the deep tier (Opus · high). On credits the tag alone raises
+  nothing now. Connecting a person's own domain still does, and so do auth, payments, migrations, security and
+  concurrency.
+- **The member's model is a ceiling.** A ticket with no risk runs no higher than its member's own model (a member set
+  to Sonnet runs its reviews, tasks and foundations on Sonnet). Cheaper rules stay cheaper (a typo is still Haiku),
+  and a send-back still runs the next lane a tier up, above the ceiling. Not capped: new screens and design work (they
+  keep the strong tier, Opus · medium), the starter brand, acting in an app, broad changes.
+- **Making a live site load faster runs standard**, deployed or not: the speed monitor's "Speed up …" tickets and
+  Lighthouse scores.
+
+Replayed over the 92 tickets in hosted snapshots (2026-11-26): $7.1 of Opus · high work moves to Sonnet, $29.5 moves
+from Opus · high to Opus · medium (same price per token, less thinking), and risk and broad work ($38.7) is unchanged.
+Still open: new screens on Sonnet · high against Opus · medium, by a blind A/B with the current UI library.
+
 ## Limits on what a turn drags along
 
 - Claude Code's own Bash output is cut at 15,000 characters (its default is 30,000) and an MCP answer at 10,000 tokens
