@@ -7613,6 +7613,8 @@ runbooks and reports live there, and work across the projects or on running them
         self.hold_over_budget(squad, &mut tickets);
         // All work paused by the person: only what they asked for since starts.
         self.hold_for_pause(squad, &mut tickets);
+        // Work nobody asked for waits for the person's yes (`scope_gate`).
+        self.hold_unrequested(squad, &mut tickets);
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
@@ -11346,9 +11348,40 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 {
                     return Ok(reply);
                 }
+                // Work nobody asked for waits for the person's yes, with its cost (`scope_gate`).
+                let gate = if idea {
+                    None
+                } else {
+                    let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+                    let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
+                    let of_requested_work = working.is_some_and(|w| {
+                        journal.requests().of_ticket(w).is_some() || journal.follow_up(w).is_some_and(|f| journal.requests().of_ticket(f.root).or_else(|| journal.requests().of_ticket(f.parent)).is_some())
+                    });
+                    let done: Vec<TicketId> = tickets.iter().filter(|t| t.status == TicketStatus::Done).map(|t| t.id).rev().take(40).collect();
+                    let spent = journal.ticket_spend(&done).unwrap_or_default();
+                    let estimate = crate::scope_gate::estimate(&spent.values().map(|(_, tokens)| *tokens).collect::<Vec<_>>());
+                    let ask = crate::scope_gate::Ask {
+                        hands_off: self.autonomy_mode(&squad) == crate::protocol::autonomy::Autonomy::Full,
+                        serves_request: serving.is_some(),
+                        of_requested_work,
+                        from_plan: ticket.plan.is_some(),
+                        by_person: false,
+                        label,
+                        severity: board::arg_str(&args, "severity"),
+                        estimate,
+                    };
+                    crate::scope_gate::gated(&ask).then_some(estimate)
+                };
+                if gate.is_some() {
+                    ticket.status = TicketStatus::Proposed;
+                }
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let new_id = journal.create_ticket(&ticket).map_err(|e| e.to_string())?;
                 let _ = journal.ticket_event(new_id, &member, "created", title);
+                if gate.is_some() {
+                    let _ = journal.set_unrequested(new_id, true);
+                    crate::daemon_log!("equipe: {squad}: {member}'s T-{new_id} “{title}” serves no request: proposed, waits for the person's yes");
+                }
                 if let Some(filing) = &filing {
                     self.keep_follow_up(&squad, new_id, filing);
                 }
@@ -11367,7 +11400,11 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if equipe_protocol::title::is_long(title) {
                     reply.push_str(&format!(" The title is longer than reads at a glance: {} characters or {} words is the most — shorten it with update_ticket if you can.", equipe_protocol::title::GOOD_CHARS, equipe_protocol::title::GOOD_WORDS));
                 }
-                if idea {
+                if let Some(usd) = gate {
+                    reply = crate::scope_gate::reply(new_id, usd);
+                    let shown = say!(self, "news.proposed", name = member, id = new_id, title = title);
+                    self.brief_pm(&squad, crate::scope_gate::pm_line(&member, new_id, title, usd), Some(shown));
+                } else if idea {
                     reply = format!("Kept T-{new_id} as an idea — nothing starts it. Tell the person in one line it's kept; when the board is light you'll be asked to look at the ideas again.");
                     if !is_pm {
                         let line = format!("{member} kept the person's idea T-{new_id}: {title}");

@@ -426,6 +426,49 @@ async fn a_pause_of_all_work_holds_the_teams_own_work_too_until_the_person_says_
 }
 
 #[tokio::test]
+async fn work_nobody_asked_for_is_proposed_with_its_cost_and_starts_only_after_the_persons_yes() {
+    // Golden Boot (11-23, 11-24): "Design setup hadn't started yet, so I've opened its first step" — the designer's own
+    // design setup and the restyle that came of it took 38% of the AI spend; 24% went to what the customer asked for.
+    // SAFETY: as above.
+    unsafe { std::env::set_var("EQUIPE_REQUEST_SETTLE", "0") };
+    use equipe_core::protocol::autonomy::Autonomy;
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (claude, _calls) = recording_claude();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "designer")).await;
+    add(&handle, &mut events, 3, member(&repo, "frontend")).await;
+    handle.send(Command::SetAutonomyMode { squad: "acme".into(), mode: Autonomy::Full });
+    until(&mut events, |e| matches!(e, Event::AutonomyChanged { state, .. } if state.mode == Autonomy::Full)).await;
+
+    // The designer opens the design setup by itself: proposed with its cost, never started.
+    let setup = tool(&handle, "designer", "create_ticket", json!({ "title": "Design setup: brand brief", "body": "-", "owner": "designer", "label": "design" })).await;
+    assert!(!setup.is_error && setup.text.contains("Proposed T-1, not started: nobody asked for it") && setup.text.contains("about $"), "{setup:?}");
+    // The PM can't wave it through: set to todo, it still waits for the person.
+    let pushed = tool(&handle, "pm", "update_ticket", json!({ "id": 1, "status": "todo" })).await;
+    assert!(!pushed.is_error, "{pushed:?}");
+    tokio::time::sleep(Duration::from_millis(1_200)).await;
+    assert!(!drain(&mut events).iter().any(|e| matches!(e, Event::WorkStarted { ticket: 1, .. })), "nothing nobody asked for starts");
+
+    // The person says yes in their words: linked to their request, it starts.
+    handle.send(Command::Submit { session: 1, text: "Yes, go ahead with the brand brief for the site please, that sounds good.\n(LONG)".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    let linked = tool(&handle, "pm", "update_ticket", json!({ "id": 1, "request": 1 })).await;
+    assert!(!linked.is_error, "{linked:?}");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    assert!(!started.is_empty());
+
+    // What the person asks for goes on at once, and something broken is fixed without asking.
+    let asked = tool(&handle, "pm", "create_ticket", json!({ "title": "Tidy the booking form", "body": "-", "owner": "frontend", "request": 1 })).await;
+    assert!(!asked.is_error && !asked.text.contains("not started"), "{asked:?}");
+    let broken = tool(&handle, "frontend", "create_ticket", json!({ "title": "Booking form crashes on submit", "body": "-", "label": "fix", "severity": "S1", "request": 0 })).await;
+    assert!(!broken.is_error && !broken.text.contains("nobody asked for it"), "{broken:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn questions_about_a_settled_ticket_are_withdrawn_and_swept_from_before() {
     let repo = repo();
     let home = scratch("home");

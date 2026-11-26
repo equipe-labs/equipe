@@ -209,6 +209,23 @@ Tell them in plain words what was under way and that it waits for their go. When
         tickets.retain(|t| t.status != TicketStatus::Todo || self.pause_holding(squad, t.id).is_none());
     }
 
+    /// Before a dispatch: tickets nobody asked for start only once they serve
+    /// one of the person's requests (the PM linked it after their yes).
+    pub(super) fn hold_unrequested(&self, squad: &str, tickets: &mut Vec<Ticket>) {
+        let Some(journal) = self.journals.get(squad) else { return };
+        let gated = journal.unrequested();
+        if gated.is_empty() {
+            return;
+        }
+        for t in &gated {
+            if journal.requests().of_ticket(*t).is_some() || journal.ticket(*t).ok().flatten().is_none_or(|x| x.status.is_closed()) {
+                let _ = journal.set_unrequested(*t, false);
+            }
+        }
+        let still = journal.unrequested();
+        tickets.retain(|t| t.status != TicketStatus::Todo || !still.contains(&t.id));
+    }
+
     /// What `accept_work` is told for a ticket a pause holds: it isn't landed.
     pub(super) fn pause_refusal(pause: &Stop, ticket: TicketId) -> String {
         format!(

@@ -73,6 +73,7 @@ pub mod live_preview;
 pub mod pacing;
 pub mod logins;
 pub mod usage;
+pub mod scope_gate;
 pub mod spend;
 pub mod health;
 pub mod verify;

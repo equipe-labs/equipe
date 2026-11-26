@@ -1062,6 +1062,20 @@ impl Journal {
         self.meta("resting").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
     }
 
+    /// The tickets nobody asked for that wait for the person's yes (`crate::scope_gate`).
+    pub fn unrequested(&self) -> Vec<TicketId> {
+        self.meta("unrequested").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    /// Mark `ticket` as waiting for the person's yes, or no longer.
+    pub fn set_unrequested(&self, ticket: TicketId, on: bool) -> Result<()> {
+        let mut ids: Vec<TicketId> = self.unrequested().into_iter().filter(|t| *t != ticket).collect();
+        if on {
+            ids.push(ticket);
+        }
+        self.set_meta("unrequested", &serde_json::json!(ids).to_string())
+    }
+
     /// Whether `member` rests.
     pub fn is_resting(&self, member: &str) -> bool {
         self.resting().iter().any(|m| m == member)

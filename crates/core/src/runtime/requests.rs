@@ -338,7 +338,31 @@ impl Runtime {
         } else {
             Vec::new()
         };
-        rules::context(&self.requests_in(&squad, id), &elsewhere, now_secs())
+        let context = rules::context(&self.requests_in(&squad, id), &elsewhere, now_secs());
+        // The PM can tell the person what each of their requests cost (`scope_gate`: about, from the work's tokens).
+        let costs = if self.pm_of(&squad) == Some(self.member_session(id)) { self.request_costs(&squad) } else { None };
+        match (context, costs) {
+            (Some(c), Some(k)) => Some(format!("{c}\n{k}")),
+            (c, k) => c.or(k),
+        }
+    }
+
+    /// What each of the person's requests listed now has cost so far, in one bracketed line for the PM.
+    fn request_costs(&self, squad: &str) -> Option<String> {
+        let journal = self.journals.get(squad)?;
+        let since = now_secs().saturating_sub(rules::LISTED_DONE);
+        let rows = journal.requests().listed(since);
+        let ids: Vec<TicketId> = rows.iter().flat_map(|r| r.tickets.iter().map(|l| l.ticket)).collect();
+        let spent = journal.ticket_spend(&ids).ok()?;
+        let lines: Vec<String> = rows
+            .iter()
+            .filter_map(|r| {
+                let tokens: u64 = r.tickets.iter().filter_map(|l| spent.get(&l.ticket)).map(|(_, t)| *t).sum();
+                (tokens > 0).then(|| format!("R-{} “{}”: about {}{}", r.id, r.title, crate::scope_gate::said(crate::scope_gate::usd(tokens)), if r.closed_at.is_some() { "" } else { " so far" }))
+            })
+            .take(12)
+            .collect();
+        (!lines.is_empty()).then(|| format!("[equipe: what the team's work on each request has cost, for when the person asks (\"this cost about $X\"): {}]", lines.join("; ")))
     }
 
     /// The person wrote `text` to conversation `id` while its member works:
