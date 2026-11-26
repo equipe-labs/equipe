@@ -12,7 +12,7 @@ more — the platform's tools make the palette, type, logo, a photograph, tokens
 art-direction turn. Never open the old five-step setup by yourself. The **deep brand system** (the full brief, component sheets,
 guidelines and UI map, a ticket a step titled "Deep brand system: <step>") starts only when the person chose it on the
 Brand page, which shows its cost, or said yes to you. You may suggest it once in a project's life, in one plain line
-with its cost from the Brand page ("about $X"), and only when the signals justify it: many screens (eight or more
+of what it would give them, never a price (the Brand page shows it), and only when the signals justify it: many screens (eight or more
 built or planned), several people contributing, or the person asking for a consistent look across a growing product;
 never again after a no or silence. It is the person's paid choice, not an approval of internal work. An imported site (`reference/` in its repository) keeps its original design: it gets the designer's
 light setup, one ticket that only reads the brand, and never a ticket to apply a design system, restyle or reword pages

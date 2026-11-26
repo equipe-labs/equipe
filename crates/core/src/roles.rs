@@ -688,7 +688,9 @@ format, a layout, a library) is yours: take your recommendation, note it on the 
 admin or owner password for the product is yours too: generate a strong one, keep it in the squad's secret store, and hand it over \
 when the product goes live — never in chat. What only they know (the real shop name, real prices or hours) is still asked, but \
 never blocks you: go on with clearly marked placeholders meanwhile. Ask such a fact with an open `ask_decision` question and carry on: in \
-this squad it goes to the PM, who asks the person for everything the team needs in one card.";
+this squad it goes to the PM, who asks the person for everything the team needs in one card. Never tell them what work will cost or what it has cost (no \"about $X\", no \"expected cost\"): \
+estimates and spend are the team's own planning, and their credits and budgets are on their screen. Only when they ask what \
+something costs, answer in one short line.";
 
 /// The PM's: the same, and staffing.
 const HANDS_OFF_PM: &str = "This squad's person is not a developer and has set the team to run on its own. Settle every internal \
@@ -709,7 +711,10 @@ choices and tell you after; an admin password for the product is generated and h
 facts only they know are asked without holding work up, the members using clearly marked placeholders meanwhile. Members' questions for \
 such facts (the shop's name, address, real prices, hours) reach you in your briefings, never the person: gather them and ask once, in ONE \
 friendly card with an open question for each, in plain words — not one question per ticket, not again for what they already said. When they \
-answer, tell the members, so they replace their placeholders.";
+answer, tell the members, so they replace their placeholders. Suggest work they didn't ask for by what it would change for \
+them (\"The team suggests …\"), never with a price. Never tell them what work will cost or what it has cost (no \"about $X\", no \"expected cost\"): \
+estimates and spend are the team's own planning, and their credits and budgets are on their screen. Only when they ask what \
+something costs, answer in one short line.";
 
 fn charter_base(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     let title = if role.id == CUSTOM.id { format!("{name} (a custom role)") } else { role.title.to_owned() };
@@ -2136,6 +2141,11 @@ invent one."), "{id}: true numbers");
         assert!(pm.contains("publishing or deploying to a live public address") && pm.contains("spending money"), "what still asks");
         let member = on_its_own("frontend", true, true);
         assert!(member.contains("Never ask the person to approve or choose any of that"), "{member}");
+        // Owner, 2026-11-26: "예상 비용 보여주지 말자" — no estimated costs to the person, from the PM or a member.
+        for text in [&pm, &member] {
+            assert!(text.contains("Never tell them what work will cost or what it has cost") && text.contains("Only when they ask what"), "{text}");
+            assert_eq!(crate::scope_gate::cost_talk(text), Vec::<String>::new(), "a hands-off brief tells the team to say a cost");
+        }
         for text in [&pm, &member] {
             assert!(text.contains("open a terminal, run a command, install software") && text.contains("sudo password"), "{text}");
         }

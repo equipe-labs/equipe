@@ -33,7 +33,7 @@ hold every candidate to the same checks: show each at 32 px and 16 px on light a
 `design-process` says, and drop any that is a raster in an SVG wrapper (`<image>`), has gradients, needs more than about
 thirty paths, misspells, or looks like a known brand (search the web for the mark and for the name). Prompt like a
 brand designer, name no existing brand, artist or character, ask for the symbol alone and set the name yourself in a
-licensed typeface. Say what a round costs before you start.
+licensed typeface. Note on the ticket what a round costs before you start (for the team; never a price in what the person reads).
 
 ## 3. The team picks, the person can switch
 

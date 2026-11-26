@@ -412,6 +412,18 @@ mod tests {
         offered(role_or_custom(role_id), ctx).into_iter().map(|s| s.name).collect()
     }
 
+    #[test]
+    fn no_skill_tells_the_team_to_put_a_cost_in_front_of_the_person() {
+        // Owner, 2026-11-26: "예상 비용 보여주지 말자". Estimates are the team's planning; the person sees their credits.
+        for source in SOURCES {
+            for (path, text) in source.files {
+                assert_eq!(crate::scope_gate::cost_talk(text), Vec::<String>::new(), "{}/{path}", source.dir);
+            }
+        }
+        // What working-with-design said before: the check catches it.
+        assert!(!crate::scope_gate::cost_talk("You may suggest it once in a project's life, in one plain line\nwith its cost from the Brand page (\"about $X\"), and only when the signals justify it.").is_empty());
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!("equipe-skills-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

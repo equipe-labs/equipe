@@ -339,7 +339,8 @@ impl Runtime {
             Vec::new()
         };
         let context = rules::context(&self.requests_in(&squad, id), &elsewhere, now_secs());
-        // The PM can tell the person what each of their requests cost (`scope_gate`: about, from the work's tokens).
+        // What each of the person's requests cost (`scope_gate`: about, from the work's tokens): the PM answers with it only
+        // when they ask what something cost, and never volunteers it.
         let costs = if self.pm_of(&squad) == Some(self.member_session(id)) { self.request_costs(&squad) } else { None };
         match (context, costs) {
             (Some(c), Some(k)) => Some(format!("{c}\n{k}")),
@@ -362,7 +363,7 @@ impl Runtime {
             })
             .take(12)
             .collect();
-        (!lines.is_empty()).then(|| format!("[equipe: what the team's work on each request has cost, for when the person asks (\"this cost about $X\"): {}]", lines.join("; ")))
+        (!lines.is_empty()).then(|| format!("[equipe: what the team's work on each request has cost, the team's own bookkeeping: never tell the person unless they ask what something cost, then in one short line: {}]", lines.join("; ")))
     }
 
     /// The person wrote `text` to conversation `id` while its member works:
