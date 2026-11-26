@@ -44,7 +44,7 @@ Code: `crates/core/src/tiers.rs` (`hosted`, `capped`, `ceiling`).
 - **Making a live site load faster runs standard**, deployed or not: the speed monitor's "Speed up …" tickets and
   Lighthouse scores.
 
-Replayed over the 92 tickets in hosted snapshots (2026-11-26): $7.1 of Opus · high work moves to Sonnet, $29.5 moves
+Replayed over the 92 tickets in hosted snapshots (2026-11-26): $9.7 of Opus · high work moves to Sonnet, $29.5 moves
 from Opus · high to Opus · medium (same price per token, less thinking), and risk and broad work ($38.7) is unchanged.
 Still open: new screens on Sonnet · high against Opus · medium, by a blind A/B with the current UI library.
 
