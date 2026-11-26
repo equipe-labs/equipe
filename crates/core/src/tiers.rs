@@ -36,8 +36,9 @@
 //!
 //! A hosted squad (on equipe credits, [`Work::hosted`]) differs in a few
 //! cells ([`hosted`]): a faithful copy (an imported site) and server-side
-//! work that is not a foundation run standard, deployed or not; a few words
-//! or a link run light. Screens a person sees keep the table's tiers. Its role defaults are
+//! work that is not a foundation run standard, deployed or not, and so do a
+//! fix to existing screens, a finished asset put on them and making a live
+//! site load faster; a few words or a link run light. Screens a person sees keep the table's tiers. Its role defaults are
 //! equipe's, not the person's, so they are no floor.
 //!
 //! The squad's choice [`ModelChoice::Best`] puts every lane on strong at
@@ -197,7 +198,14 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
 /// - a fix to screens that exist, or a designer's finished asset (a logo,
 ///   icons) put on them, runs standard, deployed or not: the look is
 ///   decided already (A/B of 2026-11-25: the same fixes for a fraction of
-///   the cost).
+///   the cost);
+/// - making a live site load faster (the speed monitor's "Speed up …"
+///   tickets, a Lighthouse score) runs standard, deployed or not: the look
+///   and words stay as they are, and the platform measures the score again
+///   and closes the ticket only at its goal. Across hosted squads
+///   (2026-11-26) these ran Opus · high only for the word "deploy", while
+///   the same work on Sonnet · medium (two Lighthouse tickets) merged on
+///   its first pass at 98–99.
 ///
 /// New screens a person sees keep the table's tiers: on standard, and on strong
 /// at medium effort, the first versions came out plainer in a blind review,
@@ -218,7 +226,7 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
     // already, and a slip a cheaper model leaves is caught by the design precheck and the send-back
     // that runs the next lane a tier up. "Everywhere" in such a ticket means every place a string
     // appears, not a refactor; a refactor, a foundation or a first version keeps the table's tier.
-    let settled = code && !foundation(text) && !refactor(text) && (fix_of_screens(w.title) || applies_asset(w.title));
+    let settled = code && !foundation(text) && !refactor(text) && (fix_of_screens(w.title) || applies_asset(w.title) || speed_work(w.title));
     if wide_scope(text) && !settled {
         return None;
     }
@@ -240,6 +248,15 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
 /// A fix to what is already there, as the title says: a bug, a slip, something broken or wrong.
 fn fix_of_screens(title: &str) -> bool {
     has_word(title, &["fix", "fixes", "bug", "bugs", "broken", "slip", "slips", "repair", "doesn't work", "does not work", "not working", "is wrong", "are wrong"])
+}
+
+/// Making what exists load faster, as the title says: the speed monitor's "Speed up …: score 82, goal 95",
+/// a Lighthouse score to raise. New behaviour is not: "Build a performance dashboard" is a new screen.
+fn speed_work(title: &str) -> bool {
+    has_word(
+        title,
+        &["speed up", "speed score", "page speed", "load fast", "loads fast", "load faster", "loads faster", "faster on phones", "lighthouse", "web vitals", "performance score", "mobile performance"],
+    ) && !feature(title)
 }
 
 /// A designer's finished asset put on the product, as the title says: a logo, icons, a favicon, images.
@@ -1265,6 +1282,28 @@ mod tests {
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Build the booking page and deploy it", "").0, ModelTier::Deep);
         // A few words stay light.
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix a typo in the hero", "").0, ModelTier::Light);
+    }
+
+    #[test]
+    fn a_hosted_speed_up_runs_standard_and_deploys() {
+        // The speed monitor's ticket, as it reached a team (2026-11-26): Opus · high only for "redeploy".
+        let monitor = "Every customer product keeps a speed score of 95 or more on phones. The live site measures 82: main content after 3.8 s, blocked 70 ms, layout shift 0.145.\n\nUsual causes: images not resized or not in a modern format, fonts without font-display: swap or too many weights, one big script (split it, load the rest on demand), third-party scripts on first load. Do not remove content or features to hit the number.\n\nThen redeploy with `deploy_site`; the platform measures again by itself a few minutes later and closes this when it is at 95 or more.";
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Speed up \"hannun\": score 82, goal 95", monitor), (ModelTier::Standard, TierReason::Risk, true));
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Make the site load fast on phones", "Deploy once it scores 95.").0, ModelTier::Standard);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Raise the Lighthouse mobile performance on /webinar", "").0, ModelTier::Standard);
+        // Self-hosted squads keep the table.
+        assert_eq!(tier("frontend", TicketKind::Code, "Speed up \"hannun\": score 82, goal 95", monitor).0, ModelTier::Deep);
+        // New behaviour, a rebuild, a foundation or another risk keeps its tier.
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Build a page speed dashboard and deploy it", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Rebuild the bookshop as a fast, modern site and deploy it", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Speed up the site by refactoring it across all pages", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Speed up the sign-in page", "").0, ModelTier::Deep);
+        // A send-back still runs the next lane a tier up: Opus.
+        let r = rule(&Work { hosted: true, ..work("frontend", TicketKind::Code, "Speed up \"hannun\": score 82, goal 95", monitor) }).unwrap();
+        let first = choose(None, Some(&r), &CLAUDE, ModelChoice::QualityFirst);
+        assert_eq!((first.model.as_deref(), first.effort.as_deref()), (Some("sonnet"), Some("medium")));
+        let up = step_up(&first.ticket).unwrap();
+        assert_eq!(choose(Some(&up), Some(&r), &CLAUDE, ModelChoice::QualityFirst).model.as_deref(), Some("opus"));
     }
 
     #[test]
