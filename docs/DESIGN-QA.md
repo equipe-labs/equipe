@@ -136,6 +136,22 @@ board meanwhile):
 4. Compares each normal picture, pixel by pixel, with the map's picture committed at the base, and cuts crops of what
    changed (base beside new) and of each finding.
 
+**Apps in subfolders, and no map at all.** A repository may hold several apps (`cafe/`, `habits/`, `o1path/`). Each
+changed file that can change what users see (UI files, images, an app's `design/` assets and tokens) belongs to the
+nearest folder above it with a `package.json` or an `index.html` (one inside `public/`, `design/` or a build folder
+doesn't count), else the root. The map is looked for at the root's `design/flows/flows.json` first, as always, then in
+each changed app's own `<app>/design/flows/flows.json`; an app's map names its `source` files from the app's folder,
+and its preview and commands run there. With **no map anywhere**, the precheck still renders the changed app (the one
+with the most changed files): a Vite app with its dependencies installed is built by its own Vite (`vite build --base /`
+into the report's folder, never the worktree); an app with an `index.html` and no build step is served as it is; any
+other build is reported, not guessed at. Its home page and up to three language versions its build has
+(`en/index.html` → `/en/`) are rendered at the same 18 conditions and measured the same way. The base commit's app,
+taken out of git and built the same way, is rendered at normal size to compare with; when it can't be (the app is new,
+its build fails), the report says "no base comparison" and no finding is held against the change as new. The report's
+**Fallback** line says which app was rendered, how, at which pages, and against what. Changed files stay **unmapped**,
+so such a change never passes without a designer — but the designer gets pictures and findings instead of
+"nothing to render".
+
 Findings are classed by `crates/core/src/design/precheck.rs`:
 
 | Finding | Blocker (S1/S2) when | Otherwise |
