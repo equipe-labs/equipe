@@ -514,7 +514,9 @@ pub fn shown_by_app(path: &str) -> bool {
         return false;
     }
     let ext = name.rsplit_once('.').map_or("", |(_, e)| e);
-    IMAGES.contains(&ext) || (ext == "json" && in_dir(&lower, "design/"))
+    // Screenshots a member hands in with its work (review-shots/) show no app's pages.
+    let evidence = lower.split('/').any(|part| matches!(part, "review-shots" | "screenshots" | "shots"));
+    !evidence && (IMAGES.contains(&ext) || (ext == "json" && in_dir(&lower, "design/")))
 }
 
 /// The app folder `file` (from the repository's root) belongs to: the
@@ -1906,6 +1908,8 @@ mod tests {
         let repo = files(&["cafe/index.html", "habits/package.json", "habits/index.html", "o1path/package.json", "o1path/index.html", "o1path/public/index.html"]);
         let change = changed(&["o1path/src/App.tsx", "o1path/public/brand/logo.svg", "o1path/public/brand/mark.png", "o1path/design/assets/logo/logo.svg", "cafe/style.css", "README.md", "o1path/src/App.test.tsx"]);
         assert_eq!(app_roots(&change, &repo), ["o1path", "cafe"], "the app with the most changed files first; a README and a test are in none");
+        let shots: Vec<String> = ["o1path/src/App.tsx", "review-shots/o1path/de-360-after.png", "review-shots/o1path/de-360-before.png", "review-shots/o1path/de-desktop.png"].map(str::to_owned).to_vec();
+        assert_eq!(app_roots(&shots, &repo), ["o1path"], "hand-in screenshots show no app's pages");
         // An index.html inside public/ is the app's assets, not an app of its own.
         assert_eq!(app_root("o1path/public/brand/logo.svg", &repo), "o1path");
         assert_eq!(app_root("cafe/css/site.css", &repo), "cafe");
