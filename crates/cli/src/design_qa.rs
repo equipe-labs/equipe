@@ -284,7 +284,10 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
         let looked = map_dirs.iter().map(|d| format!("{d}/{}/{}", flows::DIR, flows::FILE)).collect::<Vec<_>>().join(", ");
         (input.touched.unmapped, input.touched.quiet) = precheck::split_unmapped(changed.iter().filter(|f| precheck::ui_file(f)).cloned().collect(), |f| read_changed(&root, f));
         // No map: the changed app's own pages, rendered anyway.
-        if let Some(app) = apps.first() {
+        // The first changed app that can be served: hand-in screenshots committed at the root (review-shots/) made
+        // the root the "most changed" app on a multi-app repository, and the root serves nothing.
+        let servable = apps.iter().find(|a| precheck::serve_plan(&if a.is_empty() { root.clone() } else { root.join(a.as_str()) }).is_ok());
+        if let Some(app) = servable.or(apps.first()) {
             return fallback(r, &root, &out, &apps, app, &looked, input, errors, started).await;
         }
         errors.push(format!("no UI map in the worktree ({looked}): nothing to render"));
