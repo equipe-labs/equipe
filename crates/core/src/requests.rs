@@ -647,6 +647,19 @@ pub fn asked_after<'a>(text: &str, requests: &'a [Request]) -> Vec<&'a Request> 
 /// A message longer than this is always heard as asking for something.
 const SMALL_TALK_CHARS: usize = 16;
 
+/// Whether a member's reply hands the request back to the person: it ends
+/// asking them something (a question mark in its last lines). Such a
+/// request waits on their answer — no ticket can serve it yet, and the
+/// "uncovered" nudge would only make the member say it all again.
+pub fn asks_person(reply: &str) -> bool {
+    let text = reply.trim();
+    let tail: String = text.chars().rev().take(ASKS_TAIL_CHARS).collect::<Vec<_>>().into_iter().rev().collect();
+    tail.contains(['?', '？', '¿'])
+}
+
+/// How much of a reply's end [`asks_person`] reads.
+const ASKS_TAIL_CHARS: usize = 400;
+
 /// Whether `text` is an acknowledgement or chit-chat that asks for nothing
 /// — "ok", "thanks!", an emoji — so it opens no request: no question mark,
 /// short, and either no letter or digit at all, or only words of
@@ -1082,6 +1095,14 @@ pub fn app_name(name: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_reply_ending_with_a_question_hands_the_request_back_to_the_person() {
+        assert!(asks_person("LinkedIn only shows that profile to signed-in visitors. Could you paste a few lines about yourself?"));
+        assert!(asks_person("어떤 일을 하시는지 몇 줄 알려주시겠어요？"));
+        assert!(!asks_person("RentWise is underway. I'll send the address when it's live."));
+        let long = format!("Did you mean the blue one? {}", "Building it now. ".repeat(60));
+        assert!(!asks_person(&long), "a question early in a long update isn't the reply's ask");
+    }
     #[test]
     fn a_request_written_with_a_project_picked_names_its_app() {
         let words = "Make the logo bigger\n\n[equipe: project fern-studio. The person wrote this while looking at the project \"Fern\" (app name fern-studio).]";

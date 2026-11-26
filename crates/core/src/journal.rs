@@ -3529,6 +3529,12 @@ impl Journal {
         self.entries(id, Some(limit))
     }
 
+    /// The last `limit` lines of a session's conversation, oldest first,
+    /// each with when it was kept.
+    pub fn recent_at(&self, id: SessionId, limit: u64) -> Result<(Vec<Entry>, Vec<Option<u64>>)> {
+        self.timed_entries(id, Some(limit))
+    }
+
     /// Every kept line of a session's conversation, oldest first.
     pub fn conversation(&self, id: SessionId) -> Result<Vec<Entry>> {
         self.entries(id, None)

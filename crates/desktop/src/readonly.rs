@@ -126,6 +126,7 @@ pub fn reads(command: &Command) -> bool {
         | C::CreateTicket { .. }
         | C::StopWork { .. }
         | C::LiftStop { .. }
+        | C::UndoStop { .. }
         | C::EditTicket { .. }
         | C::EditTickets { .. }
         | C::MoveTicket { .. }
