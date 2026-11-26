@@ -1074,7 +1074,7 @@ fn fake_requests() -> Vec<equipe_core::protocol::requests::Request> {
     let made = |id, title: &str, member: &str, ago: u64, links: Vec<RequestTicket>| {
         let status = equipe_core::requests::status(&links, &tickets, &[]);
         let done = status.done;
-        Request { id, title: title.into(), session: Some(if member == "pm" { 1 } else { 4 }), member: Some(member.into()), asked_at: now - ago, tickets: links, status, closed_at: done.then_some(now - 3600) }
+        Request { id, title: title.into(), words: String::new(), session: Some(if member == "pm" { 1 } else { 4 }), member: Some(member.into()), asked_at: now - ago, tickets: links, status, closed_at: done.then_some(now - 3600) }
     };
     let mut footer = ticket(3540, "done", "web", "frontend", "Fix the footer links", "", &[], None, None);
     footer.merged = Some(true);
@@ -1082,7 +1082,7 @@ fn fake_requests() -> Vec<equipe_core::protocol::requests::Request> {
     let footer = {
         let links = vec![link(3540, None, Link::Asked)];
         let status = equipe_core::requests::status(&links, std::slice::from_ref(&footer), &[]);
-        Request { id: 11, title: "Fix the footer links".into(), session: Some(1), member: Some("pm".into()), asked_at: now - 22 * 3600, tickets: links, status, closed_at: Some(now - 19 * 3600) }
+        Request { id: 11, title: "Fix the footer links".into(), words: String::new(), session: Some(1), member: Some("pm".into()), asked_at: now - 22 * 3600, tickets: links, status, closed_at: Some(now - 19 * 3600) }
     };
     vec![
         made(

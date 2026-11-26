@@ -62,6 +62,10 @@ const SAYS_LITTLE: usize = 16;
 /// At most this many characters of the person's words name a request.
 const TITLE_CHARS: usize = 60;
 
+/// At most this many characters of the person's words show on a request's
+/// hover (a long paste stays a tooltip, not a page).
+const HOVER_CHARS: usize = 400;
+
 /// A part's title, and a wait's, at most this long in a status line.
 const PART_CHARS: usize = 36;
 const WAIT_CHARS: usize = 28;
@@ -91,6 +95,13 @@ pub fn title_of(words: &str) -> String {
 /// asked minutes apart from each other.
 pub fn words_line(words: &str) -> String {
     cut(&words.split_whitespace().collect::<Vec<_>>().join(" "), WORDS_CHARS)
+}
+
+/// The person's words in one line for a screen's hover, when the title cut
+/// them short; empty when the title already says it all.
+pub fn hover_words(words: &str, title: &str) -> String {
+    let line = cut(&words.split_whitespace().collect::<Vec<_>>().join(" "), HOVER_CHARS);
+    if line.is_empty() || line == title { String::new() } else { line }
 }
 
 /// `text`, at most `max` characters, `…` where it was cut.
@@ -790,6 +801,7 @@ impl Row {
         Request {
             id: self.id,
             title: self.title.clone(),
+            words: hover_words(&self.words, &self.title),
             session: self.session,
             member: self.member.clone(),
             asked_at: self.asked_at,
@@ -1546,6 +1558,18 @@ mod tests {
         assert!(title_of(&long).ends_with('…'));
         assert_eq!(title_of("Hi!\nThe login page errors when I log out\n[image]"), "Hi! The login page errors when I log out");
         assert_eq!(words_line("Hi!\nThe login page   errors\n[image]"), "Hi! The login page errors [image]");
+    }
+
+    #[test]
+    fn hover_words_say_more_than_the_title_or_nothing() {
+        let said = "항상 의사를 만날수없는 환자들이 진단을 받고나서 집에서도 약을 어떻게 먹어야 하는지 바로 볼 수 있는 페이지를 만들어줘";
+        let title = title_of(said);
+        assert!(title.ends_with('…'));
+        assert_eq!(hover_words(said, &title), said);
+        assert_eq!(hover_words("Fix the footer", &title_of("Fix the footer")), "");
+        assert_eq!(hover_words("Hi!\nThe login page   errors", "Hi! The login page errors"), "");
+        let long = "y ".repeat(500);
+        assert_eq!(hover_words(&long, &title_of(&long)).chars().count(), HOVER_CHARS);
     }
 
     #[test]
