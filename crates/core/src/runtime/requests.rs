@@ -476,6 +476,11 @@ impl Runtime {
             if !status.uncovered {
                 continue;
             }
+            // Answered with a question for the person (a link that needs their sign-in, "what do you do?"): it waits
+            // on them, not on the board. Nudged, the member only said the same again (my-team-qjba, 2026-11-26).
+            if self.asked_back(squad, &row) {
+                continue;
+            }
             if let Some(journal) = self.journals.get(squad)
                 && let Err(err) = journal.requests().surfaced(row.id, now)
             {
@@ -502,10 +507,19 @@ impl Runtime {
             "[Uncovered requests] No ticket serves these requests of the person's, {minutes} minutes or more after they asked:\n{}\n\n\
 Settle each first: put its work on the board (`create_ticket` with its number as `request`, or `update_ticket` with `request` \
 on a ticket that already does it) — or, when it asks for no work, `close_request` with why, which the person sees. Until then \
-it stays open, shown to the person as not on the board.",
+it stays open, shown to the person as not on the board. Settling it is bookkeeping: don't write to the person again to repeat \
+what you already told them.",
             lines.join("\n")
         );
         self.hand_to_pm(squad, pm, text).await;
+    }
+
+    /// Whether the member `row` was asked of answered it with a question for
+    /// the person, in the conversation it was asked in, after it was asked.
+    fn asked_back(&self, squad: &str, row: &Row) -> bool {
+        let (Some(session), Some(journal)) = (row.session, self.journals.get(squad)) else { return false };
+        let Ok((entries, at)) = journal.recent_at(session, 60) else { return false };
+        entries.iter().zip(at).any(|(entry, at)| matches!(entry, Entry::Reply { text } if at.is_some_and(|at| at >= row.asked_at) && rules::asks_person(text)))
     }
 
     /// `close_request`: the PM — or the member it was asked of — closes one

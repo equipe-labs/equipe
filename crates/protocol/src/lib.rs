@@ -1098,6 +1098,10 @@ pub enum Command {
     },
     /// The person lifts a stop: that work may be put on the board again.
     LiftStop { squad: SquadName, stop: requests::StopId },
+    /// The person takes back a stop they just made ("Undo"): it is lifted,
+    /// and the tickets it cancelled go back on the board, to go on from the
+    /// work their branches kept. Answered by [`Event::StopsChanged`].
+    UndoStop { squad: SquadName, stop: requests::StopId },
     /// The person changes a ticket's fields. Refused (an [`Event::Error`]) when
     /// a change doesn't make sense: a dependency loop, a member nobody is,
     /// a project the squad hasn't, work under way moved to another project.

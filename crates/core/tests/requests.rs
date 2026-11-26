@@ -363,6 +363,10 @@ async fn a_stopped_kind_of_work_is_cancelled_and_turned_away_until_the_person_li
     assert_eq!(stops[0].cancelled, [1, 2]);
     let board = handle.snapshot("acme").await;
     assert!(board.tickets.iter().filter(|t| t.id <= 2).all(|t| t.status == TicketStatus::Cancelled), "{:?}", board.tickets);
+    // The PM's one-line turn about the stop (its prompt carries the request's words, LONG here) is let go.
+    assert!(seen.iter().any(|e| matches!(e, Event::SystemMessage { session: 1, text, .. } if text.starts_with("[Stopped by the person]"))), "{seen:#?}");
+    handle.send(Command::Interrupt { session: 1 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
 
     // New tickets of it are turned away, whoever files them, with why; others go on.
     let again = tool(&handle, "designer", "create_ticket", json!({ "title": "Tighten the component galleries grid", "body": "-", "kind": "task" })).await;
@@ -407,6 +411,50 @@ async fn a_stopped_kind_of_work_is_cancelled_and_turned_away_until_the_person_li
     until(&mut events, |e| matches!(e, Event::StopsChanged { stops, .. } if stops.iter().all(|s| s.id != 1))).await;
     let lifted = tool(&handle, "pm", "create_ticket", json!({ "title": "Component gallery fonts", "body": "-", "kind": "task" })).await;
     assert!(!lifted.is_error, "{lifted:?}");
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn stopped_from_a_screen_the_pm_says_so_and_undo_puts_the_work_back() {
+    // my-team-qjba (2026-11-26): the founder switched ideas and had no way to stop the build they no longer wanted.
+    // SAFETY: as above.
+    unsafe { std::env::set_var("EQUIPE_REQUEST_SETTLE", "0") };
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (claude, _calls) = recording_claude();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    handle.send(Command::Submit { session: 1, text: "Build the RentWise site\n(LONG)".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    for title in ["Build the RentWise homepage", "Build the RentWise rentals page"] {
+        let made = tool(&handle, "pm", "create_ticket", json!({ "title": title, "body": "-", "owner": "frontend", "kind": "task", "request": 1 })).await;
+        assert!(!made.is_error, "{made:?}");
+    }
+    handle.send(Command::Interrupt { session: 1 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    drain(&mut events);
+
+    // "Stop this": cancelled, and the PM is handed a note to say so in one line (a turn of its own, not a later briefing).
+    handle.send(Command::StopWork { squad: "acme".into(), request: Some(1), ticket: None, words: String::new() });
+    let seen = until(&mut events, |e| matches!(e, Event::SystemMessage { session: 1, text, .. } | Event::MessageQueued { session: 1, text, .. } if text.starts_with("[Stopped by the person]"))).await;
+    let told = seen.iter().find_map(|e| match e {
+        Event::SystemMessage { text, .. } | Event::MessageQueued { text, .. } if text.starts_with("[Stopped by the person]") => Some(text.clone()),
+        _ => None,
+    }).unwrap();
+    assert!(told.contains("ONE short line") && told.contains("Build the RentWise site"), "{told}");
+    let board = handle.snapshot("acme").await;
+    assert!(board.tickets.iter().all(|t| t.status == TicketStatus::Cancelled), "{:?}", board.tickets);
+    let stop = board.stops[0].id;
+
+    // "Undo": lifted, and both pieces back on the board.
+    handle.send(Command::UndoStop { squad: "acme".into(), stop });
+    until(&mut events, |e| matches!(e, Event::StopsChanged { stops, .. } if stops.is_empty())).await;
+    let board = handle.snapshot("acme").await;
+    assert!(board.tickets.iter().all(|t| t.status != TicketStatus::Cancelled), "{:?}", board.tickets);
+    assert!(board.stops.is_empty());
     handle.shutdown().await;
 }
 

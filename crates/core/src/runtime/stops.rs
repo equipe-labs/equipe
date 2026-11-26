@@ -147,7 +147,20 @@ Tell them in plain words what was under way and that it waits for their go. When
             )
         };
         let shown = say!(self, "news.stopped", words = stop.words, count = stop.cancelled.len());
-        self.brief_pm(squad, line, Some(shown));
+        if by == "you" {
+            // Stopped from a screen ("Stop this" on the plan, the progress strip or the build card): the PM says so to the
+            // person in one line, now — the screen already shows it stopped, so nothing longer and no other work.
+            if let Some(pm) = self.pm_of(squad) {
+                self.show_news(pm, shown);
+                let text = format!(
+                    "[Stopped by the person] {line}\n\nReply to the person in ONE short line, in their language: it's stopped, what was \
+done so far is kept, and they can ask for it again here any time. No tools, no other work in this turn."
+                );
+                self.hand_to_pm(squad, pm, text).await;
+            }
+        } else {
+            self.brief_pm(squad, line, Some(shown));
+        }
         crate::daemon_log!("equipe: {squad}: stop S-{} by {by}: “{}”, terms {:?}, {} ticket(s) cancelled", stop.id, stop.words, stop.terms, stop.cancelled.len());
         self.publish_stops(squad);
         Ok(stop)
@@ -182,6 +195,47 @@ Tell them in plain words what was under way and that it waits for their go. When
         if stop.all {
             self.carry_on_after_pause(squad);
         }
+    }
+
+    /// The person's "Undo" on a stop they just made ([`Command::UndoStop`]):
+    /// lifted, and what it cancelled back on the board, each to go on from
+    /// its branch. A pause of all work is only lifted (nothing was cancelled).
+    pub(super) async fn undo_stop(&mut self, squad: &str, id: StopId) {
+        let Some(stop) = self.journal(squad).and_then(|j| j.stops().get(id)) else { return };
+        if !self.stops_in_force(squad).iter().any(|s| s.id == id) {
+            return;
+        }
+        if stop.all {
+            return self.lift_stop(squad, id);
+        }
+        let Some(journal) = self.journal(squad) else { return };
+        if !journal.stops().lift(id, now_secs()).unwrap_or(false) {
+            return;
+        }
+        let mut back = Vec::new();
+        for t in &stop.cancelled {
+            let Some(mut ticket) = self.find_ticket(squad, *t).filter(|x| x.status == TicketStatus::Cancelled) else { continue };
+            ticket.status = TicketStatus::Todo;
+            ticket.assignee = None;
+            ticket.note = Some("Brought back by the person (they took back their stop): go on from the work on its branch.".into());
+            if let Some(journal) = self.journal(squad) {
+                let _ = journal.save_ticket(&ticket);
+                let _ = journal.ticket_event(ticket.id, "you", "restored", "stop taken back");
+            }
+            back.push(ticket.id);
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket });
+        }
+        let again = if back.is_empty() {
+            "nothing it cancelled needed to come back".to_owned()
+        } else {
+            format!("back on the board: {} — each goes on from its branch", back.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", "))
+        };
+        let line = format!("The person took back their stop on “{}” (S-{id}): {again}. Carry on as before; no need to tell them.", stop.words);
+        let shown = say!(self, "news.stop_lifted", words = stop.words);
+        self.brief_pm(squad, line, Some(shown));
+        crate::daemon_log!("equipe: {squad}: stop S-{id} taken back, {} ticket(s) back on the board", back.len());
+        self.publish_stops(squad);
+        self.dispatch(squad).await;
     }
 
     // ── a pause of all work ──

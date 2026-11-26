@@ -3171,6 +3171,7 @@ impl Runtime {
             Command::CreateTicket { squad, draft } => self.person_creates(&squad, draft).await,
             Command::StopWork { squad, request, ticket, words } => self.person_stops(&squad, request, ticket, &words).await,
             Command::LiftStop { squad, stop } => self.lift_stop(&squad, stop),
+            Command::UndoStop { squad, stop } => self.undo_stop(&squad, stop).await,
             Command::EditTicket { squad, ticket, changes } => self.person_edits(&squad, ticket, changes).await,
             Command::EditTickets { squad, tickets, changes } => self.person_edits_many(&squad, tickets, changes).await,
             Command::MoveTicket { squad, ticket, status, before } => self.person_moves(&squad, ticket, status, before).await,
