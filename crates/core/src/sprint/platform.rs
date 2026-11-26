@@ -106,7 +106,7 @@ impl Platform {
     /// Whether the team has anything live: an app deployed on the platform.
     pub async fn has_app(&self) -> Result<bool, String> {
         let v = self.get("/v1/resources").await?;
-        Ok(v.get("resources").and_then(Value::as_array).is_some_and(|r| r.iter().any(|x| x.get("kind").and_then(Value::as_str) == Some("app"))))
+        Ok(live_from(&v, now_unix()))
     }
 
     /// The `equipe.metrics/v1` snapshot over `days`.
@@ -230,6 +230,20 @@ fn live_cache() -> &'static Mutex<Option<Live>> {
 }
 
 const LIVE_EVERY: Duration = Duration::from_secs(5 * 60);
+
+/// Whether `/v1/resources` says the team has a product live for the sprint
+/// loop: an app, and the first free version's quiet day over (`quiet_until`,
+/// unix seconds: the day after a free team's first version went live, nothing
+/// starts by itself on the person's free credit).
+pub fn live_from(v: &Value, now: u64) -> bool {
+    let app = v.get("resources").and_then(Value::as_array).is_some_and(|r| r.iter().any(|x| x.get("kind").and_then(Value::as_str) == Some("app")));
+    let quiet = v.get("quiet_until").and_then(Value::as_u64).is_some_and(|until| until > now);
+    app && !quiet
+}
+
+fn now_unix() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+}
 
 /// Whether the platform reports an app live for this machine's team. Answers
 /// from a cache and refreshes it in the background at most every few minutes,

@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use equipe_core::protocol::growth::Better;
 use equipe_core::protocol::sprint::{Experiment, ExperimentStatus, Metric, Rule, Split, Verdict};
 use equipe_core::sprint::data::{self, ProductData};
-use equipe_core::sprint::platform::{glance, Platform};
+use equipe_core::sprint::platform::{glance, live_from, Platform};
 use serde_json::{json, Value};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -186,4 +186,17 @@ fn the_glance_is_short_and_in_plain_words() {
     assert!(evidence.iter().all(|e| e.source == "equipe platform" && e.from == "2026-11-14"));
     assert_eq!(lines, ["Top sources (visitors): news.example (40), x.example (7).", "Running experiment `cta`: insufficient data."]);
     assert!(!format!("{evidence:?}{lines:?}").contains("eqk_"));
+}
+
+/// A cloud team's product counts as live for the sprint loop only with an app on
+/// the platform and its first free version's quiet day over.
+#[test]
+fn live_needs_an_app_and_the_quiet_day_over() {
+    let app = json!({ "resources": [{ "kind": "database", "name": "db" }, { "kind": "app", "name": "shop" }] });
+    assert!(live_from(&app, 1_000));
+    assert!(!live_from(&json!({ "resources": [{ "kind": "database", "name": "db" }] }), 1_000), "no app: nothing live");
+    let quiet = json!({ "resources": [{ "kind": "app", "name": "shop" }], "quiet_until": 2_000 });
+    assert!(!live_from(&quiet, 1_000), "the first free version's quiet day");
+    assert!(live_from(&quiet, 2_001), "over");
+    assert!(live_from(&json!({ "resources": [{ "kind": "app", "name": "shop" }], "quiet_until": 0 }), 1_000));
 }

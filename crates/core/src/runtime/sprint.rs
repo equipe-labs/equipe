@@ -74,7 +74,15 @@ impl Runtime {
     }
 
     /// Whether the squad has a product live: a deploy seen, or analytics connected.
+    /// A cloud team's platform alone says it (a merge to main is not a release —
+    /// that woke the PM to plan a sprint minutes before the first version was
+    /// live — and its first free version gets a quiet day: `platform::live_from`).
     fn sprint_live(&mut self, squad: &str) -> bool {
+        if data::registered(squad).is_none()
+            && let Some(p) = Platform::discover()
+        {
+            return platform::live_cached(&p);
+        }
         let deployed = self.journal(squad).is_some_and(|j| !j.deploys().is_empty());
         deployed
             || data::registered(squad).is_some()
