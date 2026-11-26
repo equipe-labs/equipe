@@ -122,7 +122,7 @@ end your turn now with a short line."
             return Err(format!("Nobody on the squad is {to}. Pass it to a role the squad has, or hand it in."));
         }
         if !done.is_empty() {
-            rules::tick(&mut flow, &done, Vec::new(), &holder)?;
+            rules::tick(&mut flow, &done, &[], Vec::new(), &holder)?;
         }
         flow.from = Some(holder.clone());
         if back {
@@ -147,7 +147,8 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
     pub(super) fn check_steps(&mut self, squad: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let done: Vec<usize> = board::arg_ids(args, "done").unwrap_or_default().into_iter().map(|n| n as usize).collect();
         let added = rules::steps_arg(args, "add")?;
-        if done.is_empty() && added.is_empty() {
+        let replace: Vec<usize> = board::arg_ids(args, "replace").unwrap_or_default().into_iter().map(|n| n as usize).collect();
+        if done.is_empty() && added.is_empty() && replace.is_empty() {
             return Err("Say which items are `done` (by number), or `add` some.".into());
         }
         let (on, holder) = {
@@ -155,20 +156,23 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
             let work = s.work.as_ref().ok_or("You're not on a ticket — its holder ticks its checklist.")?;
             (work.ticket, s.name().unwrap_or_default().to_owned())
         };
-        self.change_steps(squad, on, &done, added, &holder)
+        self.change_steps(squad, on, &done, &replace, added, &holder)
     }
 
-    /// Tick `done` and add `added` on `ticket`'s checklist, by `by`: what it says back.
-    pub(super) fn change_steps(&mut self, squad: &str, ticket: TicketId, done: &[usize], added: Vec<TicketStep>, by: &str) -> Result<String, String> {
+    /// Tick `done`, take out the open items `replace` and add `added` (those
+    /// it hasn't already) on `ticket`'s checklist, by `by`: what it says back.
+    pub(super) fn change_steps(&mut self, squad: &str, ticket: TicketId, done: &[usize], replace: &[usize], added: Vec<TicketStep>, by: &str) -> Result<String, String> {
         let found = self.find_ticket(squad, ticket).ok_or_else(|| format!("There is no T-{ticket}."))?;
         if found.status.is_closed() {
             return Err(format!("T-{ticket} is {} — its checklist is closed.", found.status.label()));
         }
         let mut flow = found.flow.as_deref().cloned().unwrap_or_default();
-        if let Some(why) = rules::steps_overflow(ticket, flow.steps.len(), added.len()) {
+        let had = flow.steps.len();
+        let said = rules::tick(&mut flow, done, replace, added, by)?;
+        // Only what it grew by counts against the cap: repeats and replaced items don't.
+        if let Some(why) = rules::steps_overflow(ticket, had, flow.steps.len().saturating_sub(had)) {
             return Err(why);
         }
-        let said = rules::tick(&mut flow, done, added, by)?;
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
         journal.set_ticket_flow(ticket, Some(&flow)).map_err(|e| e.to_string())?;
         if let Some(changed) = journal.ticket(ticket).ok().flatten() {
@@ -324,6 +328,8 @@ run the tests, and hand it in. Then, if the change is still wanted, fix it on a 
             priority: equipe_protocol::Priority::High,
             rank: 0,
             updated_at: None,
+            started_at: None,
+            app: None,
             design_qa: None,
             plan: None,
             model: None,

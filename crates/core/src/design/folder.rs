@@ -856,7 +856,7 @@ mod tests {
             let ticket = equipe_protocol::Ticket {
                 id: 0, title: format!("T{n}"), body: String::new(), status: TicketStatus::Review, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
                 project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: None,
-                asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None,
+                asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None, started_at: None, app: None,
             };
             let id = journal.create_ticket(&ticket).unwrap();
             journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(w), ..Default::default() }).unwrap();
@@ -909,7 +909,7 @@ mod tests {
             let t = equipe_protocol::Ticket {
                 id: 0, title: title.into(), body: String::new(), status, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
                 project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: None,
-                asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None,
+                asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None, started_at: None, app: None,
             };
             let id = journal.create_ticket(&t).unwrap();
             journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(w.clone()), ..Default::default() }).unwrap();

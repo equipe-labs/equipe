@@ -987,6 +987,8 @@ mod tests {
             label: None, remaining: vec![],
             images: vec![],
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(),
             rank: 0,
         };

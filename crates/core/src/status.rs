@@ -542,6 +542,8 @@ mod tests {
             priority: Priority::Normal,
             rank: 0,
             updated_at: Some(NOW - 10 * MINUTE),
+            started_at: None,
+            app: None,
             design_qa: None, landing: false,
             plan: None,
             model: None,

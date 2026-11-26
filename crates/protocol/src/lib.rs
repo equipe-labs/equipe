@@ -455,6 +455,18 @@ pub struct Ticket {
     /// an older daemon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<u64>,
+    /// When work on it first began — it first went in progress — in unix
+    /// seconds, so a screen tells how long it has been going without guessing
+    /// from its log. `None` before it starts, and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<u64>,
+    /// The product it is for on a team that runs several, by its app name
+    /// (`fern-studio`): from the person's request when they wrote it with a
+    /// project picked (`[equipe: project <app>. …]`), from the
+    /// member who made it, or from the ticket it came of — so a screen shows
+    /// one project's work. `None` when not known, and from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
     /// While in review: the design QA ticket on which a designer checks its
     /// screens first — the person is told it's ready once that passes. Left
     /// out otherwise, and absent from an older daemon.
@@ -4605,6 +4617,8 @@ mod tests {
             label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(), rank: 0,
         }
     }

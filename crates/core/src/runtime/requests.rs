@@ -195,6 +195,26 @@ impl Runtime {
             .collect()
     }
 
+    /// The product a ticket is for ([`Ticket::app`]) by what it came of: the
+    /// app the person's request `request` was written about, else that of
+    /// ticket `parent` (the one it was made while working, or a follow-up of).
+    pub(super) fn app_for(&self, squad: &str, request: Option<RequestId>, parent: Option<TicketId>) -> Option<String> {
+        let journal = self.journals.get(squad)?;
+        request
+            .and_then(|r| journal.requests().get(r))
+            .and_then(|r| rules::app_of(&r.words))
+            .or_else(|| parent.and_then(|p| journal.ticket(p).ok().flatten()).and_then(|t| t.app))
+    }
+
+    /// Ticket `ticket` joined request `request` (of `parent`): the product it
+    /// is for, when it had none, from them ([`Runtime::app_for`]).
+    fn fill_app(&self, squad: &str, ticket: TicketId, request: Option<RequestId>, parent: Option<TicketId>) {
+        let Some(app) = self.app_for(squad, request, parent) else { return };
+        if let Some(journal) = self.journals.get(squad) {
+            let _ = journal.set_ticket_app(ticket, &app);
+        }
+    }
+
     /// Ticket `new`, just put on the board, joins the request [`Runtime::serving`]
     /// found for it. A line for the tool's reply when it joined one, naming it
     /// in the person's words.
@@ -238,6 +258,7 @@ impl Runtime {
             return Ok(());
         }
         journal.requests().link(request, ticket, None, Link::Linked, now_secs()).map_err(|e| e.to_string())?;
+        self.fill_app(squad, ticket, Some(request), None);
         if let Some(was) = was.filter(|w| *w != request) {
             self.request_moved(squad, was);
         }
@@ -260,11 +281,13 @@ impl Runtime {
             && store.link(of_parent, ticket, Some(f.parent), Link::FollowUp, now).is_ok()
         {
             request = Some(of_parent);
+            self.fill_app(squad, ticket, request, Some(f.parent));
         }
         let Some(request) = request else { return };
         let qa = journal.ticket(ticket).ok().flatten().and_then(|t| t.design_qa);
         if let Some(qa) = qa.filter(|qa| store.of_ticket(*qa).is_none()) {
             let _ = store.link(request, qa, Some(ticket), Link::Check, now);
+            self.fill_app(squad, qa, Some(request), Some(ticket));
         }
         self.request_moved(squad, request);
     }

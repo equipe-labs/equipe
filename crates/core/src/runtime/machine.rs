@@ -42,8 +42,10 @@ impl Runtime {
     /// What members' commands left running once the shell that started them
     /// was gone — a dev server, a Playwright script — stopped once its ticket
     /// is closed (`leftovers::orphans`, `leftovers::verdict`): only processes
-    /// a member started, never one whose ticket is open or can't be told.
-    /// Every few minutes, off the loop; on a daemon watching the real machine.
+    /// a member started, never one whose ticket is open or can't be told. And
+    /// members' browser servers an earlier daemon left (`leftovers::stray_browsers`),
+    /// at the first minute tick after a restart and every few minutes after.
+    /// Off the loop; on a daemon watching the real machine.
     pub(super) fn reap_orphans(&mut self) {
         if !self.config.watch_disk || self.machine.reaped_at.is_some_and(|at| at.elapsed() < REAP_EVERY) {
             return;
@@ -74,6 +76,10 @@ impl Runtime {
                 for line in reap(&going) {
                     crate::daemon_log!("equipe: {line}");
                 }
+            }
+            // Members' browser servers an earlier daemon started and never closed: no one can reach them now.
+            for line in crate::leftovers::close_browsers(&crate::leftovers::stray_browsers()) {
+                crate::daemon_log!("equipe: {line}");
             }
         });
     }

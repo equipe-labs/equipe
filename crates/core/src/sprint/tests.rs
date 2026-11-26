@@ -553,6 +553,8 @@ fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
         remaining: vec![],
         images: Vec::new(),
         updated_at: None,
+        started_at: None,
+        app: None,
         priority: Default::default(),
         rank: 0,
     }

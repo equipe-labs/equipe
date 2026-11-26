@@ -96,6 +96,8 @@ and hand it in. Nothing else waits on this ticket — don't make other tickets d
             priority: equipe_protocol::Priority::Urgent,
             rank: 0,
             updated_at: None,
+            started_at: None,
+            app: None,
             design_qa: None,
             plan: None,
             model: None,

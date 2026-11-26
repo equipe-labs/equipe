@@ -327,6 +327,8 @@ mod tests {
             label: None, remaining: vec![],
             images: Vec::new(),
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(),
             rank: 0,
         }
@@ -365,6 +367,8 @@ mod tests {
             owner: Some(owner.into()),
             note: Some("Waiting on you:\n- [ ] Create the store account".into()),
             updated_at: Some(NOW - days * DAY),
+            started_at: None,
+            app: None,
             ..ticket_with(TicketStatus::Waiting)
         };
         let fresh = wait(4, 1, "backend");
@@ -426,6 +430,8 @@ mod tests {
             label: None, remaining: vec![],
             images: Vec::new(),
             updated_at: Some(at),
+            started_at: None,
+            app: None,
             priority: Default::default(),
             rank: 0,
         };

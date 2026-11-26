@@ -874,6 +874,8 @@ mod tests {
             priority: Default::default(),
             rank: 0,
             updated_at: None,
+            started_at: None,
+            app: None,
         };
         let id = journal.create_ticket(&ticket).unwrap();
         journal.set_ticket_work(id, &crate::journal::TicketWork { worktree: Some(worktree.to_owned()), ..Default::default() }).unwrap();

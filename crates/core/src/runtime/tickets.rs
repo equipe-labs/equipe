@@ -189,6 +189,8 @@ impl Runtime {
             priority: draft.priority,
             rank,
             updated_at: None,
+            started_at: None,
+            app: None,
         };
         let no_squad = say!(self, "error.no_squad", squad = squad);
         let journal = self.journal(squad).ok_or(no_squad)?;

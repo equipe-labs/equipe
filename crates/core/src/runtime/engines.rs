@@ -1864,6 +1864,8 @@ mod tests {
             priority: Default::default(),
             rank: 0,
             updated_at: None,
+            started_at: None,
+            app: None,
             images: Default::default(),
         }
     }

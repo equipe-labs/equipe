@@ -3214,6 +3214,8 @@ mod tests {
             asks: vec![],
             label: None, remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(), rank: 0,
         }
     }

@@ -266,6 +266,8 @@ mod tests {
             priority: Default::default(),
             rank: 0,
             updated_at: None,
+            started_at: None,
+            app: None,
             design_qa: None,
             landing: false,
             plan: None,

@@ -1033,9 +1033,40 @@ impl Store<'_> {
     }
 }
 
+/// The product a request is about on a hosted team that runs several: the
+/// app name in the note its screen adds when the person writes with a
+/// project picked (`[equipe: project fern-studio. …]`). `None` without one.
+pub fn app_of(words: &str) -> Option<String> {
+    const MARK: &str = "[equipe: project ";
+    let at = words.find(MARK)? + MARK.len();
+    let name: String = words[at..].chars().take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-').collect();
+    words[at + name.len()..].starts_with('.').then_some(())?;
+    app_name(&name)
+}
+
+/// `name` when it is an app name: lowercase letters, digits and dashes, 1–63
+/// long, neither starting nor ending with a dash.
+pub fn app_name(name: &str) -> Option<String> {
+    let ok = (1..=63).contains(&name.len())
+        && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && !name.starts_with('-')
+        && !name.ends_with('-');
+    ok.then(|| name.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_request_written_with_a_project_picked_names_its_app() {
+        let words = "Make the logo bigger\n\n[equipe: project fern-studio. The person wrote this while looking at the project \"Fern\" (app name fern-studio).]";
+        assert_eq!(app_of(words).as_deref(), Some("fern-studio"));
+        assert_eq!(app_of("Make the logo bigger"), None);
+        assert_eq!(app_of("[equipe: project -bad. x]"), None);
+        assert_eq!(app_of("[equipe: project Fern. x]"), None, "not an app name");
+        assert_eq!(app_of("[equipe: project fern"), None, "cut short");
+    }
     use crate::i18n::{Lang, core};
 
     fn ticket(id: TicketId, title: &str, status: TicketStatus) -> Ticket {
@@ -1063,6 +1094,8 @@ mod tests {
             priority: Default::default(),
             rank: 0,
             updated_at: Some(1_000),
+            started_at: None,
+            app: None,
             design_qa: None,
             landing: false,
             plan: None,

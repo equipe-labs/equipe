@@ -30,7 +30,7 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
     }
     let Ticket {
         id, title, body: _, status, kind, label, owner, assignee, project, depends_on, branch, worktree, execution, merged, off_main, created_by, note: _, asks: _,
-        remaining: _, images: _, priority, rank, updated_at, design_qa, plan, model, landing, flow: _,
+        remaining: _, images: _, priority, rank, updated_at, started_at, app, design_qa, plan, model, landing, flow: _,
     } = ticket;
     Ticket {
         id: *id,
@@ -56,6 +56,8 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
         priority: *priority,
         rank: *rank,
         updated_at: *updated_at,
+        started_at: *started_at,
+        app: app.clone(),
         design_qa: *design_qa,
         plan: plan.clone(),
         model: model.clone(),
@@ -840,6 +842,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
                     "plan": { "type": "string", "description": "The plan it is cut from: its path, as `write_plan` gave it, or its slug. The ticket links to it, and is listed in its `tickets`." },
                     "tests": { "type": "array", "items": { "type": "string" }, "description": "With `plan`: the test plan's cases this ticket must pass (`TP-1`, `TP-3`). They are copied into its body, word for word, for its owner and QA." },
                     "idea": { "type": "boolean", "description": "The person's idea, kept for later rather than done now: it waits on the board as an idea, which nothing starts and nothing asks about, until the PM puts it to them when its time comes. Use it whenever they float something for someday — 'later', 'an idea', 'not now but' — and keep their own words in the body, with what led to it." },
+                    "app": { "type": "string", "description": "On a team with several products: the app name of the one it is for (fern-studio). Left out, the request's or the ticket it came of." },
                     "request": { "type": "integer", "description": "The person's request it serves (3 for R-3); 0 when it serves none of them. Left out, a ticket made while working on a request's ticket joins that request, and one made in answer to the person joins their one open request — with more than one open, equipe asks which." },
                     "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` names, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
                     "steps": STEPS_SCHEMA.clone(),
@@ -865,12 +868,13 @@ It waits on the board as a proposal until the PM or the person accepts it."
         }),
         json!({
             "name": crate::flow::CHECK_STEPS,
-            "description": "The checklist of the ticket you hold: tick off items as each is done (`done`, by number) and add the items its work needs (`add`) — a spec, the build, a check, a fix of what you found — instead of tickets of their own.",
+            "description": "The checklist of the ticket you hold: tick off items as each is done (`done`, by number) and add the items its work needs (`add`) — a spec, the build, a check, a fix of what you found — instead of tickets of their own. Re-planning? Name in `replace` the open items your new ones take the place of: never list an item the checklist already has (equipe leaves out repeats), so the person never sees the same step twice.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "done": { "type": "array", "items": { "type": "integer" }, "description": "Items done, by number from 1." },
                     "add": STEPS_SCHEMA.clone(),
+                    "replace": { "type": "array", "items": { "type": "integer" }, "description": "Open items, by number, that the items in `add` replace: they leave the checklist. Done items stay." },
                 },
             },
         }),
@@ -2005,6 +2009,8 @@ mod tests {
             asks: vec![],
             label: None, remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
         }

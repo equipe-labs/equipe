@@ -122,23 +122,59 @@ pub fn checklist(flow: &TicketFlow) -> String {
         .join("\n")
 }
 
-/// Tick off items `done` (numbered from 1) by `by`; add `added` at the end.
+/// How an item reads when two are compared: case, spacing and a closing
+/// full stop aside — "Put it live." and "put it  live" are one item.
+fn same_item(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ").trim_end_matches(['.', '。', '!', '！']).to_lowercase()
+}
+
+/// Tick off items `done` (numbered from 1) by `by`; take out the open items
+/// `replace` (a re-plan: what `added` takes the place of); then add `added`
+/// at the end — each one the checklist doesn't have already, so a member who
+/// re-plans by listing its items again never leaves the same item twice.
 /// What it says back, or why it can't.
-pub fn tick(flow: &mut TicketFlow, done: &[usize], added: Vec<TicketStep>, by: &str) -> Result<String, String> {
-    if let Some(bad) = done.iter().find(|n| **n == 0 || **n > flow.steps.len()) {
-        return Err(format!("There is no item {bad}: the checklist has {} (numbered from 1).", flow.steps.len()));
+pub fn tick(flow: &mut TicketFlow, done: &[usize], replace: &[usize], added: Vec<TicketStep>, by: &str) -> Result<String, String> {
+    let has = flow.steps.len();
+    if let Some(bad) = done.iter().chain(replace).find(|n| **n == 0 || **n > has) {
+        return Err(format!("There is no item {bad}: the checklist has {has} (numbered from 1)."));
+    }
+    if let Some(both) = replace.iter().find(|n| done.contains(n)) {
+        return Err(format!("Item {both} can't be both done and replaced."));
+    }
+    if let Some(kept) = replace.iter().find(|n| flow.steps[**n - 1].done) {
+        return Err(format!("Item {kept} is done — it stays. Only open items are replaced."));
     }
     for n in done {
         let item = &mut flow.steps[n - 1];
         item.done = true;
         item.by = Some(by.to_owned());
     }
-    let added_n = added.len();
-    flow.steps.extend(added);
+    let mut gone: Vec<usize> = replace.to_vec();
+    gone.sort_unstable();
+    gone.dedup();
+    for n in gone.iter().rev() {
+        flow.steps.remove(n - 1);
+    }
+    let (mut added_n, mut repeated) = (0, 0);
+    for item in added {
+        let key = same_item(&item.text);
+        if flow.steps.iter().any(|s| same_item(&s.text) == key) {
+            repeated += 1;
+            continue;
+        }
+        flow.steps.push(item);
+        added_n += 1;
+    }
     let (ticked, all) = flow.progress();
     let mut said = format!("{ticked} of {all} done.");
     if added_n > 0 {
         said.push_str(&format!(" {added_n} added."));
+    }
+    if !gone.is_empty() {
+        said.push_str(&format!(" {} replaced.", gone.len()));
+    }
+    if repeated > 0 {
+        said.push_str(&format!(" {repeated} already on it, not added again."));
     }
     Ok(said)
 }
@@ -532,6 +568,8 @@ mod tests {
             priority: Default::default(),
             rank: 0,
             updated_at: None,
+            started_at: None,
+            app: None,
             design_qa: None,
             plan: None,
             model: None,
@@ -560,10 +598,10 @@ mod tests {
         let mut flow = TicketFlow { driver: Some("designer".into()), steps: default_steps(true, TicketKind::Code, None, words), slice: true, ..Default::default() };
         assert_eq!(next_holder(&flow, "designer").as_deref(), Some(FRONTEND));
         assert_eq!(left_for(&flow, "designer-2").len(), 2, "its own item and the one nobody is named on");
-        assert_eq!(tick(&mut flow, &[1], vec![], "designer").unwrap(), "1 of 3 done.");
-        assert!(tick(&mut flow, &[4], vec![], "designer").is_err());
+        assert_eq!(tick(&mut flow, &[1], &[], vec![], "designer").unwrap(), "1 of 3 done.");
+        assert!(tick(&mut flow, &[4], &[], vec![], "designer").is_err());
         let added = steps_arg(&json!({ "add": ["Empty state", { "text": "Check on a phone", "who": "qa" }] }), "add").unwrap();
-        assert_eq!(tick(&mut flow, &[], added, "frontend").unwrap(), "1 of 5 done. 2 added.");
+        assert_eq!(tick(&mut flow, &[], &[], added, "frontend").unwrap(), "1 of 5 done. 2 added.");
         let text = checklist(&flow);
         assert!(text.starts_with("1. [x] "), "{text}");
         assert!(text.contains("(by designer)"));
@@ -573,6 +611,24 @@ mod tests {
         let picked = picked_up(&baton_note("designer", "Prototype in design/sessions/x/"), Some(&flow), "frontend-2");
         assert!(picked.starts_with("Baton from designer: Prototype in design/sessions/x/"));
         assert!(picked.contains("check_steps"));
+    }
+
+    #[test]
+    fn a_re_plan_replaces_items_and_never_repeats_one() {
+        let steps = |texts: &[&str]| texts.iter().map(|t| step(t, None)).collect::<Vec<_>>();
+        let mut flow = TicketFlow { steps: steps(&["Pick the logo", "Put it in the header", "실제 주소에 올리기"]), ..Default::default() };
+        tick(&mut flow, &[1], &[], vec![], "designer").unwrap();
+        // The frontend lists its own plan: the item already there isn't added again.
+        let said = tick(&mut flow, &[], &[], steps(&["Put it in the header.", "Add the favicon", "실제 주소에  올리기"]), "frontend").unwrap();
+        assert_eq!(said, "1 of 4 done. 1 added. 2 already on it, not added again.");
+        assert_eq!(flow.steps.iter().filter(|s| s.text.starts_with("실제")).count(), 1);
+        // A re-plan names the open items its new ones take the place of.
+        let said = tick(&mut flow, &[], &[2, 4], steps(&["Header and app icon"]), "frontend").unwrap();
+        assert_eq!(said, "1 of 3 done. 1 added. 2 replaced.");
+        assert_eq!(flow.steps.iter().map(|s| s.text.as_str()).collect::<Vec<_>>(), ["Pick the logo", "실제 주소에 올리기", "Header and app icon"]);
+        assert!(tick(&mut flow, &[], &[1], vec![], "frontend").unwrap_err().contains("done — it stays"));
+        assert!(tick(&mut flow, &[2], &[2], vec![], "frontend").is_err());
+        assert!(tick(&mut flow, &[], &[9], vec![], "frontend").is_err());
     }
 
     #[test]

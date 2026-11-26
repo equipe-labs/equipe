@@ -309,7 +309,7 @@ pub fn orphans() -> Vec<Orphan> {
             if !env.is_empty() && var(crate::guard::MEMBER_ENV).is_none_or(|m| m.is_empty()) {
                 return None;
             }
-            Some(Orphan { pid: s.pid, cwd: s.cwd, tag: var(RUN_ENV).and_then(|t| Tag::parse(&t)), command })
+            Some(Orphan { pid: s.pid, cwd: s.cwd, tag: var(RUN_ENV).and_then(|t| Tag::parse(&t)), command: shortened(&command) })
         })
         .collect()
 }
@@ -328,6 +328,56 @@ pub fn reap(orphans: &[(Orphan, String)]) -> Vec<String> {
         }
     }
     orphans.iter().map(|(o, why)| format!("stopped process {} left running by a member ({why}): {}", o.pid, o.command)).collect()
+}
+
+// ── browser servers a daemon that is gone left running ──
+
+/// Whether `command` runs one of equipe's member browser servers
+/// (`crate::browser::launch`): Playwright's MCP server with its output in
+/// equipe's browser folder (`<temp>/equipe-browser/<squad>/<member>`) or its
+/// profile under equipe's (`<home>/browser/profiles/…`) — the npm launcher,
+/// its shell or the server itself. Nobody else's Playwright is ever one.
+pub fn browser_server(command: &str) -> bool {
+    (command.contains("@playwright/mcp") || command.contains("playwright-mcp"))
+        && (command.contains("/equipe-browser/") || command.contains("/browser/profiles/"))
+}
+
+/// Members' browser servers handed to the system: the daemon that started
+/// them is gone — restarted, updated, killed — and its new self never knew
+/// them, so nothing would ever close them. Each holds ~100 MB, and on a team
+/// machine that restarts its daemon a few times a day they piled up by the
+/// dozen. A server of a daemon running now has that daemon (or its npm
+/// launcher) as parent, never the system, and is never one of these. Only a
+/// hidden (`--headless`) one: a browser on the person's screen may be in
+/// their hands — a sign-in half done — and is theirs to close.
+pub fn stray_browsers() -> Vec<Orphan> {
+    let me = std::process::id();
+    running()
+        .into_iter()
+        .filter(|s| s.pid != me && parent(s.pid) == Some(1))
+        .filter_map(|s| {
+            let (_, command) = environment(s.pid)?;
+            (browser_server(&command) && command.contains("--headless")).then(|| Orphan { pid: s.pid, cwd: s.cwd, tag: None, command: shortened(&command) })
+        })
+        .collect()
+}
+
+/// Close `strays` ([`stray_browsers`]): each with all it started — its group,
+/// as `crate::browser::launch` makes one — asked politely, then for good after
+/// a few seconds when still there. What was closed, for the log.
+pub fn close_browsers(strays: &[Orphan]) -> Vec<String> {
+    if strays.is_empty() {
+        return Vec::new();
+    }
+    for o in strays {
+        crate::group::end(o.pid, crate::group::Signal::Terminate);
+    }
+    std::thread::sleep(Duration::from_secs(4));
+    let still: Vec<u32> = stray_browsers().iter().map(|o| o.pid).collect();
+    for o in strays.iter().filter(|o| still.contains(&o.pid)) {
+        crate::group::end(o.pid, crate::group::Signal::Kill);
+    }
+    strays.iter().map(|o| format!("closed browser server {} left running by an earlier daemon: {}", o.pid, o.command)).collect()
 }
 
 /// `pid`'s parent.
@@ -352,7 +402,7 @@ fn parent(_pid: u32) -> Option<u32> {
     None
 }
 
-/// `pid`'s environment, and its command line shortened.
+/// `pid`'s environment, and its whole command line.
 #[cfg(target_os = "macos")]
 fn environment(pid: u32) -> Option<(Vec<String>, String)> {
     let mut mib = [libc::CTL_KERN, libc::KERN_PROCARGS2, pid as libc::c_int];
@@ -380,7 +430,7 @@ fn procargs(buf: &[u8]) -> Option<(Vec<String>, String)> {
     let mut parts = buf[4..].split(|b| *b == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned());
     let _program = parts.next()?;
     let args: Vec<String> = parts.by_ref().take(argc).collect();
-    Some((parts.collect(), shortened(&args.join(" "))))
+    Some((parts.collect(), args.join(" ")))
 }
 
 #[cfg(target_os = "linux")]
@@ -388,7 +438,7 @@ fn environment(pid: u32) -> Option<(Vec<String>, String)> {
     let env = std::fs::read(format!("/proc/{pid}/environ")).ok()?;
     let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
     let split = |b: &[u8]| b.split(|c| *c == 0).filter(|p| !p.is_empty()).map(|p| String::from_utf8_lossy(p).into_owned()).collect::<Vec<_>>();
-    Some((split(&env), shortened(&split(&cmd).join(" "))))
+    Some((split(&env), split(&cmd).join(" ")))
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -500,6 +550,40 @@ mod tests {
         let (env, command) = procargs(&buf).unwrap();
         assert_eq!(env, ["EQUIPE_MEMBER=designer", "EQUIPE_RUN=acme:4:12"]);
         assert_eq!(command, "node -e");
+    }
+
+    #[test]
+    fn only_equipe_s_own_browser_servers_count() {
+        assert!(browser_server("npm exec @playwright/mcp@0.0.83 --headless --user-data-dir /home/t/.equipe/browser/profiles/team/pm --output-dir /tmp/equipe-browser/team/pm --port 43383"));
+        assert!(browser_server("sh -c 'playwright-mcp' --headless --user-data-dir /home/t/.equipe/browser/profiles/team/frontend@run1"));
+        assert!(browser_server("node /home/t/.npm/_npx/381c/node_modules/.bin/playwright-mcp --output-dir /var/folders/x/T/equipe-browser/acme/frontend"));
+        assert!(!browser_server("npx @playwright/mcp@latest --port 8931"), "the person's own");
+        assert!(!browser_server("node /x/playwright/cli.js test --output-dir /tmp/equipe-browser/acme"), "a test run, not the server");
+        assert!(!browser_server("/opt/google/chrome/chrome --user-data-dir=/home/t/.equipe/browser/profiles/team/pm"), "its Chrome goes with the server");
+    }
+
+    #[test]
+    fn a_browser_server_left_by_a_daemon_that_is_gone_is_closed_with_its_group() {
+        // Started the way `browser::launch` starts one — its own group (a job, `set -m`), with a child of its own —
+        // by a shell that then exits, so the system takes it over.
+        let dir = scratch("stray-browser");
+        let out = Command::new("sh")
+            .args(["-c", &format!("set -m; sh -c 'sleep 30 & wait' playwright-mcp --headless --output-dir {}/equipe-browser/acme/pm >/dev/null 2>&1 & echo $!", dir.display())])
+            .stdout(Stdio::piped())
+            .output()
+            .unwrap();
+        let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        if parent(pid) != Some(1) {
+            signal(pid, true);
+            return; // a container's own reaper took it: nothing to tell here
+        }
+        let found = stray_browsers().into_iter().filter(|o| o.pid == pid).collect::<Vec<_>>();
+        assert_eq!(found.len(), 1, "found as a stray browser server");
+        let said = close_browsers(&found);
+        assert!(said[0].contains("left running by an earlier daemon"), "{said:?}");
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!running().iter().any(|s| s.pid == pid), "closed");
     }
 
     #[test]

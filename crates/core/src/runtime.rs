@@ -11361,6 +11361,8 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     asks: vec![],
                     label, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
+                    started_at: None,
+                    app: None,
                     priority: Default::default(), rank: 0,
                 };
                 if let Some(filing) = &filing
@@ -11395,6 +11397,12 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if gate.is_some() {
                     ticket.status = TicketStatus::Proposed;
                 }
+                // The product it is for: as its maker names it, else as the person's request or the ticket it came of says.
+                let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
+                ticket.app = match board::arg_str(&args, "app").map(str::trim).filter(|a| !a.is_empty()) {
+                    Some(app) => Some(crate::requests::app_name(app).ok_or_else(|| format!("`app` is a product's app name, like fern-studio — not {app}."))?),
+                    None => self.app_for(&squad, serving.map(|(r, _, _)| r), serving.and_then(|(_, parent, _)| parent).or(working)),
+                };
                 let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
                 let new_id = journal.create_ticket(&ticket).map_err(|e| e.to_string())?;
                 let _ = journal.ticket_event(new_id, &member, "created", title);
@@ -11474,7 +11482,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 // Its checklist grows at any status still open (`flow`).
                 let steps = crate::flow::steps_arg(&args, "steps")?;
                 if !steps.is_empty() {
-                    let said = self.change_steps(&squad, ticket_id, &[], steps, &member)?;
+                    let said = self.change_steps(&squad, ticket_id, &[], &[], steps, &member)?;
                     let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "steps"));
                     if !other {
                         return Ok(said);

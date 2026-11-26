@@ -1444,6 +1444,8 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
                     asks: vec![],
                     label: None, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
+                    started_at: None,
+                    app: None,
                     priority: Default::default(), rank: 0,
                 })
                 .unwrap();
@@ -1533,6 +1535,8 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
                     asks: vec![],
                     label: None, remaining: Vec::new(), images: Vec::new(),
                     updated_at: None,
+                    started_at: None,
+                    app: None,
                     priority: Default::default(), rank: 0,
                 })
                 .unwrap();
@@ -6633,6 +6637,8 @@ async fn a_design_qa_whose_precheck_a_restart_cut_short_waits_for_it_and_never_s
             label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(),
             rank: 0,
         };
@@ -6689,6 +6695,8 @@ fn held_by_an_open_design_qa(home: &Path, site: &Path, risk: &str) {
         label: None, remaining: Vec::new(),
         images: Vec::new(),
         updated_at: None,
+        started_at: None,
+        app: None,
         priority: Default::default(),
         rank: 0,
     };
@@ -6851,6 +6859,8 @@ fn ticket_in(home: &Path, squad: &str, project: &Path, worktree: &Path) {
             label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(),
             rank: 0,
         })
@@ -7977,6 +7987,8 @@ fn old_ticket(title: &str) -> Ticket {
         remaining: Vec::new(),
         images: Vec::new(),
         updated_at: None,
+        started_at: None,
+        app: None,
         priority: Default::default(),
         rank: 0,
     }

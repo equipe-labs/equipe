@@ -775,6 +775,9 @@ impl Journal {
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN label TEXT", []);
         // How it carries a request: its driver, checklist, baton (JSON, `protocol::TicketFlow`).
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN flow TEXT", []);
+        // When work on it first began (`Ticket::started_at`), and the product it is for (`Ticket::app`).
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN started_at INTEGER", []);
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN app TEXT", []);
         // The effort a member's turn ran at; `NULL`: the engine's own, or a turn from before.
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN effort TEXT", []);
         // How turns on tickets ended when they didn't end as they should: no
@@ -2038,8 +2041,9 @@ impl Journal {
         let at = now();
         self.conn.execute(
             "INSERT INTO tickets (id, title, body, status, owner, assignee, project, depends_on, branch, created_by,
-                                  note, created_at, updated_at, kind, priority, rank, plan, label)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17)",
+                                  note, created_at, updated_at, kind, priority, rank, plan, label, app, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                     CASE WHEN ?4 = 'in_progress' THEN ?12 END)",
             params![
                 id,
                 t.title,
@@ -2058,6 +2062,7 @@ impl Journal {
                 t.rank,
                 t.plan,
                 t.label.map(|l| l.key()),
+                t.app,
             ],
         )?;
         Ok(id as TicketId)
@@ -2068,7 +2073,9 @@ impl Journal {
         self.conn.execute(
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
-                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20, label = ?21
+                                off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20, label = ?21,
+                                app = COALESCE(?22, app),
+                                started_at = CASE WHEN started_at IS NULL AND ?3 = 'in_progress' THEN ?10 ELSE started_at END
              WHERE id = ?11",
             params![
                 t.title,
@@ -2092,9 +2099,16 @@ impl Journal {
                 t.design_qa,
                 t.plan,
                 t.label.map(|l| l.key()),
+                t.app,
             ],
         )?;
         Ok(())
+    }
+
+    /// The product ticket `id` is for ([`Ticket::app`]), when it has none yet.
+    /// Whether it was set.
+    pub fn set_ticket_app(&self, id: TicketId, app: &str) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE tickets SET app = ?1 WHERE id = ?2 AND app IS NULL", params![app, id])? > 0)
     }
 
     /// Set the model and effort a ticket's lanes run on ([`Ticket::model`]).
@@ -2821,7 +2835,7 @@ impl Journal {
             "SELECT t.id, t.title, t.body, t.status, t.owner, t.assignee, t.project, t.depends_on, t.branch, t.created_by, t.note, t.worktree, t.merged, t.kind, t.off_main, t.updated_at,
                     t.priority, t.rank, t.remaining, t.images, t.design_qa, t.plan, t.model,
                     e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause, t.label,
-                    e.waited_for, t.flow
+                    e.waited_for, t.flow, t.started_at, t.app
              FROM tickets t LEFT JOIN ticket_executions e ON e.ticket = t.id {filter} ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(args, |r| {
@@ -2855,6 +2869,8 @@ impl Journal {
                 // Unreadable (a newer daemon's, or damaged): its member's own model, as before.
                 model: r.get::<_, Option<String>>(22)?.and_then(|m| serde_json::from_str(&m).ok()),
                 flow: r.get::<_, Option<String>>(35)?.and_then(|f| serde_json::from_str(&f).ok()),
+                started_at: r.get::<_, Option<i64>>(36)?.map(|at| at.max(0) as u64),
+                app: r.get(37)?,
             };
             // A waiting ticket's asks are kept in its note; they travel as a list.
             t.asks = t.asks();
@@ -4088,6 +4104,8 @@ mod tests {
             asks: vec![],
             label: None, remaining: Vec::new(), images: Vec::new(),
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(), rank: 0,
             kind: TicketKind::Code,
         }
@@ -4273,6 +4291,33 @@ mod tests {
         t.images.clear();
         j.save_ticket(&t).unwrap();
         assert!(j.ticket(1).unwrap().unwrap().images.is_empty());
+    }
+
+    #[test]
+    fn a_ticket_keeps_when_its_work_began_and_the_product_it_is_for() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        j.create_ticket(&Ticket { app: Some("fern-studio".into()), ..ticket("Logo") }).unwrap();
+        let mut t = j.ticket(1).unwrap().unwrap();
+        assert_eq!((t.app.as_deref(), t.started_at), (Some("fern-studio"), None), "not started yet");
+        t.status = TicketStatus::InProgress;
+        j.save_ticket(&t).unwrap();
+        let started = j.ticket(1).unwrap().unwrap().started_at.expect("started when it went in progress");
+        j.conn.execute("UPDATE tickets SET started_at = started_at - 600 WHERE id = 1", []).unwrap();
+        // Handed in, sent back, picked up again: it began when it first began.
+        for status in [TicketStatus::Review, TicketStatus::InProgress] {
+            t.status = status;
+            j.save_ticket(&t).unwrap();
+        }
+        let t = j.ticket(1).unwrap().unwrap();
+        assert_eq!(t.started_at, Some(started - 600));
+        // A product set once stays: a later save without one never clears it, and a later guess never changes it.
+        j.save_ticket(&Ticket { app: None, ..t }).unwrap();
+        assert!(!j.set_ticket_app(1, "other").unwrap());
+        assert_eq!(j.ticket(1).unwrap().unwrap().app.as_deref(), Some("fern-studio"));
+        j.create_ticket(&ticket("Copy")).unwrap();
+        assert!(j.set_ticket_app(2, "fern-studio").unwrap());
+        assert_eq!(j.ticket(2).unwrap().unwrap().app.as_deref(), Some("fern-studio"));
     }
 
     #[test]

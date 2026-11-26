@@ -784,6 +784,8 @@ truncation with the whole text available), hand in again with `waive_findings` s
             label: None, remaining: Vec::new(),
             images: Vec::new(),
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: ticket.priority,
             rank: 0,
         }
@@ -1338,6 +1340,8 @@ mod tests {
             label: None, remaining: vec![],
             images: vec![],
             updated_at: None,
+            started_at: None,
+            app: None,
             priority: Default::default(),
             rank: 0,
         };

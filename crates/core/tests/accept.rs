@@ -634,6 +634,8 @@ fn nothing_accepts_or_merges_but_the_persons_commands() {
             // conflict (`off_main: failed`), tried again a few times — never a new one.
             "runtime.rs: self.merge(&squad, ticket, push);",
             "runtime.rs: None => self.close_ticket(squad, found, TicketStatus::Done),",
+            // Only read: the finished tickets whose spend estimates a new one's (`scope_gate`).
+            "runtime.rs: let done: Vec<TicketId> = tickets.iter().filter(|t| t.status == TicketStatus::Done).map(|t| t.id).rev().take(40).collect();",
             "tickets.rs: board::Move::Accept => self.accept(squad, id, crate::telemetry::Accepter::Person).await,",
             "tickets.rs: board::Move::SendBack => self.reopen(squad, id, String::new()).await,",
             // The person's own words (`Say`), as their card's buttons would: run by `runtime/words.rs` only.

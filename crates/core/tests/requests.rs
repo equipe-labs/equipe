@@ -265,6 +265,48 @@ async fn what_the_person_asks_for_is_one_request_its_tickets_follow_and_its_news
 }
 
 #[tokio::test]
+async fn work_asked_for_with_a_project_picked_is_for_that_product_and_says_when_it_began() {
+    // SAFETY: every test in this file sets it the same, before its daemon starts.
+    unsafe { std::env::set_var("EQUIPE_REQUEST_SETTLE", "0") };
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (claude, _calls) = recording_claude();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 3, member(&repo, "frontend")).await;
+    let ticket = |id: u32| {
+        let handle = handle.clone();
+        async move { handle.snapshot("acme").await.tickets.into_iter().find(|t| t.id == id).unwrap() }
+    };
+
+    // The person writes with a project picked in a hosted team's web: its note names the app.
+    handle.send(Command::Submit { session: 1, text: "Make the logo bigger (LONG)\n\n[equipe: project fern-studio. The person wrote this while looking at the project \"Fern\" (app name fern-studio).]".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    let made = tool(&handle, "pm", "create_ticket", json!({ "title": "Bigger logo", "body": "-", "owner": "frontend" })).await;
+    assert!(made.text.contains("R-1"), "{made:?}");
+    let t = ticket(1).await;
+    assert_eq!(t.app.as_deref(), Some("fern-studio"));
+
+    // Its run starts (its member is free: at once): when is kept. What it files while working is for the same product.
+    until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
+    let started = ticket(1).await.started_at.expect("started");
+    assert!(started > 0);
+    let follow = tool_on(&handle, "frontend", 1, "create_ticket", json!({ "title": "Check the logo on phones", "body": "-", "owner": "qa", "kind": "task", "separate_why": "A check on real phones, nothing on this branch" })).await;
+    assert!(!follow.is_error, "{follow:?}");
+    assert_eq!(ticket(2).await.app.as_deref(), Some("fern-studio"));
+
+    // Named by its maker: that one; a name that isn't an app's is refused.
+    let named = tool(&handle, "pm", "create_ticket", json!({ "title": "Tidy the docs", "body": "-", "owner": "pm", "kind": "task", "app": "docs-site", "request": 0 })).await;
+    assert!(!named.is_error, "{named:?}");
+    assert_eq!(ticket(3).await.app.as_deref(), Some("docs-site"));
+    let odd = tool(&handle, "pm", "create_ticket", json!({ "title": "Tidy more", "body": "-", "owner": "pm", "kind": "task", "app": "Docs Site", "request": 0 })).await;
+    assert!(odd.is_error && odd.text.contains("app name"), "{odd:?}");
+
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn a_ticket_the_person_puts_on_the_board_is_a_request_told_in_the_pms_conversation() {
     // SAFETY: as above.
     unsafe { std::env::set_var("EQUIPE_REQUEST_SETTLE", "0") };
