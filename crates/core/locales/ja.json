@@ -1032,5 +1032,9 @@
   "news.sprint_did_not": "H-{id}「{belief}」: 効果はありませんでした（{numbers}）。",
   "news.sprint_inconclusive": "H-{id}「{belief}」: 判定保留 — 数字ではまだ決着がつきません。",
   "news.sprint_no_events": "H-{id}「{belief}」は公開中ですが、イベント（{events}）が届いていません。直すまで測定できません。",
-  "news.sprint_budget": "スプリント S-{id} は予算の {pct}% を使いました（{spent} / {budget} トークン）。"
+  "news.sprint_budget": "スプリント S-{id} は予算の {pct}% を使いました（{spent} / {budget} トークン）。",
+  "guard.claim_nothing_waiting": "お待ちいただくものはありません|対応いただくことはありません|確認いただくものはありません|お願いすることはありません",
+  "guard.claim_credits_out": "クレジットが切れ|クレジットが不足|クレジットがなくな|クレジットを追加",
+  "guard.claim_live": "公開しました|公開されました|本番に反映|ライブになりました",
+  "guard.promise": "次回|次の修正で|あとで直し|後で直し|直しておきます|修正しておきます"
 }

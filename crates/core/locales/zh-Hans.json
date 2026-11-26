@@ -1032,5 +1032,9 @@
   "news.sprint_did_not": "H-{id}“{belief}”：无效（{numbers}）。",
   "news.sprint_inconclusive": "H-{id}“{belief}”：尚无定论 — 数据还不足以下结论。",
   "news.sprint_no_events": "H-{id}“{belief}”已上线，但它的事件（{events}）没有到达：修好之前无法测量。",
-  "news.sprint_budget": "冲刺 S-{id} 已用掉预算的 {pct}%（{spent} / {budget} 个 token）。"
+  "news.sprint_budget": "冲刺 S-{id} 已用掉预算的 {pct}%（{spent} / {budget} 个 token）。",
+  "guard.claim_nothing_waiting": "没有需要您|没有等您|无需您|不需要您处理",
+  "guard.claim_credits_out": "额度用完|积分用完|点数用完|余额不足|请充值",
+  "guard.claim_live": "已上线|已经上线|已发布到正式|已部署上线",
+  "guard.promise": "下次|之后再修|稍后修复|下次修改时"
 }

@@ -174,9 +174,21 @@ impl Runtime {
         // the monitor's mark is one whichever sender forgot to say so.
         let system = system || text.starts_with(MONITOR_MARK);
         if system {
-            if self.sessions.get(&session).is_some_and(|s| s.squad.as_deref() == Some(squad.as_str())) {
-                self.say_as_system(session, text).await;
+            if !self.sessions.get(&session).is_some_and(|s| s.squad.as_deref() == Some(squad.as_str())) {
+                return;
             }
+            // A note the platform says needs nothing now ("when you next tell the person…"): it goes with the member's
+            // next turn instead of starting one. Each wake re-reads the PM's whole conversation; at o1path (2026-11-26)
+            // $4.05 of the PM's $9.25 went to wakes, many for notes like these.
+            if later {
+                let session = self.route(session);
+                if let Some(s) = self.sessions.get_mut(&session) {
+                    s.briefing.push(text);
+                }
+                self.save_waiting(session);
+                return;
+            }
+            self.say_as_system(session, text).await;
             return;
         }
         // Files sent with it are kept in the uploads and named in the message,

@@ -171,6 +171,19 @@ impl Runtime {
         })
     }
 
+    /// The request a new ticket serves by the tickets its words name (`T-17`):
+    /// the first named ticket that serves one — itself, or the work it is a
+    /// check or follow-up of.
+    pub(super) fn serving_by_mention(&self, squad: &str, title: &str, body: &str) -> Serving {
+        let journal = self.journals.get(squad)?;
+        let store = journal.requests();
+        crate::requests::mentioned(&format!("{title}\n{body}")).into_iter().find_map(|t| {
+            let own = store.of_ticket(t).map(|r| (r, t));
+            own.or_else(|| journal.follow_up(t).and_then(|f| store.of_ticket(f.root).map(|r| (r, f.root)).or_else(|| store.of_ticket(f.parent).map(|r| (r, f.parent)))))
+                .map(|(request, on)| (request, Some(on), Link::Made))
+        })
+    }
+
     /// The person's open requests a ticket put on the board from session
     /// `id` could answer: asked in any conversation of its member, not all
     /// done yet, and asked within [`rules::ASKED_WITHIN`] (`true`) or still

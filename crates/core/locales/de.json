@@ -1044,5 +1044,9 @@
   "news.sprint_did_not": "H-{id} „{belief}“: hat nicht gewirkt ({numbers}).",
   "news.sprint_inconclusive": "H-{id} „{belief}“: offen – die Zahlen entscheiden es nicht.",
   "news.sprint_no_events": "H-{id} „{belief}“ ist live, aber seine Events ({events}) kommen nicht an: messbar erst, wenn das behoben ist.",
-  "news.sprint_budget": "Sprint S-{id} hat {pct} % seines Budgets verbraucht ({spent} von {budget} Tokens)."
+  "news.sprint_budget": "Sprint S-{id} hat {pct} % seines Budgets verbraucht ({spent} von {budget} Tokens).",
+  "guard.claim_nothing_waiting": "nichts wartet auf sie|nichts wartet auf dich|nichts zu tun für sie|keine aktion von ihnen|von ihnen wird nichts gebraucht",
+  "guard.claim_credits_out": "guthaben ist aufgebraucht|keine credits mehr|credits aufgebraucht|credits sind aufgebraucht|credits aufladen",
+  "guard.claim_live": "ist jetzt live|ist live|ging live|ist jetzt online",
+  "guard.promise": "beim nächsten|nächstes mal|ich behebe das später|werde ich beheben|später beheben"
 }

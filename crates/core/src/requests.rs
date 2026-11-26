@@ -89,6 +89,28 @@ pub fn title_of(words: &str) -> String {
     cut(&line, TITLE_CHARS)
 }
 
+/// The tickets `text` names (`T-17`), in order, each once.
+pub fn mentioned(text: &str) -> Vec<TicketId> {
+    let mut out = Vec::new();
+    let b = text.as_bytes();
+    let mut i = 0;
+    while i + 2 < b.len() {
+        let boundary = i == 0 || !b[i - 1].is_ascii_alphanumeric();
+        if boundary && b[i] == b'T' && b[i + 1] == b'-' && b[i + 2].is_ascii_digit() {
+            let digits: String = text[i + 2..].chars().take_while(char::is_ascii_digit).collect();
+            if let Ok(n) = digits.parse::<TicketId>()
+                && !out.contains(&n)
+            {
+                out.push(n);
+            }
+            i += 2 + digits.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// The person's words in one line, cut short: what tells two requests
 /// asked minutes apart from each other.
 pub fn words_line(words: &str) -> String {
@@ -281,7 +303,9 @@ fn phase(tickets: &[&Ticket], asking: &[TicketId], shipped: &Shipped) -> (Phase,
 }
 
 fn how_far(tickets: &[&Ticket], asking: &[TicketId]) -> (Phase, Option<String>, Option<u64>) {
-    let kept: Vec<&&Ticket> = tickets.iter().filter(|t| t.status != TicketStatus::Cancelled).collect();
+    // An idea kept for later (a designer's polish put in the backlog, "start it when you want it") is no work under
+    // way for the request: it neither keeps a finished request "up next" nor counts as what it brought.
+    let kept: Vec<&&Ticket> = tickets.iter().filter(|t| t.status != TicketStatus::Cancelled && t.status != TicketStatus::Idea).collect();
     if kept.is_empty() {
         return (Phase::Cancelled, None, tickets.iter().filter_map(|t| t.updated_at).max());
     }
@@ -1220,6 +1244,26 @@ mod tests {
         assert_eq!(s.parts.len(), 1);
         assert_eq!(s.parts[0].phase, Phase::Live, "{s:?}");
         assert!(s.done, "a running check doesn't hold the request open");
+    }
+
+    #[test]
+    fn the_tickets_a_text_names() {
+        assert_eq!(mentioned("디자이너 QA에서 나온 다듬을 점 (outputs/T-17 참고), T-15와 T-17"), [17, 15]);
+        assert!(mentioned("AT-3 and IT-4x").is_empty());
+        assert_eq!(mentioned("T-9"), [9]);
+    }
+
+    #[test]
+    fn a_design_idea_kept_for_later_never_keeps_a_finished_request_up_next() {
+        // o1path, 2026-11-26: the logo landed (T-16), its designer kept the polish in the backlog (T-19, an idea) and
+        // equipe's check (T-20) passed — the request still said "up next".
+        let links = vec![link(16, None, Link::Asked), link(19, Some(16), Link::FollowUp), link(20, Some(16), Link::Check)];
+        let mut logo = ticket(16, "New logo", TicketStatus::Done);
+        logo.merged = Some(true);
+        let backlog = ticket(19, "Design backlog of T-16", TicketStatus::Idea);
+        let check = ticket(20, "Design QA: T-16", TicketStatus::Done);
+        let s = status(&links, &[logo, backlog, check], &[]);
+        assert!(s.parts.iter().all(|p| p.phase != Phase::Queued), "{s:?}");
     }
 
     #[test]

@@ -1231,6 +1231,14 @@ async fn critique_command(mut ask: critique::Ask, brief: Option<PathBuf>, engine
             return Err(format!("{}: no such picture", p.display()));
         }
     }
+    // A member's ticket gets a few critiques, not a loop of them (`critique::ROUNDS_PER_TICKET`).
+    if let Ok(ticket) = std::env::var(equipe_core::cost_levers::TICKET_ENV)
+        && !ticket.trim().is_empty()
+        && let Some(common) = git_common_dir()
+    {
+        let n = critique::take_round(&critique::rounds_file(&common, &ticket), &ticket)?;
+        eprintln!("critique {n} of at most {} for {ticket}", critique::ROUNDS_PER_TICKET);
+    }
     let design = PathBuf::from(equipe_core::design::DIR);
     let brief = brief.or_else(|| Some(design.join("brand.md")).filter(|p| p.is_file()));
     if let Some(file) = &brief {
@@ -1251,6 +1259,13 @@ async fn critique_command(mut ask: critique::Ask, brief: Option<PathBuf>, engine
     // Run in the project's main checkout, it is committed on main at once: never left to block a merge.
     keep_on_main(&design, std::slice::from_ref(&kept), "equipe: keep a design critique");
     Ok(())
+}
+
+/// The repository's shared git folder, from here (`git rev-parse --git-common-dir`).
+fn git_common_dir() -> Option<PathBuf> {
+    let out = std::process::Command::new("git").args(["rev-parse", "--path-format=absolute", "--git-common-dir"]).stderr(std::process::Stdio::null()).output().ok()?;
+    let dir = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    (out.status.success() && !dir.is_empty()).then(|| PathBuf::from(dir))
 }
 
 /// What a design command wrote in `dir`, committed on main when `dir` is

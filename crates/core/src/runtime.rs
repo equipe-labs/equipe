@@ -143,6 +143,8 @@ mod verify;
 mod guards;
 mod told;
 mod withdraw;
+mod turn_budget;
+mod reply_guard;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -233,6 +235,9 @@ pub fn board_call_timeout_secs() -> u64 {
 
 /// How long a stopped Codex turn has to wind down before it is cut.
 const STOP_GRACE: Duration = Duration::from_secs(8);
+
+/// A turn's running total is told to the loop each time it grew by this many tokens.
+const SPENT_STEP: u64 = 250_000;
 
 /// How often the Codex plan's usage is read while a squad has Codex members,
 /// and at most when a screen attaches.
@@ -898,6 +903,8 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         engine_pages: HashMap::new(),
         tool_repeats: HashMap::new(),
         qa_budgets: HashMap::new(),
+        turn_budgets: HashMap::new(),
+        reply_guard: reply_guard::Guard::default(),
         codex_listing: false,
         providers: HashMap::new(),
         questions: HashMap::new(),
@@ -1333,6 +1340,9 @@ enum Internal {
     /// A turn whose answer was in but whose engine didn't end it was ended
     /// by its provider, as completed: why ([`Activity::Settled`]).
     TurnSettled { session: SessionId, why: String },
+    /// Every token a turn's requests processed so far (its running total,
+    /// said each [`SPENT_STEP`] or so): a ticket's budget is held mid-turn.
+    TurnSpent { session: SessionId, tokens: u64 },
     /// Every process, as a look at members' commands found them (`None`: `ps` couldn't say).
     Processes(Option<Vec<crate::command_watch::Proc>>),
     Done(TurnDone),
@@ -1706,6 +1716,10 @@ struct Runtime {
     /// For each design QA, review or audit turn: its tool calls so far, and
     /// whether it was told its budget ran out (`runtime::design_qa`).
     qa_budgets: HashMap<SessionId, design_qa::Budget>,
+    /// Each running ticket turn's spend against its ticket's budget (`turn_budget`).
+    turn_budgets: HashMap<SessionId, turn_budget::TurnBudget>,
+    /// What the PM's conversation is about to tell the person, held for its checks (`reply_guard`).
+    reply_guard: reply_guard::Guard,
     /// A listing for the screens is under way.
     codex_listing: bool,
     /// What each model provider connected here listed, by its id.
@@ -2019,6 +2033,7 @@ impl Wake {
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
             Wake::Internal(Internal::TurnSettled { .. }) => Borrowed("a settled turn ended"),
+            Wake::Internal(Internal::TurnSpent { .. }) => Borrowed("a turn's spend"),
             Wake::Internal(Internal::Processes(_)) => Borrowed("what members' commands run"),
             Wake::Internal(Internal::Done(_)) => Borrowed("a turn's end"),
             Wake::Internal(Internal::ConversationTitle(_)) => Borrowed("a conversation's title"),
@@ -2328,6 +2343,7 @@ impl Runtime {
                 Internal::DeskSaved { session, name, saved } => self.desk_saved(session, &name, saved),
                 Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
                 Internal::TurnSettled { session, why } => self.turn_settled(session, &why),
+                Internal::TurnSpent { session, tokens } => self.turn_spent(session, tokens),
                 Internal::Processes(procs) => self.on_processes(procs),
                 Internal::Done(done) => self.on_turn_done(done).await,
                 Internal::ConversationTitle(done) => self.on_conversation_title(done),
@@ -2666,12 +2682,20 @@ impl Runtime {
     fn publish_in(&mut self, squad: Option<&str>, mut event: Event) {
         // Every key equipe keeps is cut out of what leaves a member (`squad_keys`).
         if let Some(flush) = self.guard_event(&mut event) {
-            self.publish_in_guarded(squad, flush);
+            self.publish_checked(squad, flush);
         }
         if matches!(&event, Event::TextDelta { text, .. } if text.is_empty()) {
             return;
         }
-        self.publish_in_guarded(squad, event);
+        self.publish_checked(squad, event);
+    }
+
+    /// Through the PM's reply guard (`reply_guard`): what the person is told
+    /// is held until it is checked.
+    fn publish_checked(&mut self, squad: Option<&str>, event: Event) {
+        for event in self.reply_guard_event(event) {
+            self.publish_in_guarded(squad, event);
+        }
     }
 
     fn publish_in_guarded(&mut self, squad: Option<&str>, mut event: Event) {
@@ -2722,6 +2746,7 @@ impl Runtime {
         if let Event::TurnEnded { session, .. } = &event {
             self.tool_repeats.remove(session);
             self.qa_budgets.remove(session);
+            self.turn_budgets.remove(session);
             if !self.sign_out_after.is_empty() {
                 self.turn_ended_for_sign_out(*session);
             }
@@ -5605,8 +5630,13 @@ runbooks and reports live there, and work across the projects or on running them
             self.publish(Event::Thread { session: id, project: about.clone() });
         }
         self.publish_said(id, &text, false);
-        // What the person writes in is what the squad writes for them.
-        if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&text))
+        // What the person writes in is what the squad writes for them: their
+        // own words only — never the platform's notes (a monitor's nudge is
+        // English whatever they write in; read as theirs, it turned a Korean
+        // founder's squad to English after every wake) nor equipe's hidden
+        // note under a message.
+        let persons: String = split_said(&text, &self.system_said).into_iter().filter(|(system, _)| !system).map(|(_, part)| part).collect::<Vec<_>>().join("\n\n");
+        if let (Some(squad), Some(language)) = (self.sessions.get(&id).and_then(|s| s.squad.clone()), crate::language::detect(&crate::language::persons_words(&persons)))
             && let Some(journal) = self.journal(&squad)
             && journal.language().as_deref() != Some(language)
         {
@@ -6669,6 +6699,7 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                     let controls = codex_app::Controls { steering: Some(steer_rx), asks: Some(ask_tx), stop: Some(stop_rx), stop_subagent: Some(stop_sub_rx), fallback, refused_retry, ..Default::default() };
                     let mut bound: Option<crate::engine_bind::Bound> = None;
+                    let mut spent_told = 0u64;
                     let outcome = codex_app::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
                             streamed = true;
@@ -6704,6 +6735,13 @@ runbooks and reports live there, and work across the projects or on running them
                             }
                             Activity::ModelRefused { model, instead } => {
                                 let _ = internal.send(Internal::CodexModelRefused { session: id, model, instead: Some(instead) });
+                            }
+                            // The turn's running total, now and then: a ticket's budget holds mid-turn.
+                            Activity::Spent(tokens) => {
+                                if tokens >= spent_told + SPENT_STEP {
+                                    spent_told = tokens;
+                                    let _ = internal.send(Internal::TurnSpent { session: id, tokens });
+                                }
                             }
                             activity => {
                                 if let Some(event) = activity_event(id, activity) {
@@ -6960,6 +6998,7 @@ runbooks and reports live there, and work across the projects or on running them
                     }
                     let mut plan = engines::ToldPlan::default();
                     let mut bound: Option<crate::engine_bind::Bound> = None;
+                    let mut spent_told = 0u64;
                     let controls = claude_code::Controls { steering: Some(steer_rx), work_over: Some(over), wind_down: Some(wind_rx), ..Default::default() };
                     let outcome = claude_code::run_turn_with(&binary, &cwd, request, controls, |activity| {
                         if matches!(activity, Activity::Text(_)) {
@@ -6974,6 +7013,14 @@ runbooks and reports live there, and work across the projects or on running them
                         }
                         if let Activity::Settled(why) = activity {
                             let _ = internal.send(Internal::TurnSettled { session: id, why });
+                            return;
+                        }
+                        // The turn's running total, now and then: a ticket's budget holds mid-turn.
+                        if let Activity::Spent(tokens) = activity {
+                            if tokens >= spent_told + SPENT_STEP {
+                                spent_told = tokens;
+                                let _ = internal.send(Internal::TurnSpent { session: id, tokens });
+                            }
                             return;
                         }
                         if let Some(event) = plan.heard(&activity, std::time::Instant::now()).and_then(|again| activity_event(id, again)) {
@@ -9143,6 +9190,8 @@ with what else waits.]"
             Some(Err(err)) if err == worktree::NO_ORIGIN => {
                 line.push_str(" (it has no remote to push to)");
                 news = "news.merged_local";
+                // A cloud team's repository lives on its machine: main merged is main out, and it goes live next.
+                went_out = crate::go_live::cloud();
             }
             Some(Err(err)) => {
                 let message = match worktree::conflicts_with_origin(&err) {
@@ -11275,6 +11324,13 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 // whenever more than one of theirs could be it, the member is asked to name it.
                 let named_request = self.request_arg(&squad, &args)?;
                 let serving = if idea { None } else { self.serving(&squad, id, named_request)? };
+                // Work that names a ticket of one of the person's requests (its design QA's polish: "the polish from
+                // T-17") is part of that request, not work nobody asked for: at o1path (2026-11-26) three small layout
+                // fixes from a request's own design QA waited for a yes the person should never have been asked.
+                let serving = match serving {
+                    None if !idea && named_request != Some(crate::requests::NO_REQUEST) => self.serving_by_mention(&squad, title, body),
+                    other => other,
+                };
                 let named_request = named_request.filter(|r| *r != crate::requests::NO_REQUEST);
                 // A kind of work the person stopped is turned away — unless they asked for it again since.
                 if !idea {

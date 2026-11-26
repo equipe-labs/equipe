@@ -78,6 +78,11 @@ pub struct GoLive {
 }
 
 impl GoLive {
+    /// A cloud team's ([`CLOUD_COMMAND`]): soon after a landing.
+    pub fn cloud() -> Self {
+        GoLive { command: CLOUD_COMMAND.to_owned(), from: None, timeout: DEFAULT_TIMEOUT, quiet: CLOUD_QUIET }
+    }
+
     /// A command the PM confirmed (`set_deploy`), with the defaults.
     pub fn confirmed(command: &str) -> Self {
         GoLive { command: command.trim().to_owned(), from: None, timeout: DEFAULT_TIMEOUT, quiet: DEFAULT_QUIET }
@@ -144,14 +149,49 @@ pub enum Found {
 /// How `repo` goes live: its file on main, else the command the PM
 /// `confirmed`, else a suggestion from the project's own files. Off the loop.
 pub fn find(repo: &Path, confirmed: Option<&str>) -> Found {
+    find_on(repo, confirmed, cloud())
+}
+
+/// [`find`], saying whether this machine is a cloud team's (`cloud`): there a
+/// project with no command of its own goes live by [`CLOUD_COMMAND`].
+pub fn find_on(repo: &Path, confirmed: Option<&str>, cloud: bool) -> Found {
     match declared_on_main(repo) {
         Ok(Some(go)) => Found::Command(go),
         Err(err) => Found::Invalid(err),
         Ok(None) => match confirmed.map(str::trim).filter(|c| !c.is_empty()) {
             Some(command) => Found::Command(GoLive::confirmed(command)),
+            None if cloud => Found::Command(GoLive::cloud()),
             None => Found::Undeclared { suggestion: worktree::main_branch(repo).ok().and_then(|main| suggest(repo, &format!("refs/heads/{main}"))) },
         },
     }
+}
+
+// ── a cloud team ──
+
+/// How a cloud team's products go live after a landing: the platform's own
+/// tool, in the main checkout. It builds each app whose folder changed since
+/// its live version, deploys it from main and checks it answers live
+/// (equipe-cloud `mcp/deploy-main.mjs`), and fails when one didn't. Before,
+/// nothing deployed main after a landing: the PM made tickets only to deploy
+/// (three at o1path, 2026-11-26, Opus turns with no code change) and the
+/// person was told "not live yet" after it was.
+pub const CLOUD_COMMAND: &str = "equipe-platform deploy_main";
+/// A cloud team's landings go live this soon after the last of them.
+pub const CLOUD_QUIET: u64 = 60;
+/// Set to `0` to keep a cloud team from deploying by itself (the PM deploys).
+pub const CLOUD_ENV: &str = "EQUIPE_CLOUD_DEPLOY";
+
+/// Whether this machine is a cloud team's that deploys main by itself: the
+/// platform's settings hold a key, its tool is on the PATH, and it isn't turned off.
+pub fn cloud() -> bool {
+    if std::env::var(CLOUD_ENV).is_ok_and(|v| v.trim() == "0") {
+        return false;
+    }
+    crate::sprint::platform::Platform::discover().is_some() && on_path("equipe-platform")
+}
+
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(program).is_file()))
 }
 
 // ── discovery ──
@@ -244,7 +284,10 @@ pub fn checkout(repo: &Path, go: &GoLive) -> Result<(PathBuf, String), Blocked> 
         return Err(Blocked::From { from: from.clone(), main });
     }
     let dir = worktree::checked_out_at(repo, &main).ok_or_else(|| Blocked::NotCheckedOut { main: main.clone() })?;
-    let status = worktree::git(&dir, &["status", "--porcelain", "--untracked-files=all"]).map_err(|err| Blocked::NoMain(err.to_string()))?;
+    // The platform's tool deploys exact commits (untracked files never reach it), and a cloud team's main checkout
+    // holds files equipe keeps there uncommitted for a while (its team notes): only changed tracked files block it.
+    let untracked = if go.command == CLOUD_COMMAND { "--untracked-files=no" } else { "--untracked-files=all" };
+    let status = worktree::git(&dir, &["status", "--porcelain", untracked]).map_err(|err| Blocked::NoMain(err.to_string()))?;
     let files: Vec<String> =
         status.lines().filter_map(|l| l.trim_start().split_once(' ').map(|(_, path)| path.trim().to_owned())).filter(|p| !p.is_empty()).collect();
     if !files.is_empty() {
@@ -256,7 +299,9 @@ pub fn checkout(repo: &Path, go: &GoLive) -> Result<(PathBuf, String), Blocked> 
     }
     let head = worktree::git(&dir, &["rev-parse", "HEAD"]).map_err(|err| Blocked::NoMain(err.to_string()))?;
     let origin = worktree::git(repo, &["rev-parse", "-q", "--verify", &format!("refs/remotes/origin/{main}^{{commit}}")]).ok();
-    if origin.as_deref() != Some(head.as_str()) {
+    // A repository kept on this machine only (a cloud team's) has no origin to be at: its main is all there is.
+    let no_remote = origin.is_none() && worktree::git(repo, &["remote"]).is_ok_and(|r| r.trim().is_empty());
+    if !no_remote && origin.as_deref() != Some(head.as_str()) {
         return Err(Blocked::NotAtOrigin { dir, main, head, origin });
     }
     Ok((dir, head))
@@ -649,17 +694,39 @@ mod tests {
     #[test]
     fn a_project_declares_its_command_or_gets_one_suggested() {
         let declared = repo("declared", &[(FILE, r#"{ "command": "make ship" }"#)]);
-        assert_eq!(find(&declared, Some("ignored")), Found::Command(GoLive { command: "make ship".into(), ..GoLive::confirmed("x") }), "the file wins over the PM's");
+        assert_eq!(find_on(&declared, Some("ignored"), false), Found::Command(GoLive { command: "make ship".into(), ..GoLive::confirmed("x") }), "the file wins over the PM's");
         let pnpm = repo("pnpm", &[("package.json", r#"{"scripts":{"deploy:prod":"sh x.sh"}}"#), ("pnpm-lock.yaml", "x")]);
-        assert_eq!(find(&pnpm, None), Found::Undeclared { suggestion: Some("pnpm run deploy:prod".into()) });
-        assert_eq!(find(&pnpm, Some("pnpm run deploy:prod")), Found::Command(GoLive::confirmed("pnpm run deploy:prod")));
+        assert_eq!(find_on(&pnpm, None, false), Found::Undeclared { suggestion: Some("pnpm run deploy:prod".into()) });
+        assert_eq!(find_on(&pnpm, Some("pnpm run deploy:prod"), false), Found::Command(GoLive::confirmed("pnpm run deploy:prod")));
         let make = repo("make", &[("Makefile", "deploy:\n\t./ship\n")]);
-        assert_eq!(find(&make, None), Found::Undeclared { suggestion: Some("make deploy".into()) });
+        assert_eq!(find_on(&make, None, false), Found::Undeclared { suggestion: Some("make deploy".into()) });
         let plain = repo("plain", &[]);
-        assert_eq!(find(&plain, None), Found::Undeclared { suggestion: None });
+        assert_eq!(find_on(&plain, None, false), Found::Undeclared { suggestion: None });
         let broken = repo("broken", &[(FILE, "{")]);
-        assert!(matches!(find(&broken, Some("x")), Found::Invalid(_)), "a broken file runs nothing, not the PM's either");
+        assert!(matches!(find_on(&broken, Some("x"), false), Found::Invalid(_)), "a broken file runs nothing, not the PM's either");
         for dir in [declared, pnpm, make, plain, broken] {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
+
+    #[test]
+    fn a_cloud_teams_project_with_no_command_of_its_own_goes_live_by_the_platforms_tool() {
+        let plain = repo("cloud-plain", &[]);
+        assert_eq!(find_on(&plain, None, true), Found::Command(GoLive::cloud()));
+        assert_eq!(GoLive::cloud().command, CLOUD_COMMAND);
+        assert_eq!(find_on(&plain, Some("make ship"), true), Found::Command(GoLive::confirmed("make ship")), "the PM's command wins");
+        let declared = repo("cloud-declared", &[(FILE, r#"{ "command": "make ship" }"#)]);
+        assert!(matches!(find_on(&declared, None, true), Found::Command(go) if go.command == "make ship"), "and the project's file");
+        // Kept on this machine only (no remote): main is all there is, so a clean main deploys.
+        git_in(&plain, &["remote", "remove", "origin"]);
+        std::fs::write(plain.join("a.txt"), "a").unwrap();
+        git_in(&plain, &["add", "-A"]);
+        git_in(&plain, &["commit", "-q", "-m", "local"]);
+        assert!(checkout(&plain, &GoLive::cloud()).is_ok());
+        std::fs::write(plain.join("CLAUDE.md"), "notes").unwrap();
+        assert!(checkout(&plain, &GoLive::cloud()).is_ok(), "an untracked file never reaches the platform's deploy");
+        assert!(matches!(checkout(&plain, &GoLive::confirmed("true")), Err(Blocked::Dirty { .. })), "a project's own command still wants it clean");
+        for dir in [plain, declared] {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
