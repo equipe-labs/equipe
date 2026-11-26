@@ -54,6 +54,36 @@
     "notice.refresh_clean": "책상에서의 다음 대화는 깨끗하게 시작합니다 — 기억과 보드는 그대로 이어집니다.",
     "notice.refresh_summary": "책상에서의 다음 대화는 이 대화의 요약과 기억에서 새로 시작합니다.",
     "notice.remembered": "✎ {name}이(가) 스쿼드를 위해 기억합니다: {what} · /memory에서 스쿼드가 아는 것을 봅니다",
-    "notice.restarted": "equipe가 다시 시작했습니다. T-{id}을(를) 다시 이어갑니다."
+    "notice.restarted": "equipe가 다시 시작했습니다. T-{id}을(를) 다시 이어갑니다.",
+    "news.resting": "{name} 휴식 중 · 다시 깨울 때까지 새 일을 받지 않아요",
+    "news.awake": "{name} 복귀 · 다시 새 일을 받아요"
+  },
+  "en": {
+    "news.resting": "{name} is resting · no new work until you wake them",
+    "news.awake": "{name} is back · takes new work again"
+  },
+  "de": {
+    "news.resting": "{name} pausiert · keine neue Arbeit, bis du sie zurückholst",
+    "news.awake": "{name} ist zurück · nimmt wieder neue Arbeit an"
+  },
+  "es": {
+    "news.resting": "{name} está descansando · sin trabajo nuevo hasta que lo despiertes",
+    "news.awake": "{name} ha vuelto · acepta trabajo nuevo otra vez"
+  },
+  "fr": {
+    "news.resting": "{name} est au repos · aucun nouveau travail tant que vous ne le réveillez pas",
+    "news.awake": "{name} est de retour · reprend du nouveau travail"
+  },
+  "ja": {
+    "news.resting": "{name} は休憩中 · 起こすまで新しい仕事を受けません",
+    "news.awake": "{name} が復帰 · また新しい仕事を受けます"
+  },
+  "zh-Hans": {
+    "news.resting": "{name} 正在休息 · 在你唤醒之前不接新工作",
+    "news.awake": "{name} 回来了 · 重新接新工作"
+  },
+  "zh-Hant": {
+    "news.resting": "{name} 正在休息 · 在你喚醒之前不接新工作",
+    "news.awake": "{name} 回來了 · 重新接新工作"
   }
 }

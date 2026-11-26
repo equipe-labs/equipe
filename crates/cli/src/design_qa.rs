@@ -315,7 +315,9 @@ pub(crate) async fn run(r: &Run) -> Result<precheck::Report, String> {
     }
     let mut preview = None;
     if !by_url.is_empty() {
-        let origin = match (&r.url, &config.preview) {
+        // No preview in the map: a Vite project serves itself (`precheck::default_preview`).
+        let preview_command = config.preview.clone().or_else(|| precheck::default_preview(&root));
+        let origin = match (&r.url, &preview_command) {
             (Some(url), _) => Some(url.clone()),
             (None, Some(command)) => match Preview::start(command, &root, config.ready.as_deref(), &out).await {
                 Ok(p) => {

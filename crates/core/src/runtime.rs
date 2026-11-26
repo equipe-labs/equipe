@@ -7611,6 +7611,8 @@ runbooks and reports live there, and work across the projects or on running them
         self.hold_obsolete(squad, &mut tickets, first);
         // A ticket whose turns cost its budget already goes to the PM instead (`guards`).
         self.hold_over_budget(squad, &mut tickets);
+        // All work paused by the person: only what they asked for since starts.
+        self.hold_for_pause(squad, &mut tickets);
         let single_project = self.projects(squad).len() == 1;
         // Members equipe once brought in for a rush finish what they hold and take nothing new.
         let helpers = self.journals.get(squad).map(Journal::helpers).unwrap_or_default();
@@ -8213,6 +8215,7 @@ can't, and don't open a new ticket for it."
             && !self.engines.held(squad, engine)
             && self.engine_out(squad, engine).is_none()
             && !self.turn_ends.paused(squad)
+            && self.pause_holding(squad, ticket).is_none()
             && journal.resumed_by_itself_last(ticket).is_ok_and(|again| !again)
     }
 
@@ -9797,6 +9800,19 @@ there, end your turn, and carry on when they say they're done."
             let text = say!(self, "notice.blocked", action = action);
             self.publish(Event::Notice { undo: None, session: id, text });
             self.audit(&call.squad, ticket, "equipe", "blocked", &action);
+            return;
+        }
+        // All work paused by the person: nothing goes live until they say go, but work for what they asked since.
+        if crate::stops::GOES_LIVE.iter().any(|t| tool == format!("mcp__equipe-platform__{t}"))
+            && let Some(pause) = self.pause_in_force(&call.squad)
+            && ticket.is_none_or(|t| self.pause_holding(&call.squad, t).is_some())
+        {
+            let why = format!(
+                "Not deployed: the person paused all the team's work (S-{}) and nothing goes live until they say go. Tell them it is ready and waits for their go; when they say go, `stop_work` with `lift`.",
+                pause.id
+            );
+            let _ = reply.send(verdict(Decision::Deny, &input, &why));
+            self.audit(&call.squad, ticket, "equipe", "refused (paused)", &action);
             return;
         }
         if let Some(why) = self.off_limits(id, &call.squad, &tool, &action, &input) {

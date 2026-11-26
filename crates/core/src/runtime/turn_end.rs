@@ -534,6 +534,11 @@ impl Runtime {
         if self.budget_stop(id, &squad, &name, ticket) {
             return true;
         }
+        // All work paused by the person: the run is left as it is, carried on when they say go.
+        if self.pause_holding(&squad, ticket).is_some() {
+            crate::daemon_log!("equipe: {squad}: T-{ticket}'s run waits: all work is paused until the person says go");
+            return false;
+        }
         self.count_ending(&squad, if ending.silent { turn_ending::WENT_SILENT } else { turn_ending::NO_END }, Some(ticket), &name);
         if !nudged {
             self.nudge(id, &squad, &name, ticket, ending.silent);
@@ -650,7 +655,7 @@ impl Runtime {
 
     /// Resume run `id`'s conversation once with the ways to finish its
     /// ticket — after a turn that went silent ([`SILENT_AFTER`]), saying so.
-    fn nudge(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId, silent: bool) {
+    pub(super) fn nudge(&mut self, id: SessionId, squad: &str, name: &str, ticket: TicketId, silent: bool) {
         self.count_ending(squad, turn_ending::NUDGED, Some(ticket), name);
         let designer = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| m.role == design_qa::DESIGNER);
         let qa = if designer { "\n- a design QA ticket checked: `design_qa` with your verdict;" } else { "" };

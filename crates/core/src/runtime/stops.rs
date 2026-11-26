@@ -72,6 +72,7 @@ impl Runtime {
         paths: Vec<String>,
         request: Option<RequestId>,
         ticket: Option<TicketId>,
+        all: bool,
     ) -> Result<Stop, String> {
         let (chain, checks) = self.stop_chain(squad, request, ticket);
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
@@ -84,13 +85,13 @@ impl Runtime {
             words => words.to_owned(),
         };
         let terms: Vec<String> = terms.into_iter().map(|t| t.trim().to_owned()).filter(|t| !t.is_empty()).collect();
-        let terms = if !terms.is_empty() || !paths.is_empty() {
+        let terms = if !terms.is_empty() || !paths.is_empty() || all {
             terms
         } else {
             let titles: Vec<&str> = tickets.iter().filter(|t| !checks.contains(&t.id)).map(|t| t.title.as_str()).collect();
             if titles.is_empty() { rules::terms_of(&[words.as_str()]) } else { rules::terms_of(&titles) }
         };
-        let mut stop = Stop { id: 0, words, terms, paths, request, tickets: chain, by: by.to_owned(), since: now_secs(), cancelled: Vec::new(), refused: 0 };
+        let mut stop = Stop { id: 0, words, terms, paths, request, tickets: chain, by: by.to_owned(), since: now_secs(), cancelled: Vec::new(), refused: 0, all };
         stop.id = journal.stops().create(&stop).map_err(|e| e.to_string())?;
         // Its open tickets go now: whoever works one stops.
         let open: Vec<TicketId> = tickets.iter().filter(|t| !t.status.is_closed()).map(|t| t.id).collect();
@@ -101,15 +102,50 @@ impl Runtime {
         if let Some(journal) = self.journals.get(squad) {
             let _ = journal.stops().set_cancelled(stop.id, &stop.cancelled);
         }
+        // What of the chain is committed but not on main, kept so it never lands later inside other work;
+        // and what of it the live site already shows, for the person to decide on.
+        let (heads, live) = self.stopped_heads(squad, &tickets);
+        if !heads.is_empty()
+            && let Some(journal) = self.journals.get(squad)
+        {
+            let _ = journal.stops().set_heads(stop.id, &heads);
+        }
         let cancelled = if stop.cancelled.is_empty() {
             "nothing was open".to_owned()
         } else {
             format!("cancelled {}", stop.cancelled.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", "))
         };
-        let line = format!(
-            "The person stopped “{}” (S-{}): {cancelled}. equipe turns away new tickets of it until they lift the stop — don't plan it, file it, or follow it up.",
-            stop.words, stop.id
-        );
+        let live_line = if live.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Already on the live site: {}. Tell the person in plain words that it is live and ask whether to keep it or take it off — \
+until they answer, neither merge it nor deploy anything that adds to it.",
+                live.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ")
+            )
+        };
+        let line = if stop.all {
+            let in_flight = self.in_flight(squad);
+            let flight = if in_flight.is_empty() {
+                "Nothing else was under way.".to_owned()
+            } else {
+                format!(
+                    "Under way when it began, held as it is (nothing of it lands or goes live): {}.",
+                    in_flight.iter().map(|(t, title, status)| format!("T-{t} “{title}” ({status})")).collect::<Vec<_>>().join("; ")
+                )
+            };
+            format!(
+                "The person paused all the team's work (S-{}): “{}” — {cancelled}. Until they say go, no ticket starts — equipe's own \
+checks, speed and design reviews too — nothing is merged and nothing is deployed, but work for what they ask after this. {flight}{live_line} \
+Tell them in plain words what was under way and that it waits for their go. When they say go, call `stop_work` with `lift`.",
+                stop.id, stop.words
+            )
+        } else {
+            format!(
+                "The person stopped “{}” (S-{}): {cancelled}. equipe turns away new tickets of it until they lift the stop — don't plan it, file it, or follow it up.{live_line}",
+                stop.words, stop.id
+            )
+        };
         let shown = say!(self, "news.stopped", words = stop.words, count = stop.cancelled.len());
         self.brief_pm(squad, line, Some(shown));
         crate::daemon_log!("equipe: {squad}: stop S-{} by {by}: “{}”, terms {:?}, {} ticket(s) cancelled", stop.id, stop.words, stop.terms, stop.cancelled.len());
@@ -122,7 +158,8 @@ impl Runtime {
         if request.is_none() && ticket.is_none() && words.trim().is_empty() {
             return self.squad_error(squad, say!(self, "error.stop_what"));
         }
-        if let Err(err) = self.stop_work(squad, "you", words, Vec::new(), Vec::new(), request, ticket).await {
+        let all = request.is_none() && ticket.is_none() && rules::pauses_all(words);
+        if let Err(err) = self.stop_work(squad, "you", words, Vec::new(), Vec::new(), request, ticket, all).await {
             self.squad_error(squad, err);
         }
     }
@@ -134,10 +171,136 @@ impl Runtime {
         if !journal.stops().lift(id, now_secs()).unwrap_or(false) {
             return;
         }
-        let line = format!("The person lifted the stop on “{}” (S-{id}): that work may be put on the board again when it is asked for.", stop.words);
+        let line = if stop.all {
+            format!("The person said go (S-{id} lifted): the team's work goes on — what was held starts, lands and goes live as usual.")
+        } else {
+            format!("The person lifted the stop on “{}” (S-{id}): that work may be put on the board again when it is asked for.", stop.words)
+        };
         let shown = say!(self, "news.stop_lifted", words = stop.words);
         self.brief_pm(squad, line, Some(shown));
         self.publish_stops(squad);
+        if stop.all {
+            self.carry_on_after_pause(squad);
+        }
+    }
+
+    // ── a pause of all work ──
+
+    /// The pause of all work in force, if any.
+    pub(super) fn pause_in_force(&self, squad: &str) -> Option<Stop> {
+        rules::pause(&self.stops_in_force(squad)).cloned()
+    }
+
+    /// The pause `ticket` waits for: one is in force and the ticket doesn't
+    /// serve what the person asked after it began.
+    pub(super) fn pause_holding(&self, squad: &str, ticket: TicketId) -> Option<Stop> {
+        let pause = self.pause_in_force(squad)?;
+        let journal = self.journals.get(squad)?;
+        let asked = journal.requests().of_ticket(ticket).and_then(|r| journal.requests().get(r)).map(|row| row.asked_at);
+        (!rules::goes_on_in(&pause, asked)).then_some(pause)
+    }
+
+    /// Before a dispatch: while a pause holds, only tickets for what the person
+    /// asked since start.
+    pub(super) fn hold_for_pause(&self, squad: &str, tickets: &mut Vec<Ticket>) {
+        if self.pause_in_force(squad).is_none() {
+            return;
+        }
+        tickets.retain(|t| t.status != TicketStatus::Todo || self.pause_holding(squad, t.id).is_none());
+    }
+
+    /// What `accept_work` is told for a ticket a pause holds: it isn't landed.
+    pub(super) fn pause_refusal(pause: &Stop, ticket: TicketId) -> String {
+        format!(
+            "T-{ticket} isn't landed: the person paused all the team's work (S-{}) until they say go. It stays as it is; tell them in plain \
+words that it is ready and waits for their go — never merge or deploy it before.",
+            pause.id
+        )
+    }
+
+    /// The open tickets under way in `squad`: (id, title, status).
+    fn in_flight(&mut self, squad: &str) -> Vec<(TicketId, String, &'static str)> {
+        self.tickets(squad)
+            .iter()
+            .filter_map(|t| {
+                let status = match t.status {
+                    TicketStatus::InProgress => "in progress",
+                    TicketStatus::Review => "handed in",
+                    TicketStatus::Done if t.not_on_main() => "accepted, not merged",
+                    _ => return None,
+                };
+                Some((t.id, t.title.clone(), status))
+            })
+            .take(12)
+            .collect()
+    }
+
+    /// Of `tickets`, the branch tips not on main yet — (ticket, commit) — and
+    /// which tickets the live site already carries (a cloud team's live
+    /// commits contain their tip, or their landing).
+    fn stopped_heads(&self, squad: &str, tickets: &[Ticket]) -> (Vec<(TicketId, String)>, Vec<TicketId>) {
+        let live_commits = crate::sprint::platform::Platform::discover().and_then(|p| crate::sprint::platform::live_commits_cached(&p)).unwrap_or_default();
+        let mut heads = Vec::new();
+        let mut live = Vec::new();
+        for t in tickets {
+            let (Some(branch), Some(repo)) = (t.branch.as_deref(), t.project.as_deref().and_then(|p| worktree::repo_root(p).ok())) else { continue };
+            let Some(tip) = rev_parse(&repo, branch) else { continue };
+            let on_main = rev_parse(&repo, "main").is_some_and(|main| crate::cloud_live::contains(&repo, &tip, &main));
+            if !on_main {
+                heads.push((t.id, tip.clone()));
+            }
+            if live_commits.iter().any(|l| crate::cloud_live::has_commit(&repo, l) && crate::cloud_live::contains(&repo, &tip, l)) {
+                live.push(t.id);
+            }
+        }
+        let _ = squad;
+        (heads, live)
+    }
+
+    /// The person's stopped work `ticket`'s branch would bring to main: the
+    /// first stopped commit it contains that main doesn't, as (stop, ticket).
+    pub(super) fn carries_stopped(&self, squad: &str, ticket: &Ticket) -> Option<(StopId, TicketId)> {
+        let heads = self.journals.get(squad)?.stops().heads_in_force();
+        if heads.is_empty() {
+            return None;
+        }
+        let (branch, repo) = (ticket.branch.as_deref()?, ticket.project.as_deref().and_then(|p| worktree::repo_root(p).ok())?);
+        let tip = rev_parse(&repo, branch)?;
+        let main = rev_parse(&repo, "main");
+        heads.into_iter().find(|(_, of, commit)| {
+            *of != ticket.id
+                && crate::cloud_live::has_commit(&repo, commit)
+                && crate::cloud_live::contains(&repo, commit, &tip)
+                && !main.as_deref().is_some_and(|m| crate::cloud_live::contains(&repo, commit, m))
+        }).map(|(stop, of, _)| (stop, of))
+    }
+
+    /// The pause lifted: runs it held go on, and what waited starts.
+    fn carry_on_after_pause(&mut self, squad: &str) {
+        let idle: Vec<(SessionId, String, TicketId)> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| s.squad.as_deref() == Some(squad) && s.turn.is_none() && s.run_of.is_some())
+            .filter_map(|(&id, s)| {
+                let work = s.work.as_ref().filter(|w| !w.preparing && !w.end.stopped && !w.end.nudged)?;
+                Some((id, s.name()?.to_owned(), work.ticket))
+            })
+            .collect();
+        for (id, name, ticket) in idle {
+            self.nudge(id, squad, &name, ticket, false);
+        }
+        let _ = self.internal.send(Internal::Dispatch);
+    }
+
+    /// `stop_work` with `lift`: the person said go (or lifts a stop) in their own words.
+    fn lift_by_words(&mut self, squad: &str, id: StopId) -> Result<String, String> {
+        let stop = self.journals.get(squad).and_then(|j| j.stops().get(id)).ok_or_else(|| format!("S-{id} isn't in force."))?;
+        self.lift_stop(squad, id);
+        Ok(if stop.all {
+            "Lifted: the team's work goes on — what was held starts, lands and goes live as usual. Tell the person in one plain line.".to_owned()
+        } else {
+            format!("Lifted S-{id}: “{}” may be put on the board again when it is asked for.", stop.words)
+        })
     }
 
     /// The stop a new ticket would break, if any — counted, and the screens
@@ -182,6 +345,9 @@ impl Runtime {
             return Err("Only the person stops a kind of work, in their own words to you. If you think something should stop, ask them.".into());
         }
         let args = &call.arguments;
+        if let Some(id) = board::arg_id(args, "lift") {
+            return self.lift_by_words(&call.squad, id as StopId);
+        }
         let words = board::arg_str(args, "words").map(str::trim).filter(|w| !w.is_empty()).ok_or("Give `words`: what the person said to stop, in their words.")?;
         let terms = board::arg_strs(args, "terms");
         let paths = board::arg_strs(args, "paths");
@@ -192,19 +358,44 @@ impl Runtime {
         {
             return Err(format!("There is no T-{t}."));
         }
-        if terms.is_empty() && paths.is_empty() && request.is_none() && ticket.is_none() {
-            return Err("Say what it covers: `terms` (words its tickets' titles have, e.g. \"component gallery\"), `paths`, a `ticket` of it or its `request`.".into());
+        // "Pause everything", in the PM's call or in the person's own words: all of the team's work.
+        let all = board::arg_str(args, "scope") == Some("all")
+            || rules::pauses_all(words)
+            || self.person_said_to(member).iter().any(|(text, at)| now.saturating_sub(*at) <= crate::requests::ASKED_WITHIN && rules::pauses_all(text));
+        if !all && terms.is_empty() && paths.is_empty() && request.is_none() && ticket.is_none() {
+            return Err("Say what it covers: `terms` (words its tickets' titles have, e.g. \"component gallery\"), `paths`, a `ticket` of it or its `request` — or `scope: \"all\"` when they pause all work.".into());
         }
-        let stop = self.stop_work(&call.squad, &call.member, words, terms, paths, request, ticket).await?;
+        if all && let Some(pause) = self.pause_in_force(&call.squad) {
+            if ticket.is_some() || request.is_some() {
+                let _ = self.stop_work(&call.squad, &call.member, words, terms, paths, request, ticket, false).await?;
+            }
+            return Ok(format!("All work is paused already (S-{}): nothing starts, lands or goes live until the person says go. Tell them so in one plain line.", pause.id));
+        }
+        let stop = self.stop_work(&call.squad, &call.member, words, terms, paths, request, ticket, all).await?;
+        if stop.all {
+            return Ok(format!(
+                "Paused all work as S-{}. {}; nothing starts, lands or goes live until the person says go (`stop_work` with `lift`: {}). Tell them in plain words what was under way and that it waits for their go.",
+                stop.id,
+                if stop.cancelled.is_empty() { "Nothing was cancelled".to_owned() } else { format!("Cancelled {}", stop.cancelled.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ")) },
+                stop.id
+            ));
+        }
         let cancelled = if stop.cancelled.is_empty() {
             "No ticket of it was open".to_owned()
         } else {
             format!("Cancelled {}", stop.cancelled.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", "))
         };
         Ok(format!(
-            "Stopped as S-{}. {cancelled}; new tickets of it are turned away (titles with {}) until the person lifts the stop under Your requests. Tell them so in one line.",
+            "Stopped as S-{}. {cancelled}; new tickets of it are turned away (titles with {}) until the person lifts the stop. Tell them so in one plain line, with no stop or ticket numbers.",
             stop.id,
             if stop.terms.is_empty() { "—".to_owned() } else { stop.terms.iter().map(|t| format!("“{t}”")).collect::<Vec<_>>().join(" or ") }
         ))
     }
+}
+
+/// `rev` in the repository at `repo`, as a full commit id.
+fn rev_parse(repo: &std::path::Path, rev: &str) -> Option<String> {
+    let out = std::process::Command::new("git").arg("-C").arg(repo).args(["rev-parse", "--verify", "--quiet", &format!("{rev}^{{commit}}")]).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok()?;
+    let id = String::from_utf8(out.stdout).ok()?.trim().to_owned();
+    (out.status.success() && !id.is_empty()).then_some(id)
 }

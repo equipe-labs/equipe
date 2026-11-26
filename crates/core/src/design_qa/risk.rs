@@ -11,12 +11,14 @@
 //!   states on the UI map, findings the engineer waived, a design look the
 //!   person asked for: a designer looks at it now (**per ticket**), in a light
 //!   session when the report shows enough;
+//! - what the precheck couldn't see — it rendered nothing, too little, or
+//!   failed — never passes: a designer looks at it now, whatever the
+//!   routing. A gate that took no picture has said nothing about the change;
 //! - the other risks — many screens at once, a designer's spec across more
 //!   than one screen, a re-check after a designer's send-back, many UI files
-//!   off the map, what the precheck couldn't see — are recorded and go into
-//!   the daily review, after the change lands; they send the
-//!   change to a designer of its own only while audits keep the routing
-//!   tightened ([`Settings::tight`]);
+//!   off the map — are recorded and go into the daily review, after the
+//!   change lands; they send the change to a designer of its own only while
+//!   audits keep the routing tightened ([`Settings::tight`]);
 //! - everything else goes on without a designer turn and is collected into
 //!   the **daily design review**, one ticket for all of them, with a random
 //!   sample audited on the top tier ([`sample`]); misses tighten the routing
@@ -187,7 +189,7 @@ impl Risk {
     /// Whether this risk alone gets the change a designer turn of its own
     /// while the routing is relaxed: the rest wait for the daily review.
     pub fn needs_designer_now(self) -> bool {
-        matches!(self, Risk::Waived | Risk::NewScreens | Risk::Asked)
+        matches!(self, Risk::Waived | Risk::NewScreens | Risk::Asked | Risk::Unverified)
     }
 
     pub const ALL: [Risk; 9] = [Risk::Waived, Risk::NewScreens, Risk::Broad, Risk::Spec, Risk::Recheck, Risk::Tight, Risk::Unverified, Risk::UnmappedLarge, Risk::Asked];
@@ -258,10 +260,11 @@ impl RouteCall {
 /// Where a hand-in with changed screens goes in `risk_batch`.
 pub fn route(ask: &RouteAsk<'_>) -> RouteCall {
     let call = |route, risks: Vec<Risk>, lite| RouteCall { route, risks, lite };
-    // What the precheck couldn't see lands and is looked at in the daily review — a designer now only while tightened.
-    let unseen = if ask.tight { Route::PerTicket } else { Route::Batch };
+    // What the precheck couldn't see never passes: a gate that took no picture
+    // said nothing about the change, so a designer looks at it now (a follow-up too).
+    let unseen = Route::PerTicket;
     let Some(r) = ask.report else {
-        return if ask.follow_up { call(Route::Batch, Vec::new(), false) } else { call(unseen, vec![Risk::Unverified], false) };
+        return call(unseen, vec![Risk::Unverified], false);
     };
     let blockers = r.new_blockers();
     if !blockers.is_empty() && !ask.waived {
@@ -582,7 +585,7 @@ mod tests {
     fn a_follow_ups_build_gets_no_designer_turn_of_its_own_but_still_meets_the_self_check() {
         let new = report(vec![shot("settings/main/default", true, true), shot("billing/plans/default", true, false)], vec![]);
         assert_eq!(routed(&new, |a| a.follow_up = true), RouteCall { route: Route::Batch, risks: vec![], lite: false }, "into the daily review");
-        assert_eq!(route(&RouteAsk { follow_up: true, ..RouteAsk::default() }).route, Route::Batch, "nothing seen: still no full designer session");
+        assert_eq!(route(&RouteAsk { follow_up: true, ..RouteAsk::default() }).route, Route::PerTicket, "nothing seen: never passed, a designer looks");
         let blocker = Finding::bare("text-clipped", Severity::Blocker, "settings/main/default", "390.light.text-200", true);
         let broken = report(vec![shot("settings/main/default", true, true)], vec![blocker]);
         assert_eq!(routed(&broken, |a| a.follow_up = true).route, Route::Refused, "a new S1/S2 is refused back to its engineer");
@@ -623,17 +626,26 @@ mod tests {
     }
 
     #[test]
-    fn what_the_precheck_could_not_see_lands_and_waits_for_the_daily_review_unless_tightened() {
-        assert_eq!(route(&RouteAsk::default()), RouteCall { route: Route::Batch, risks: vec![Risk::Unverified], lite: false }, "never a hold before landing");
-        assert_eq!(route(&RouteAsk { tight: true, ..RouteAsk::default() }), RouteCall { route: Route::PerTicket, risks: vec![Risk::Unverified], lite: false });
-        assert!(Risk::codes_need_designer_now("broad,new_screens") && !Risk::codes_need_designer_now("unverified,broad") && !Risk::codes_need_designer_now(""));
+    fn what_the_precheck_could_not_see_never_passes_a_designer_looks_now() {
+        // No report at all, relaxed or tightened, a follow-up too: a designer now, never the daily review.
+        let unseen = RouteCall { route: Route::PerTicket, risks: vec![Risk::Unverified], lite: false };
+        assert_eq!(route(&RouteAsk::default()), unseen);
+        assert_eq!(route(&RouteAsk { tight: true, ..RouteAsk::default() }), unseen);
+        assert_eq!(route(&RouteAsk { follow_up: true, ..RouteAsk::default() }), unseen);
+        assert!(Risk::codes_need_designer_now("broad,new_screens") && Risk::codes_need_designer_now("unverified,broad") && !Risk::codes_need_designer_now("broad") && !Risk::codes_need_designer_now(""));
         let failed = Shot { error: Some("timed out".into()), ..shot("settings/main/error", false, true) };
         let half = report(vec![shot("settings/main/default", false, true), failed], vec![]);
-        assert_eq!(routed(&half, |_| {}).risks, [Risk::Unverified]);
+        assert_eq!((routed(&half, |_| {}).risks.as_slice(), routed(&half, |_| {}).route), (&[Risk::Unverified][..], Route::PerTicket));
         let nothing = Report { touched: vec![], ..report(vec![], vec![]) };
         assert_eq!(routed(&nothing, |_| {}).route, Route::Batch, "nothing users see");
         let broken = Report { errors: vec!["the preview didn't start".into()], ..report(vec![], vec![]) };
-        assert_eq!(routed(&broken, |_| {}).risks, [Risk::Unverified]);
+        assert_eq!((routed(&broken, |_| {}).risks.as_slice(), routed(&broken, |_| {}).route), (&[Risk::Unverified][..], Route::PerTicket));
+        // Golden Boot's T-28: a whole-site restyle the precheck rendered nothing of ("the precheck rendered
+        // nothing … low risk") went on without a designer. Now it waits for one.
+        let restyle = Report { touched: vec!["site/home".into(), "site/packages".into(), "site/webinar".into()], unmapped: vec!["src/index.css".into(), "src/components/Hero.tsx".into()], ..report(vec![], vec![]) };
+        assert_eq!(restyle.taken(), 0);
+        let call = routed(&restyle, |_| {});
+        assert_eq!((call.route, call.risks.as_slice()), (Route::PerTicket, &[Risk::Unverified][..]), "a gate that took no picture never passes");
     }
 
     #[test]

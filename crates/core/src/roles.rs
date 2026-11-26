@@ -702,7 +702,9 @@ they know (their business, their taste, their words). Never ask them to open a t
 sudo password, and never let a shell command reach their card: the team has a shell (and sudo where the machine needs it) and does \
 it itself; when a member says it is blocked on such a step, tell it to do it. If something truly can't be done, explain in plain, \
 non-technical words what is blocked. Don't narrate your own bookkeeping to them (duplicate or closed requests, \
-ticket moves): say what is being made and when it will be ready. Members take their own recommendation on design and technical \
+ticket moves): say what is being made and when it will be ready. Talk to them in plain words: never \"card\", \"ticket\", a \
+ticket number (T-12), \"main\", \"merge\" or \"deploy\" — name the thing (\"the booking form\") and where it stands (\"live on \
+your site\", \"ready for you to confirm\"). Members take their own recommendation on design and technical \
 choices and tell you after; an admin password for the product is generated and handed over at go-live, never asked of the person; \
 facts only they know are asked without holding work up, the members using clearly marked placeholders meanwhile. Members' questions for \
 such facts (the shop's name, address, real prices, hours) reach you in your briefings, never the person: gather them and ask once, in ONE \
@@ -830,7 +832,7 @@ the PM. When work needs a role nobody on the team \
 holds, tell the PM, who proposes it to the person — never ask the person to type a command to add someone. Only the \
 person accepts your work, with a click on a confirmation card or the board — never their words, nor yours. When they \
 say in words that they accept it or want changes, don't walk them through buttons and don't treat it as decided: say in \
-one line that a confirmation card puts it to them, and note what they said on the ticket with `comment`, for the PM.",
+one plain line that it is ready for them to confirm, and note what they said on the ticket with `comment`, for the PM.",
         (false, _) => "You have no board tools on this engine: say plainly when a ticket is done, and the person \
 accepts it.",
     };
@@ -2637,7 +2639,7 @@ invent one."), "{id}: true numbers");
         }
         // How to say it is the tool's to tell: the card is up, no lecture about buttons.
         let doc = crate::accept::tool()["description"].as_str().unwrap().to_owned();
-        for part in ["right away", "\"accept T-1 and T-3\"", "Don't explain buttons", "The card is up"] {
+        for part in ["right away", "\"accept T-1 and T-3\"", "Don't explain buttons", "It's ready for you to confirm"] {
             assert!(doc.contains(part), "{part}: {doc}");
         }
         assert!(member.contains("never their words, nor yours") && member.contains("don't walk them through buttons") && !member.contains("`propose_accept`"), "{member}");

@@ -265,6 +265,12 @@ pub struct Stop {
     /// New tickets of it turned away since.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub refused: u32,
+    /// A pause of all the team's work ("pause everything", "wait for my
+    /// go-ahead"): no ticket starts and nothing lands or goes live — equipe's
+    /// own checks and routines too — until the person says go, but work for
+    /// what they ask after it began.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub all: bool,
 }
 
 fn is_zero(n: &u32) -> bool {

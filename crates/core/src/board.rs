@@ -907,7 +907,10 @@ itself once that work is done; never close one to look done.",
             "name": crate::stops::STOP_WORK,
             "description": "Only when the person tells you to stop a kind of work (\"stop polishing the gallery\", \"no more of these\"): \
 equipe cancels the open tickets of it and turns away new ones — yours, anyone's, design follow-ups — until the person lifts \
-the stop. Say what it covers: `terms` its tickets' titles have, `paths`, a `ticket` of its chain or its `request`.",
+the stop. Say what it covers: `terms` its tickets' titles have, `paths`, a `ticket` of its chain or its `request`. When they \
+pause all work (\"pause everything\", \"don't start anything new\", \"wait for my go-ahead\"), give `scope: \"all\"` (with the \
+`ticket`s they named, which are cancelled): nothing starts, lands or goes live — equipe's own checks and reviews too — until \
+they say go; then call it with `lift` and the stop's number.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -916,8 +919,10 @@ the stop. Say what it covers: `terms` its tickets' titles have, `paths`, a `tick
                     "paths": { "type": "array", "items": { "type": "string" }, "description": "Files or folders that work is in." },
                     "ticket": { "type": "integer", "description": "A ticket of it: its chain is cancelled." },
                     "request": { "type": "integer", "description": "The person's request it is (3 for R-3): all of it is cancelled." },
+                    "scope": { "type": "string", "enum": ["all"], "description": "\"all\": they paused all of the team's work until they say go." },
+                    "lift": { "type": "integer", "description": "The person said go, or lifted a stop, in their own words: the stop's number (2 for S-2)." },
                 },
-                "required": ["words"],
+                "required": [],
             },
         }),
         json!({

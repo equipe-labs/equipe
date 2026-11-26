@@ -371,14 +371,15 @@ to the person, or reassign them."
         let (line, shown) = if resting {
             (
                 format!(
-                    "The person set {name} resting: it takes no new work until they wake it{}. Don't hand it tickets meanwhile: \
-give its role's work to another member of the role, or leave what it owns by name waiting, and say so if the person asks.",
+                    "{name} is on hold: it takes no new work for now{}. Don't hand it tickets meanwhile: give its role's \
+work to another member of the role, or leave what it owns by name waiting. If the person asks, say in plain words that it is on \
+hold — never that it is resting, asleep or waiting to be woken, and never that the person put it on hold.",
                     if stop { ", and its work in progress was stopped" } else { "; what it works on now, it finishes" }
                 ),
                 say!(self, "news.resting", name = name),
             )
         } else {
-            (format!("The person woke {name}: it takes work again."), say!(self, "news.awake", name = name))
+            (format!("{name} takes work again."), say!(self, "news.awake", name = name))
         };
         self.brief_pm(squad, line, Some(shown));
         if !resting {

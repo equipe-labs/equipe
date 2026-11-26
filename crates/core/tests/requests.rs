@@ -369,6 +369,63 @@ async fn a_stopped_kind_of_work_is_cancelled_and_turned_away_until_the_person_li
 }
 
 #[tokio::test]
+async fn a_pause_of_all_work_holds_the_teams_own_work_too_until_the_person_says_go() {
+    // Golden Boot (11-24, 23:27): "Please pause all work right now: stop T-29, T-30 and T-31 and don't start anything
+    // new." The stop was kept as the one term "book", and equipe's own speed tickets and reviews ran on meanwhile.
+    // SAFETY: as above.
+    unsafe { std::env::set_var("EQUIPE_REQUEST_SETTLE", "0") };
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (claude, _calls) = recording_claude();
+    let (handle, mut events) = runtime::start(config(&claude, &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    add(&handle, &mut events, 2, member(&repo, "frontend")).await;
+
+    handle.send(Command::Submit { session: 1, text: "Please pause all work right now and don't start anything new.\n(LONG)".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    // The PM keeps it with a term, as on Golden Boot: the person's own words make it a pause of everything.
+    let paused = tool(&handle, "pm", "stop_work", json!({ "words": "stop the book buttons", "terms": ["book"] })).await;
+    assert!(!paused.is_error && paused.text.contains("Paused all work as S-1"), "{paused:?}");
+    let stops = handle.snapshot("acme").await.stops;
+    assert!(stops.len() == 1 && stops[0].all, "{stops:?}");
+
+    // equipe's own work filed meanwhile (a "main is red" speed check, say) goes on the board but doesn't start.
+    let check = tool(&handle, "pm", "create_ticket", json!({ "title": "Main is red: Lighthouse 91", "body": "-", "owner": "frontend" })).await;
+    assert!(!check.is_error, "{check:?}");
+    tokio::time::sleep(Duration::from_millis(1_500)).await;
+    let seen = drain(&mut events);
+    assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { .. })), "nothing starts while paused: {seen:#?}");
+    assert_eq!(handle.snapshot("acme").await.tickets.iter().find(|t| t.id == 1).map(|t| t.status), Some(TicketStatus::Todo));
+    // Nothing is landed while paused.
+    let accept = tool(&handle, "pm", "accept_work", json!({ "tickets": [1], "checked": "-" })).await;
+    assert!(accept.text.contains("paused all the team's work"), "{accept:?}");
+    // Asked again in other words: still one pause.
+    let again = tool(&handle, "pm", "stop_work", json!({ "words": "pause everything", "scope": "all" })).await;
+    assert!(again.text.contains("paused already (S-1)"), "{again:?}");
+
+    // What the person asks for after the pause goes on.
+    handle.send(Command::Interrupt { session: 1 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    handle.send(Command::Submit { session: 1, text: "The FAQ has a spelling mistake in its second answer; correct it when you can.\n(LONG)".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    let typo = tool(&handle, "pm", "create_ticket", json!({ "title": "Fix the FAQ typo", "body": "-", "owner": "frontend", "request": 2 })).await;
+    assert!(!typo.is_error && typo.text.contains("R-2"), "{typo:?}");
+    let started = until(&mut events, |e| matches!(e, Event::WorkStarted { .. })).await;
+    assert!(matches!(started.last(), Some(Event::WorkStarted { ticket: 2, .. })), "the new ask starts: {started:#?}");
+
+    // The person says go, in their words: the PM lifts it and what waited starts.
+    handle.send(Command::Interrupt { session: 1 });
+    until(&mut events, |e| matches!(e, Event::TurnEnded { session: 1, .. })).await;
+    handle.send(Command::Submit { session: 1, text: "ok, go ahead with everything\n(LONG)".into(), about: None });
+    until(&mut events, |e| matches!(e, Event::UserMessage { session: 1, .. })).await;
+    let lifted = tool(&handle, "pm", "stop_work", json!({ "lift": 1 })).await;
+    assert!(!lifted.is_error && lifted.text.contains("goes on"), "{lifted:?}");
+    until(&mut events, |e| matches!(e, Event::StopsChanged { stops, .. } if stops.is_empty())).await;
+    handle.shutdown().await;
+}
+
+#[tokio::test]
 async fn questions_about_a_settled_ticket_are_withdrawn_and_swept_from_before() {
     let repo = repo();
     let home = scratch("home");

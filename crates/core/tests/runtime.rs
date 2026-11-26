@@ -8008,7 +8008,7 @@ async fn a_designers_findings_keep_their_lineage_go_together_and_stop_at_the_bac
 }
 
 #[tokio::test]
-async fn a_polish_follow_up_is_shown_where_its_findings_are_and_gets_no_designer_turn_of_its_own() {
+async fn a_polish_follow_up_is_shown_where_its_findings_are_and_a_designer_looks_when_nothing_could_render_it() {
     use equipe_core::design_qa::follow_up::{FollowUp, Kind, Severity};
     let site = repo();
     let (claude, _recorded) = recording_claude(&screenshot_turn());
@@ -8027,15 +8027,14 @@ async fn a_polish_follow_up_is_shown_where_its_findings_are_and_gets_no_designer
     // Its screenshots of where the finding is are enough: no full range asked.
     let handed = tool(&handle, "frontend", "submit_for_review", serde_json::json!({ "summary": "Gap fixed.", "changes_screens": true, "images": ["shot.png"], "screen_checks": ["widths"] })).await;
     assert!(!handed.is_error, "{handed:?}");
-    // No designer turn: its design QA goes straight into the daily review, and it is the person's to review.
+    // No precheck could run here (no equipe binary): a gate that saw nothing never passes it, so even a
+    // polish follow-up waits for a designer's look instead of going into the daily review unseen.
     let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == 1 && ticket.status == TicketStatus::Review)).await;
     let held = ticket_changed(&seen).into_iter().rev().find(|t| t.id == 1).unwrap();
-    assert_eq!(held.design_qa, None, "not held for a designer");
-    assert!(journal.ticket(2).unwrap().is_none(), "no design QA ticket made for it");
-    let run = journal.design_qa_run(1).unwrap();
-    assert_eq!((run.checked, run.route.as_deref(), run.verdict.as_deref()), (1, Some("batch"), Some("batched")));
-    assert_eq!(journal.design_qa_waiting_for_batch().len(), 1, "into the daily review");
-    assert!(within(&mut events, 1_500).await.iter().all(|e| !matches!(e, Event::WorkStarted { ticket: 2, .. })), "the designer never takes it");
+    assert_eq!(held.design_qa, Some(2), "held for a designer");
+    let run = journal.design_qa_run(2).unwrap();
+    assert_eq!((run.checked, run.route.as_deref(), run.risk.as_deref()), (1, Some("per_ticket"), Some("unverified")));
+    assert!(journal.design_qa_waiting_for_batch().is_empty(), "never into the daily review unseen");
     handle.shutdown().await;
 }
 

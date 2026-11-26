@@ -443,27 +443,9 @@ screen_checks value; missing: {}. Then hand in again.",
             self.start_precheck(squad, ticket.id, ticket, Duration::ZERO);
             return Some(ticket.id);
         }
-        // Risk-based with no precheck to run: nothing is known of the change, and nothing holds it
-        // before landing — the daily review looks at it with main's precheck. Only tightened routing
-        // still gives it a designer's full look first; a quiet follow-up never.
-        let quiet = journal.follow_up(ticket.id).is_some_and(|f| f.quiet_qa());
-        let tight = journal.design_qa_settings().tight;
-        if mode == Mode::RiskBatch && !runs && (quiet || !tight) {
-            let round = journal.design_qa_rounds(ticket.id).unwrap_or(0) + 1;
-            if let Err(err) = journal.start_held_design_qa_run(ticket.id, round, gate.code(), "skipped") {
-                crate::daemon_log!("equipe: {squad}: T-{}'s design QA run not kept: {err}", ticket.id);
-            }
-            let _ = journal.set_design_qa_mode_of(ticket.id, mode.code(), waived);
-            let risk = if quiet { "" } else { crate::design_qa::Risk::Unverified.code() };
-            let _ = journal.set_design_qa_route(ticket.id, Route::Batch.code(), risk, false);
-            let _ = journal.set_design_qa_verdict(ticket.id, "batched", PRECHECK_BY);
-            let note = if quiet { "A follow-up's polish: no designer turn of its own; it goes into the daily design review." } else { "No precheck could run: nothing holds it; it goes into the daily design review." };
-            let _ = journal.ticket_event(ticket.id, PRECHECK_BY, "precheck", note);
-            let week = journal.design_qa_skipped_since(now_secs() as i64 - 7 * 24 * 60 * 60);
-            crate::daemon_log!("equipe: {squad}: T-{} skipped its own design QA (no precheck could run; into the daily review) — {week} skipped in the last 7 days", ticket.id);
-            ticket.design_qa = None;
-            return None;
-        }
+        // Risk-based with no precheck to run (the gate is off, or there is nothing to run it on):
+        // nothing is known of the change, and a gate that saw nothing never passes it — a designer
+        // looks at it now, through its design QA ticket below, as when the precheck rendered nothing.
         let qa_id = journal.create_ticket(&qa).ok()?;
         let _ = journal.ticket_event(qa_id, "equipe", "created", &format!("design QA of T-{}", ticket.id));
         ticket.design_qa = Some(qa_id);
@@ -617,10 +599,9 @@ screen_checks value; missing: {}. Then hand in again.",
         // The change waiting on it: through its design QA ticket, or held on itself (`risk_batch`).
         let checked_now = self.waiting_on(squad, qa);
         let held = checked_now.as_ref().is_some_and(|c| c.id == qa);
-        // Relaxed risk-based routing lands what the precheck couldn't see and leaves it to the daily
-        // review: trying again would only hold the change back. Else (a designer would get it) again later.
-        let relaxed = self.journal(squad).is_some_and(|j| j.design_qa_run(qa).is_some_and(|r| r.mode.as_deref() == Some(Mode::RiskBatch.code())) && !j.design_qa_settings().tight);
-        if let Some(c) = checked_now.as_ref().filter(|_| !relaxed && unseen_under_load(report.as_ref(), &result, loaded)) {
+        // What the precheck couldn't see goes to a designer: on a loaded machine it runs again
+        // later first, so a picture it can take saves that designer turn.
+        if let Some(c) = checked_now.as_ref().filter(|_| unseen_under_load(report.as_ref(), &result, loaded)) {
             let tries = self.journal(squad).and_then(|j| j.add_design_qa_precheck_try(qa).ok()).unwrap_or(PRECHECK_TRIES);
             let waiting = held || (self.journal(squad).and_then(|j| j.ticket(qa).ok().flatten()).is_some_and(|t| t.status == TicketStatus::Todo) && self.worker_on(squad, qa).is_none());
             if tries < PRECHECK_TRIES && waiting {

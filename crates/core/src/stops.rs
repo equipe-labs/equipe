@@ -17,6 +17,9 @@ use rusqlite::{Connection, OptionalExtension as _, params};
 /// The board tool a member stops a kind of work with, when the person said so.
 pub const STOP_WORK: &str = "stop_work";
 
+/// The platform's tools that put work on the live site: refused while all work is paused.
+pub const GOES_LIVE: [&str; 2] = ["deploy_site", "promote_version"];
+
 /// At most this many terms are taken from a chain's titles.
 const TERMS_TAKEN: usize = 2;
 
@@ -89,7 +92,28 @@ pub fn named_by(stop: &Stop, title: &str, body: &str) -> bool {
 /// `lineage` — what it was made while working, what it follows up — is in
 /// the stopped chain), serves (`request`), or is named by.
 pub fn stopping<'a>(stops: &'a [Stop], title: &str, body: &str, lineage: &[TicketId], request: Option<RequestId>) -> Option<&'a Stop> {
-    stops.iter().find(|s| lineage.iter().any(|t| s.tickets.contains(t)) || (request.is_some() && s.request == request) || named_by(s, title, body))
+    stops.iter().find(|s| !s.all && (lineage.iter().any(|t| s.tickets.contains(t)) || (request.is_some() && s.request == request) || named_by(s, title, body)))
+}
+
+/// The pause of all work in force, if any (the newest).
+pub fn pause(stops: &[Stop]) -> Option<&Stop> {
+    stops.iter().rev().find(|s| s.all)
+}
+
+/// Whether a ticket may go on while `pause` holds: only work for what the
+/// person asked after the pause began (`asked_at` of the request it serves).
+pub fn goes_on_in(pause: &Stop, asked_at: Option<u64>) -> bool {
+    asked_at.is_some_and(|at| at > pause.since)
+}
+
+/// Whether `text` (the person's words) says "pause everything": all of the
+/// team's work, not one kind of it.
+pub fn pauses_all(text: &str) -> bool {
+    let t = text.to_lowercase();
+    let whole = ["everything", "all work", "all the work", "all of it", "anything new", "any work", "the whole team", "all tasks"];
+    let verb = ["pause", "stop", "hold", "wait", "freeze", "halt"];
+    let keep_going = ["don't stop", "dont stop", "do not stop", "never stop", "don't pause", "do not pause", "keep going"];
+    verb.iter().any(|v| t.contains(v)) && whole.iter().any(|w| t.contains(w)) && !keep_going.iter().any(|k| t.contains(k))
 }
 
 /// When a stop began, as a member is told: its date.
@@ -118,6 +142,9 @@ pub fn context(stops: &[Stop]) -> Option<String> {
     let lines: Vec<String> = stops
         .iter()
         .map(|s| {
+            if s.all {
+                return format!("- S-{} “{}” (since {}): ALL work is paused — start nothing, land nothing, deploy nothing until the person says go; work for what they ask after it goes on", s.id, s.words, since(s));
+            }
             let mut what = Vec::new();
             if !s.terms.is_empty() {
                 what.push(format!("titles with {}", s.terms.iter().map(|t| format!("“{t}”")).collect::<Vec<_>>().join(" or ")));
@@ -156,9 +183,15 @@ pub fn create_table(conn: &Connection) -> rusqlite::Result<()> {
            since INTEGER NOT NULL,
            cancelled TEXT NOT NULL DEFAULT '',
            refused INTEGER NOT NULL DEFAULT 0,
-           lifted_at INTEGER
+           lifted_at INTEGER,
+           all_work INTEGER NOT NULL DEFAULT 0,
+           heads TEXT NOT NULL DEFAULT ''
          );",
-    )
+    )?;
+    // Journals from before pauses of all work and stopped commits.
+    let _ = conn.execute("ALTER TABLE stops ADD COLUMN all_work INTEGER NOT NULL DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE stops ADD COLUMN heads TEXT NOT NULL DEFAULT ''", []);
+    Ok(())
 }
 
 fn ids(text: &str) -> Vec<TicketId> {
@@ -180,7 +213,7 @@ impl Store<'_> {
     /// Keep a new stop, in force from `stop.since`; its number.
     pub fn create(&self, stop: &Stop) -> rusqlite::Result<StopId> {
         self.0.execute(
-            "INSERT INTO stops (words, terms, paths, request, tickets, by, since, cancelled) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO stops (words, terms, paths, request, tickets, by, since, cancelled, all_work) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 stop.words,
                 stop.terms.join("\n"),
@@ -189,7 +222,8 @@ impl Store<'_> {
                 joined(&stop.tickets),
                 stop.by,
                 stop.since as i64,
-                joined(&stop.cancelled)
+                joined(&stop.cancelled),
+                stop.all as i64
             ],
         )?;
         Ok(self.0.last_insert_rowid() as StopId)
@@ -214,7 +248,7 @@ impl Store<'_> {
 
     /// Those in force, the oldest first.
     pub fn in_force(&self) -> Vec<Stop> {
-        let Ok(mut stmt) = self.0.prepare("SELECT id, words, terms, paths, request, tickets, by, since, cancelled, refused FROM stops WHERE lifted_at IS NULL ORDER BY id") else {
+        let Ok(mut stmt) = self.0.prepare("SELECT id, words, terms, paths, request, tickets, by, since, cancelled, refused, all_work FROM stops WHERE lifted_at IS NULL ORDER BY id") else {
             return Vec::new();
         };
         stmt.query_map([], |r| {
@@ -229,10 +263,34 @@ impl Store<'_> {
                 since: r.get::<_, i64>(7)?.max(0) as u64,
                 cancelled: ids(&r.get::<_, String>(8)?),
                 refused: r.get::<_, i64>(9)?.max(0) as u32,
+                all: r.get::<_, i64>(10)? != 0,
             })
         })
         .and_then(|rows| rows.collect())
         .unwrap_or_default()
+    }
+
+    /// The commits of `stop`'s chain that weren't on main when it began
+    /// (`ticket`, branch tip): kept so none lands later inside other work.
+    pub fn set_heads(&self, stop: StopId, heads: &[(TicketId, String)]) -> rusqlite::Result<()> {
+        let text = heads.iter().map(|(t, c)| format!("{t}:{c}")).collect::<Vec<_>>().join(",");
+        self.0.execute("UPDATE stops SET heads = ?2 WHERE id = ?1", params![stop as i64, text])?;
+        Ok(())
+    }
+
+    /// The stopped commits of the stops in force: (stop, ticket, commit).
+    pub fn heads_in_force(&self) -> Vec<(StopId, TicketId, String)> {
+        let Ok(mut stmt) = self.0.prepare("SELECT id, heads FROM stops WHERE lifted_at IS NULL AND heads <> '' ORDER BY id") else { return Vec::new() };
+        let rows: Vec<(i64, String)> = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).and_then(|rows| rows.collect()).unwrap_or_default();
+        rows.into_iter()
+            .flat_map(|(id, text)| {
+                text.split(',')
+                    .filter_map(|pair| pair.split_once(':'))
+                    .filter_map(|(t, c)| Some((id as StopId, t.trim().parse().ok()?, c.trim().to_owned())))
+                    .filter(|(_, _, c): &(StopId, TicketId, String)| c.len() >= 7 && c.chars().all(|ch| ch.is_ascii_hexdigit()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     /// The design follow-ups that came of `ticket` (its own, and theirs).
@@ -263,6 +321,7 @@ mod tests {
             since: 0,
             cancelled: vec![],
             refused: 0,
+            all: false,
         }
     }
 
@@ -298,6 +357,40 @@ mod tests {
         let ctx = context(std::slice::from_ref(&s)).unwrap();
         assert!(ctx.contains("titles with “component gallery”") && ctx.contains("follow-ups of T-40"), "{ctx}");
         assert_eq!(context(&[]), None);
+    }
+
+    #[test]
+    fn a_pause_of_all_work_is_read_from_the_persons_words_and_holds_only_what_came_before() {
+        // Golden Boot's words, and others like them.
+        for said in ["Please pause all work right now: stop T-29, T-30 and T-31 and don't start anything new.", "Stop everything for now", "hold all the work until tomorrow", "Pause the whole team please"] {
+            assert!(pauses_all(said), "{said}");
+        }
+        for said in ["stop polishing the gallery", "pause the newsletter", "everything looks great", "wait for my go-ahead on the logo", "Don't stop, everything is great"] {
+            assert!(!pauses_all(said), "{said}");
+        }
+        let pause = Stop { all: true, since: 1_000, ..stop(&[], &[], &[], None) };
+        assert!(!goes_on_in(&pause, None) && !goes_on_in(&pause, Some(900)) && !goes_on_in(&pause, Some(1_000)), "work from before waits");
+        assert!(goes_on_in(&pause, Some(1_001)), "what the person asks after goes on");
+        // A pause names no kind of work: it turns no ticket away by its title, it holds them all.
+        let stops = [pause.clone(), stop(&["component gallery"], &[], &[], None)];
+        assert_eq!(super::pause(&stops).map(|s| s.since), Some(1_000));
+        assert!(stopping(&stops, "Main is red: Lighthouse 91", "", &[], None).is_none());
+        assert!(stopping(&stops, "Component gallery spacing", "", &[], None).is_some());
+        assert!(context(&[pause]).unwrap().contains("ALL work is paused"));
+    }
+
+    #[test]
+    fn a_pause_and_the_stopped_commits_are_kept_with_the_stop() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_table(&conn).unwrap();
+        create_table(&conn).unwrap(); // again: the columns are there already
+        let store = Store(&conn);
+        let id = store.create(&Stop { all: true, ..stop(&[], &[], &[29], None) }).unwrap();
+        store.set_heads(id, &[(29, "a1b2c3d4e5f6".into()), (30, "not-a-commit".into())]).unwrap();
+        assert!(store.in_force()[0].all);
+        assert_eq!(store.heads_in_force(), [(id, 29, "a1b2c3d4e5f6".to_owned())]);
+        store.lift(id, 5).unwrap();
+        assert!(store.heads_in_force().is_empty(), "a lifted stop holds nothing back");
     }
 
     #[test]

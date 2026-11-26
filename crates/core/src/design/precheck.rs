@@ -164,6 +164,18 @@ pub fn conditions(widths: &[u32], schemes: &[&str]) -> Vec<Condition> {
 
 // ── the map's say ──
 
+/// The preview a worktree serves itself with when its map names none: a Vite
+/// project with its dependencies installed runs Vite's dev server on the
+/// precheck's port. Without one the precheck of a page shot by URL renders
+/// nothing, and what it can't see waits for a designer
+/// (`crate::design_qa::Risk::Unverified`): a picture it can take saves that turn.
+pub fn default_preview(root: &Path) -> Option<String> {
+    let manifest: Value = serde_json::from_str(&std::fs::read_to_string(root.join("package.json")).ok()?).ok()?;
+    let uses_vite = ["dependencies", "devDependencies"].iter().any(|k| manifest.get(k).and_then(|d| d.get("vite")).is_some());
+    (uses_vite && root.join("node_modules/.bin/vite").exists()).then(|| "node_modules/.bin/vite --port {port} --strictPort --host 127.0.0.1".to_owned())
+}
+
+
 /// How the map asks to be prechecked (`flows.json`'s `precheck`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -1434,6 +1446,20 @@ mod tests {
         std::fs::write(dir.join("p.log"), "\n  first line\nsecond\n\nthird\nfourth\nfifth\n").unwrap();
         assert_eq!(log_head(&dir.join("p.log")), " — first line | second | third | fourth");
         assert_eq!(log_head(&dir.join("none.log")), "");
+    }
+
+    #[test]
+    fn a_vite_project_with_its_dependencies_serves_itself_when_the_map_names_no_preview() {
+        let root = std::env::temp_dir().join(format!("eq-precheck-vite-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("node_modules/.bin")).unwrap();
+        std::fs::write(root.join("package.json"), r#"{"devDependencies":{"vite":"^5.4.0"}}"#).unwrap();
+        assert_eq!(default_preview(&root), None, "not installed yet: nothing to run");
+        std::fs::write(root.join("node_modules/.bin/vite"), "").unwrap();
+        assert_eq!(default_preview(&root).as_deref(), Some("node_modules/.bin/vite --port {port} --strictPort --host 127.0.0.1"));
+        std::fs::write(root.join("package.json"), r#"{"dependencies":{"next":"15.0.0"}}"#).unwrap();
+        assert_eq!(default_preview(&root), None, "only Vite is known");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

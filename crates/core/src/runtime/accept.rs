@@ -74,8 +74,8 @@ impl Runtime {
     pub(super) fn propose_accept(&mut self, squad: &str, member: &str, id: SessionId, args: &Value) -> Result<String, String> {
         if !self.sessions.get(&id).is_some_and(Session::is_pm) {
             return Err("Only the PM puts handed-in work to the person to confirm, and only the person accepts it. Don't take \
-their words as an acceptance, and don't walk them through buttons: say in one line that a confirmation card puts it to \
-them, and note what they said on the ticket with `comment`, for the PM."
+their words as an acceptance, and don't walk them through buttons: say in one plain line that it is ready for them to \
+confirm, and note what they said on the ticket with `comment`, for the PM."
                 .into());
         }
         let tickets = self.tickets(squad);
@@ -235,8 +235,20 @@ If its landing stopped (you were told so), `accept_work` lands it.",
         // Accepted already, only its landing left (it failed, or met a conflict
         // since merged in): landed again now — no new acceptance, so neither
         // the person's say nor `checked` is needed.
-        let landing: Vec<TicketId> = named.iter().copied().filter(|t| !self.merging.contains(&(squad.to_owned(), *t)) && self.relandable(squad, *t)).collect();
+        let mut landing: Vec<TicketId> = named.iter().copied().filter(|t| !self.merging.contains(&(squad.to_owned(), *t)) && self.relandable(squad, *t)).collect();
         named.retain(|t| !landing.contains(t));
+        // All work paused by the person: nothing lands, a landing again neither.
+        let mut paused: Vec<String> = Vec::new();
+        landing.retain(|t| match self.pause_holding(squad, *t) {
+            Some(pause) => {
+                paused.push(Self::pause_refusal(&pause, *t));
+                false
+            }
+            None => true,
+        });
+        if named.is_empty() && landing.is_empty() && !paused.is_empty() {
+            return Err(paused.join(" "));
+        }
         if !named.is_empty() && !self.journal(squad).is_some_and(|j| j.pm_accepts()) {
             return Err("In this squad the person accepts work themselves: put it to them with propose_accept.".into());
         }
@@ -259,6 +271,11 @@ If its landing stopped (you were told so), `accept_work` lands it.",
                 plan.push(Plan::Left(format!("there is no T-{ticket}")));
                 continue;
             };
+            // All work paused by the person: it waits for their go.
+            if let Some(pause) = self.pause_holding(squad, ticket) {
+                plan.push(Plan::Left(Self::pause_refusal(&pause, ticket)));
+                continue;
+            }
             if let Some(why) = rules::unfit(&t, Verdict::Accept) {
                 plan.push(Plan::Left(why));
                 continue;
@@ -277,6 +294,14 @@ If its landing stopped (you were told so), `accept_work` lands it.",
                 plan.push(Plan::Left(format!("T-{ticket}'s checks are running already: you hear how they went")));
                 continue;
             }
+            // It would bring work the person stopped to main.
+            if let Some((stop, of)) = self.carries_stopped(squad, &t) {
+                plan.push(Plan::Left(format!(
+                    "T-{ticket} isn't landed: its branch carries T-{of}'s work, which the person stopped (S-{stop}). Take that work out of \
+the branch, or ask the person in plain words whether they want it after all — it never lands without their yes."
+                )));
+                continue;
+            }
             let code = !t.kind.in_home() && t.branch.is_some();
             // What closing it does in git, read now and done off the loop once
             // it is fit to accept; a member on it closes it its own way.
@@ -290,6 +315,7 @@ If its landing stopped (you were told so), `accept_work` lands it.",
             let ui = self.ui_inputs(squad, &t).map(Box::new);
             plan.push(Plan::Look(Look { ticket: Box::new(t), code, close, ui }));
         }
+        plan.extend(paused.into_iter().map(Plan::Left));
         Ok((checked, push, plan, landing))
     }
 
