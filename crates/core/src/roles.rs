@@ -1359,6 +1359,7 @@ mod tests {
             // The setup, each step with its deliverable in the design folder.
             "A project with no design yet gets its setup in two tiers",
             "**Starter brand** — every new product's default, one ticket",
+            "Then your one art-direction turn",
             "run `starter_brand`",
             "**Deep brand system** — only when the person chose it",
             "1. `Deep brand system: brief`",

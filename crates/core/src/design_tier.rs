@@ -6,9 +6,11 @@
 //! had seen a screen. Now it has two tiers (the designer's `design-system` skill says what each holds):
 //!
 //! - **Starter brand** ([`DesignTier::Starter`]), every new product's default: the platform's deterministic tools do
-//!   the work (palette from the direction or the existing site, a type pairing, the gated logo pipeline, `tokens.json`,
-//!   a one-page brand sheet); the designer takes one short look and fixes only what is clearly wrong. It runs on the
-//!   standard tier (`crate::tiers`) under a small budget ([`STARTER_TOKENS`], [`STARTER_TURN`]).
+//!   the work (palette from the direction or the existing site, a type pairing, the gated logo pipeline, one photograph,
+//!   `tokens.json`, a brand sheet with a homepage hero drawn from the product's own components); the designer takes one
+//!   art-direction turn that makes the words and the pick specific to the business. A blind review put the tools with
+//!   one short standard-tier look at 6/10 for first impression against the full setup's 8 (2026-11-26), so the turn
+//!   runs on the strong tier (`crate::tiers`), still under a small hard budget ([`STARTER_TOKENS`], [`STARTER_TURN`]).
 //! - **Deep brand system** ([`DesignTier::Deep`]), only when the person asks for it (a paid upgrade they choose on the
 //!   Brand page, with its cost shown) or accepts the PM's one suggestion: the full brief, component sheets, guidelines
 //!   and UI map, a ticket a step, each under its own hard budget ([`DeepStep::tokens`], [`DeepStep::turn`]).
@@ -44,10 +46,11 @@ pub struct Step {
     pub step: Option<DeepStep>,
 }
 
-/// Tokens the starter's critique may use: about $1 of Sonnet turns, mostly cache reads.
-pub const STARTER_TOKENS: u64 = 2_500_000;
-/// The starter critique's turn: tool calls, seconds.
-pub const STARTER_TURN: (u32, u64) = (45, 15 * 60);
+/// Tokens the starter's art-direction turn may use: about $1.5 of strong-tier turns at most, mostly cache reads (a
+/// measured turn: 10–12 tool calls, under 100k tokens of context).
+pub const STARTER_TOKENS: u64 = 2_000_000;
+/// The starter's art-direction turn: tool calls, seconds.
+pub const STARTER_TURN: (u32, u64) = (30, 15 * 60);
 /// A deep step's turn when it names no step.
 const DEEP_TURN: (u32, u64) = (140, 50 * 60);
 

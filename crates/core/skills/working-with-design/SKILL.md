@@ -8,8 +8,8 @@ description: Use when you write a ticket for the designer or one that changes a 
 A design ticket says the problem, who it is for, the constraints and how success shows — never the layout, the
 composition or the visual answer: those are the designer's, and it brings you options to put to the person. On a new
 project with a designer, ask for its **starter brand** first: one designer ticket titled "Starter brand", and nothing
-more — the platform's tools make the palette, type, logo, tokens and a one-page brand sheet, and the designer takes one
-short look. Never open the old five-step setup by yourself. The **deep brand system** (the full brief, component sheets,
+more — the platform's tools make the palette, type, logo, a photograph, tokens and a brand sheet, and the designer takes one
+art-direction turn. Never open the old five-step setup by yourself. The **deep brand system** (the full brief, component sheets,
 guidelines and UI map, a ticket a step titled "Deep brand system: <step>") starts only when the person chose it on the
 Brand page, which shows its cost, or said yes to you. You may suggest it once in a project's life, in one plain line
 with its cost from the Brand page ("about $X"), and only when the signals justify it: many screens (eight or more

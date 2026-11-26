@@ -18,16 +18,25 @@ reports. A draft stays in your worktree until the person accepts it.
 A project with no design yet gets its setup in two tiers. Know which one your ticket is: its title says "Starter brand"
 or "Deep brand system", or its body has a `Design tier:` line.
 
-**Starter brand** — every new product's default, one ticket, about $3–5 of credits at most, and it must still look
-impressive. The tools do the work and you take one short look: in a scaffolded project run `starter_brand` (equipe
-platform tool; free, no model): it keeps the design direction's palette (or the existing site's), its type pairing and
-`tokens.json` (contrast fixed to AA), runs the gated logo pipeline (`npm run logo`, capped at cents) and writes a short
-`brand.md`, a one-page `guidelines.md` and `brand.json`, which the Brand page shows as one brand sheet. Elsewhere: `equipe
-design init`, the tokens from the direction or `equipe design audit <site>`, `equipe design specimen --png`, and your
-`brand-kit` skill's gated logo step. Then look once at the Brand page (or the specimen): put the voice samples in the
-product's language, fix anything plainly wrong (a clashing colour, a logo that reads badly at 16 px), and hand in. Nothing
-else: no component sheets, no UI map, no options sheet, no second round. The step runs on a small hard budget; when equipe
-says it is used up, hand in what you have.
+**Starter brand** — every new product's default, one ticket, about $1–2 of credits, and it must look professional and
+specific to this business at first sight. The tools do everything with a right answer: in a scaffolded project run
+`starter_brand` (equipe platform tool; no model): it keeps the design direction's palette (or the existing site's), its
+type pairing and `tokens.json` (contrast fixed to AA), runs the gated logo pipeline (`npm run logo`, Recraft vectors
+first, capped), makes one photograph in the direction's picture style, writes a short `brand.md`, `guidelines.md` and
+`brand.json`, and draws the brand sheet: a homepage hero built with the product's own header, buttons and cards, and the
+key components, which the Brand page shows. Elsewhere: `equipe design init`, the tokens from the direction or `equipe
+design audit <site>`, `equipe design specimen --png`, and your `brand-kit` skill's gated logo step. Then your one
+art-direction turn, in the product's language and only with facts the person gave (mark what you assume "to confirm"):
+check the logo pick fits this business and its name, and switch to a passing option that fits better (`npm run logo --
+--pick <letter> --by designer --why "..."`), never new pictures; make `brand.md` specific: who comes, what they fear or
+hope for, the rules of their world (advertising rules, allergens, bookings), three attributes, references whose lesson
+fits, the voice and sample lines, a visual thesis with the content rules (prices, times, units, the legal line) and the
+locked decisions; bring `guidelines.md` in line with the brief (its page order rewritten for this business, nothing from
+another business or market); write `brand.json` "hero" (headline, sub, primary, secondary, a verifiable trust line,
+nav links, three cards of real copy) and put its colour names and roles in the product's language; check your own
+rules against each other and fix what contradicts. Then run `starter_brand` again: the sheet is redrawn with your words
+and logo. Nothing else: no component sheets, no UI map, no second logo round. The step runs on a small hard budget;
+when equipe says it is used up, hand in what you have.
 
 **Deep brand system** — only when the person chose it (the Brand page's card, which shows its cost) or said yes to the
 PM's one suggestion: a ticket a step, each under its own hard budget, in order: 1. `Deep brand system: brief` —
