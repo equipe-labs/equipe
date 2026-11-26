@@ -308,7 +308,8 @@ impl Config {
             design_path: std::env::var_os("PATH"),
             mac: Box::new(desktop::ThisMac),
             suggest: true,
-            browser_host: cfg!(target_os = "macos"),
+            // A Mac, or a hosted team's machine whose web page shows the shared Chrome.
+            browser_host: cfg!(target_os = "macos") || crate::browser::hosted(),
             person_home: None,
             lang: crate::i18n::Lang::resolve(crate::i18n::Front::Terminal),
             nemotron: crate::nemotron::Config::from_env_or_saved(&equipe_home()).ok(),
@@ -3247,6 +3248,26 @@ impl Runtime {
                     return;
                 }
                 self.hub.op(&json!({ "op": "control", "lane": lane, "by": take.then_some("person") }));
+            }
+            // A hosted team's Accounts page: who the shared Chrome is signed in to a site as.
+            Command::BrowserAccount { site } => {
+                if self.config.npx.clone().is_some_and(|npx| self.browser_host(&npx).is_some()) {
+                    self.hub.op(&json!({ "op": "account", "site": vault::site_of(&site) }));
+                }
+            }
+            // "Sign out of team browser": the site's sign-in leaves the shared Chrome,
+            // the sign-ins file and every squad's kept sign-ins, so nothing puts it back.
+            Command::BrowserSignOut { site } => {
+                let site = vault::site_of(&site);
+                if !site.is_empty() {
+                    if self.config.npx.clone().is_some_and(|npx| self.browser_host(&npx).is_some()) {
+                        self.hub.op(&json!({ "op": "signout", "site": site }));
+                    }
+                    let squads: Vec<String> = self.journals.keys().cloned().collect();
+                    for squad in squads {
+                        self.forget_sign_in(&squad, "", &site, 0);
+                    }
+                }
             }
             Command::BrowserDialog { page, accept, text } => {
                 self.hub.op(&json!({ "op": "dialog", "page": page, "accept": accept, "text": text }));
@@ -10694,6 +10715,12 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 };
                 watching_lanes.push(watcher);
                 let lane = format!("{}/{}", key.0, key.1);
+                // In the person's hands on a hosted team (a sign-in typed in its web page): no
+                // picture of it goes out to the screens, whoever watches the member.
+                if browser::hosted() && self.held.contains_key(&lane) {
+                    self.hub.unwatch(watcher);
+                    continue;
+                }
                 let (page, url) = match self.tabs.get(&lane) {
                     Some(Event::BrowserTabs { pages, agent_page, .. }) => {
                         let page = agent_page.and_then(|a| pages.iter().find(|p| p.id == a)).or(pages.last());
@@ -10893,6 +10920,9 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             }
             HostEvent::DialogClosed { page } => self.publish(Event::BrowserDialogClosed { page }),
             HostEvent::Suspended { profile } => self.window_suspended(&profile),
+            HostEvent::Account { site, signed_in, account } => {
+                self.publish(Event::BrowserAccount { site, signed_in, account });
+            }
             HostEvent::LaneFailed { lane } => self.lane_failed(&lane),
             HostEvent::Filled { token, answer, .. } => self.filled(token, answer),
             HostEvent::Visited { token, page } => self.on_visited(token, page),
@@ -11106,7 +11136,8 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
         if let Some(url) = url {
             self.hub.op(&json!({ "op": "goto", "lane": lane, "url": url }));
         }
-        self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person" }));
+        // `why: ask`: a member's ask, not the person's hand yet (a hosted team's page may open later).
+        self.hub.op(&json!({ "op": "control", "lane": lane, "by": "person", "why": "ask" }));
         self.asked_in.insert(lane.clone(), why.to_owned());
         self.held.insert(lane.clone(), Some(why.to_owned()));
         let (squad, _) = self.lane_session(&lane);

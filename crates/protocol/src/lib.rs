@@ -1613,6 +1613,13 @@ pub enum Command {
         #[serde(default)]
         window: bool,
     },
+    /// Who the shared Chrome is signed in to `site` as (a hosted team's
+    /// Accounts page). Answered by [`Event::BrowserAccount`].
+    BrowserAccount { site: String },
+    /// The person signs the shared Chrome out of `site`: its cookies leave the
+    /// browser, the sign-ins file and every squad's kept sign-ins. Answered by
+    /// [`Event::BrowserAccount`] (`signed_in` false).
+    BrowserSignOut { site: String },
     /// The person switched their screen to `lang` (`ko`, `zh-Hant`): what equipe
     /// says to them from now on is in it, as when a screen says hello.
     Language { lang: String },
@@ -3510,6 +3517,16 @@ pub enum Event {
     /// Where a sign-in the person asked for stands ([`Command::BrowserSignIn`],
     /// or `equipe browser`): every screen's.
     BrowserSignIn { site: String, state: BrowserSignInState, window: bool },
+    /// Whether the shared Chrome is signed in to `site`, and as whom where the
+    /// site says it — masked (`a***@gmail.com`), never the whole address:
+    /// every screen's ([`Command::BrowserAccount`], [`Command::BrowserSignOut`]).
+    BrowserAccount {
+        site: String,
+        #[serde(default)]
+        signed_in: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        account: Option<String>,
+    },
     /// The browser profiles besides the main one: every screen's.
     BrowserProfiles { profiles: Vec<BrowserProfile> },
     /// A member asks the person for a secret on a card ([`Command::SaveSecret`]).
@@ -3950,6 +3967,7 @@ impl Event {
             | Event::LoginOffered { .. }
             | Event::LoginOfferClosed { .. }
             | Event::BrowserSignIn { .. }
+            | Event::BrowserAccount { .. }
             | Event::BrowserProfiles { .. }
             | Event::Design { .. }
             | Event::DesignSessionStarted { .. }
@@ -4031,6 +4049,7 @@ impl Event {
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
                 | Event::BrowserSignIn { .. }
+                | Event::BrowserAccount { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::BrowserDialogClosed { .. }
                 | Event::SquadDeleted { .. }

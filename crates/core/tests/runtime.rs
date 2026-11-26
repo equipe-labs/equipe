@@ -4717,6 +4717,8 @@ for line in sys.stdin:
     with open({ops:?}, "a") as f:
         f.write(line)
     op = json.loads(line)
+    if op.get("op") == "account":
+        say({{"type": "account", "site": op["site"], "signed_in": True, "account": "a***@gmail.com"}})
     if op.get("op") == "lane":
         # Its MCP endpoint, as the host opens one per lane. The daemon picked the port by
         # binding and letting it go, so another test may hold it by now: that costs only
@@ -4790,6 +4792,8 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     }
     let sent = sent();
     assert!(sent.contains("appstoreconnect.apple.com") && sent.contains("\"by\":\"person\""), "{sent}");
+    // A member's ask, not the person's hand yet: a hosted team's page may open it much later.
+    assert!(sent.lines().any(|l| l.contains("\"op\":\"control\"") && l.contains("\"why\":\"ask\"")), "{sent}");
     assert!(!sent.lines().any(|l| l.contains("\"shown\":true")), "no window on this Mac: {sent}");
 
     // The person presses "done — give it back": its turn starts again, told so —
@@ -4817,6 +4821,27 @@ async fn a_member_hands_its_browser_to_the_panel_of_a_screen_on_another_mac_and_
     let said = tool(&handle, "pm", "show_my_browser", serde_json::json!({ "url": "https://appstoreconnect.apple.com/", "why": why })).await;
     assert!(said.text.contains("comes up on the person's screen"), "{said:?}");
     assert!(Journal::for_squad(&home, "acme").unwrap().browser_shown("pm"));
+}
+
+/// A hosted team's Accounts page asks who the shared Chrome is signed in to
+/// a site as, and signs it out of one: both go to the browser host, the site
+/// as a site (never a whole address), and the host's answer reaches every
+/// screen as it said it.
+#[tokio::test]
+async fn the_shared_browser_says_who_it_is_signed_in_as_and_signs_out_of_a_site() {
+    let repo = repo();
+    let (claude, _recorded) = recording_claude(&answering("ok"));
+    let home = squad_home(&[&repo]);
+    let (npx, ops) = fake_host_npx();
+    let (handle, mut events) = runtime::start(Config { npx: Some(npx), browser_host: true, ..with_tools(&claude, &home) });
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.send(Command::BrowserAccount { site: "https://accounts.google.com/signin?continue=x".into() });
+    let line = host_line(&ops, |l| l.contains("\"op\":\"account\"")).await;
+    assert!(line.contains("google.com") && !line.contains("continue"), "{line}");
+    until(&mut events, |e| matches!(e, Event::BrowserAccount { site, signed_in: true, account: Some(a) } if site.contains("google.com") && a == "a***@gmail.com")).await;
+    handle.send(Command::BrowserSignOut { site: "https://dashboard.stripe.com/login".into() });
+    let line = host_line(&ops, |l| l.contains("\"op\":\"signout\"")).await;
+    assert!(line.contains("stripe.com") && !line.contains("/login"), "{line}");
 }
 
 /// A member whose session expired asks the person to sign in again and

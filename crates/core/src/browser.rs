@@ -27,6 +27,20 @@ pub const MCP_PACKAGE: &str = "@playwright/mcp@0.0.83";
 /// What `equipe browser` opens the person's sign-in window with.
 pub const PLAYWRIGHT_PACKAGE: &str = "playwright@1.64.0";
 
+/// A hosted team's machine (equipe cloud): no screen of its own, and the
+/// person looks from a web page that shows the shared Chrome's pages as a
+/// live picture (`EQUIPE_BROWSER_HOST=web`). Then members share one headless
+/// Chrome there too — the browser host, as on a Mac — and a member asking the
+/// person in goes to that page's browser panel, whether or not it is open
+/// right now: the ask waits there as a card.
+pub fn hosted() -> bool {
+    hosted_from(std::env::var("EQUIPE_BROWSER_HOST").ok().as_deref())
+}
+
+fn hosted_from(value: Option<&str>) -> bool {
+    matches!(value.map(|v| v.trim().to_ascii_lowercase()).as_deref(), Some("1" | "true" | "yes" | "web" | "headless"))
+}
+
 /// The person's sign-ins, as Playwright storage state (cookies and local
 /// storage), shared by every squad: one person, one set of accounts.
 pub fn state_file(home: &Path) -> PathBuf {
@@ -373,6 +387,16 @@ pub fn chrome_profile(dir: &Path) -> String {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum HostEvent {
     Ready,
+    /// Who is signed in to `site` in the main Chrome (`account`, `signout`):
+    /// whether it is, and the account as a screen may show it — masked by the
+    /// host (`a***@gmail.com`), only where the site says it.
+    Account {
+        site: String,
+        #[serde(default)]
+        signed_in: bool,
+        #[serde(default)]
+        account: Option<String>,
+    },
     /// A lane's tabs (`lane` `""`: the person's own).
     Tabs {
         lane: String,
@@ -736,6 +760,9 @@ impl Host {
             .arg(&state)
             .env("EQUIPE_BROWSER_CHANNEL", browser_channel())
             .env("EQUIPE_FIRST_PAGE", first_page_id(std::time::SystemTime::now()).to_string())
+            // A hosted machine has no screen: its Chrome runs headless, and the person's
+            // picture of it is a web page that may not be open when a member asks.
+            .envs(hosted().then_some([("EQUIPE_BROWSER_HEADLESS", "1"), ("EQUIPE_BROWSER_WEB_PANEL", "1")]).into_iter().flatten())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(log);
@@ -1092,7 +1119,8 @@ impl Hub {
 
     pub fn has_panel(&self) -> bool {
         let inner = self.inner.lock().expect("hub");
-        inner.panels > 0 || inner.screens > 0
+        // A hosted team's web page is its panel, open or not ([`hosted`]).
+        inner.panels > 0 || inner.screens > 0 || hosted()
     }
 }
 
@@ -1541,6 +1569,16 @@ pub fn sites(state: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hosted_team_machine_is_told_by_its_setting_only() {
+        for on in ["1", "true", "web", " WEB ", "headless", "yes"] {
+            assert!(hosted_from(Some(on)), "{on}");
+        }
+        for off in [None, Some(""), Some("0"), Some("no"), Some("false"), Some("panel")] {
+            assert!(!hosted_from(off), "{off:?}");
+        }
+    }
 
     #[test]
     fn a_sign_in_that_ran_out_is_told_by_the_sites_answer_or_the_pages_opening_words() {

@@ -78,6 +78,7 @@ pub fn reads(command: &Command) -> bool {
         | C::Autopilot
         | C::LoginInsights { .. }
         | C::BrowserProfiles
+        | C::BrowserAccount { .. }
         | C::Devices
         | C::Engines
         // The providers and their models: listing them changes nothing.
@@ -221,6 +222,7 @@ pub fn reads(command: &Command) -> bool {
         | C::BrowserDialog { .. }
         | C::BrowserPopOut { .. }
         | C::BrowserSignIn { .. }
+        | C::BrowserSignOut { .. }
         // The language equipe speaks to the person in, kept.
         | C::Language { .. }
         | C::Disallow { .. }

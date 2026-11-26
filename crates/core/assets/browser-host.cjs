@@ -103,6 +103,16 @@ const PLACEHOLDER = 'data:text/html;charset=utf-8,' + encodeURIComponent(
   '<!doctype html><title>equipe</title><meta name="color-scheme" content="light dark">'
   + '<body style="font: 14px -apple-system, system-ui; display: grid; place-items: center; height: 90vh; color: #888">'
   + 'equipe — members’ tabs are behind this one</body>');
+// A hosted team's machine: the person's panel is a web page (`EQUIPE_BROWSER_WEB_PANEL`).
+const WEB_PANEL = process.env.EQUIPE_BROWSER_WEB_PANEL === '1';
+// An address in a site's answer, and the same address as a screen may show it:
+// its first letter, then *** — `a***@gmail.com`. The whole address never leaves the host.
+const firstEmail = (text) => (String(text || '').match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/) || [null])[0];
+const maskEmail = (email) => {
+  const at = String(email || '').lastIndexOf('@');
+  if (at < 1) return null;
+  return `${email[0]}***${email.slice(at).toLowerCase()}`;
+};
 // A person who stops touching a member's page hands it back after this long.
 const IDLE_CONTROL_MS = 120000;
 // …and this long while a page of it waits for them (`__equipeWaits`).
@@ -906,7 +916,9 @@ const startProfile = async (name, profile, STATE) => {
   const setControl = async (laneId, by, why, page) => {
     const lane = lanes.get(laneId);
     if (!lane) return;
-    if (by && why !== 'check') lane.touched = true;
+    // On a hosted team a member's ask (the daemon's `control`) is not a hand on it
+    // yet: the person may open the web page much later. Their first input is.
+    if (by && why !== 'check' && !(WEB_PANEL && why === 'ask')) lane.touched = true;
     // What the hold is about: the page that waits (from the daemon), else the
     // one the person is on — its member's, as the panel shows it.
     if (by) {
@@ -944,6 +956,9 @@ const startProfile = async (name, profile, STATE) => {
     for (const [id, lane] of lanes) {
       // Waiting for a person who hasn't come yet: not handed back for that.
       if (lane.reason === 'check' && !lane.touched) continue;
+      // A hosted team's person sees the ask as a card in a web page they may open
+      // an hour later: a member's ask waits for their hand, never handed back unseen.
+      if (WEB_PANEL && !lane.touched) continue;
       // A page of it that waits for a person — a sign-in, a code from their
       // phone or mail — gives them longer: handed back at two idle minutes
       // while they fetched a code, a half-done sign-in was lost to its
@@ -1295,7 +1310,54 @@ const startProfile = async (name, profile, STATE) => {
 
   await ensureParking();
 
-  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, cookies, restore, collect, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap };
+  // A site's cookies in this Chrome: the site, its subdomains and the domains
+  // above it — and Google's own domains for a Google sign-in (one account
+  // signs in to all of them).
+  const siteOf = (site) => String(site || '').trim().toLowerCase().replace(/^https?:\/\//, '').split(/[/?#]/)[0].replace(/^www\./, '');
+  const googly = (s) => own(s) || s === 'gmail.com';
+  const ofSite = (s) => (c) => {
+    const d = String(c.domain || '').toLowerCase().replace(/^\./, '');
+    return d.includes('.') && (d === s || d.endsWith(`.${s}`) || s.endsWith(`.${d}`) || (googly(s) && own(d)));
+  };
+  // Who is signed in to `site` here, for a hosted team's "Signed in as a***@gmail.com":
+  // only ever masked before it leaves this process (`maskEmail`), and only where the
+  // site itself says it to its own signed-in browser (Google's account list).
+  const account = async ({ site, token }) => {
+    const s = siteOf(site);
+    if (!s) return;
+    const mine = (await context.cookies().catch(() => [])).filter(ofSite(s));
+    let email = null;
+    if (googly(s) && mine.length) {
+      try {
+        const res = await context.request.get('https://accounts.google.com/ListAccounts?gpsia=1&source=ChromiumBrowser&json=standard', { timeout: 8000 });
+        email = firstEmail(await res.text());
+      } catch { email = null; }
+    }
+    const signedIn = googly(s) ? !!email : mine.length > 0;
+    emit({ type: 'account', site: s, token: token ?? null, signed_in: signedIn, account: email ? maskEmail(email) : null });
+  };
+  // "Sign out of team browser": the site's cookies leave this Chrome and the
+  // sign-ins file it takes them up from, so nothing puts them back.
+  const signout = async ({ site, token }) => {
+    const s = siteOf(site);
+    if (!s) return;
+    const domains = new Set((await context.cookies().catch(() => [])).filter(ofSite(s)).map((c) => c.domain));
+    for (const domain of domains) await context.clearCookies({ domain }).catch(() => {});
+    try {
+      const kept = JSON.parse(fs.readFileSync(STATE, 'utf8'));
+      const cookies = (kept.cookies || []).filter((c) => !ofSite(s)(c));
+      const origins = (kept.origins || []).filter((o) => { try { return !ofSite(s)({ domain: new URL(o.origin).hostname }); } catch { return true; } });
+      if (cookies.length !== (kept.cookies || []).length || origins.length !== (kept.origins || []).length) {
+        const tmp = `${STATE}.equipe-tmp`;
+        fs.writeFileSync(tmp, JSON.stringify({ ...kept, cookies, origins }), { mode: 0o600 });
+        fs.renameSync(tmp, STATE);
+      }
+    } catch { /* no sign-ins file */ }
+    for (const c of [...agreed.keys()]) if (ofSite(s)({ domain: c.split('\u0000')[1] })) agreed.delete(c);
+    emit({ type: 'account', site: s, token: token ?? null, signed_in: false, account: null });
+  };
+
+  const ops = { lane: openLane, show, close, person, watch, unwatch, fit, unfit, input, nav, goto, newtab, closetab, control, dialog, popout, cookies, restore, collect, fill, visit, look, passkey_add: passkeyAdd, passkey_use: passkeyUse, snap, account, signout };
   // Its Chrome closed (the person quit it): the host goes, and the daemon starts it again —
   // unless the daemon closed it itself, to give the profile to the person's own window.
   let suspending = false;
@@ -1334,7 +1396,7 @@ const target = async (request) => {
   switch (request.op) {
     case 'lane': case 'person': case 'newtab': case 'restore': case 'collect': return profileOf(request);
     // equipe's own tabs, passkeys and pictures: the person's main Chrome only.
-    case 'visit': case 'passkey_add': case 'snap': return profileOf({});
+    case 'visit': case 'passkey_add': case 'snap': case 'account': case 'signout': return profileOf({});
     case 'show': case 'close': return byLane(request.id);
     case 'control': case 'goto': case 'cookies': case 'fill': case 'passkey_use': return byLane(request.lane);
     default: return byPage(request.page);

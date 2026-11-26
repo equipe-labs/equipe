@@ -183,6 +183,8 @@ pub fn person_only(command: &Command) -> bool {
         // Pairing a phone: a member must not pair its own device in, nor unpair
         // the person's. (Handled on the pairing path in the gateway too.)
         C::PairStart | C::PairAnswer { .. } | C::PairCancel | C::Devices | C::Unpair { .. } => true,
+        // Signing the shared Chrome out of a site: the person's accounts, the person's call.
+        C::BrowserSignOut { .. } => true,
         // A side chat: a conversation on the person's account, beside a
         // member's, that reads its files and the web. The person's to open,
         // write in and close — a member must not start one of its own.
@@ -234,6 +236,8 @@ pub fn person_only(command: &Command) -> bool {
         | C::BrowserDialog { .. }
         | C::BrowserPopOut { .. }
         | C::BrowserSignIn { .. }
+        // A hosted team's Accounts page: who the shared Chrome is signed in as (a read).
+        | C::BrowserAccount { .. }
         | C::Language { .. }
         | C::Logins
         | C::Autopilot

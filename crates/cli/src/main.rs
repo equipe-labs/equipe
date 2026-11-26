@@ -2121,6 +2121,7 @@ impl App {
                 | Event::LoginOffered { .. }
                 | Event::LoginOfferClosed { .. }
                 | Event::BrowserSignIn { .. }
+                | Event::BrowserAccount { .. }
                 | Event::BrowserProfiles { .. }
                 | Event::PmAcceptsChanged { .. }
                 | Event::AutonomyChanged { .. }
