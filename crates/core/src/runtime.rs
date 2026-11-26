@@ -4521,6 +4521,14 @@ runbooks and reports live there, and work across the projects or on running them
             let all = self.routines(&squad);
             for r in &all {
                 match routines::due(r, now) {
+                    // On free credit a routine's turn waits for the person (`free_hold`): this run is let go.
+                    routines::Due::Run if self.free_hold(&squad, &format!("routine {} ({})", r.id, r.title)) => {
+                        let mut kept = self.routines(&squad);
+                        if let Some(k) = kept.iter_mut().find(|k| k.id == r.id) {
+                            k.next_run = Some(routines::next_run(k.when, now, &routines::Local));
+                        }
+                        self.keep_routines(&squad, kept);
+                    }
                     routines::Due::Run => {
                         self.run_routine(&squad, r.id, now).await;
                     }

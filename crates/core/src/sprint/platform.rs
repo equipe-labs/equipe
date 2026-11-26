@@ -105,8 +105,15 @@ impl Platform {
 
     /// Whether the team has anything live: an app deployed on the platform.
     pub async fn has_app(&self) -> Result<bool, String> {
+        Ok(self.standing().await?.0)
+    }
+
+    /// From one `/v1/resources`: whether a product is live for the sprint
+    /// loop ([`live_from`]), and whether the team is on free credit
+    /// ([`free_from`]).
+    pub async fn standing(&self) -> Result<(bool, bool), String> {
         let v = self.get("/v1/resources").await?;
-        Ok(live_from(&v, now_unix()))
+        Ok((live_from(&v, now_unix()), free_from(&v)))
     }
 
     /// The `equipe.metrics/v1` snapshot over `days`.
@@ -221,6 +228,7 @@ pub fn glance(snap: &Value) -> (Vec<Evidence>, Vec<String>) {
 struct Live {
     at: std::time::Instant,
     live: bool,
+    free: bool,
     busy: bool,
 }
 
@@ -242,8 +250,17 @@ const LIVE_EVERY: Duration = Duration::from_secs(5 * 60);
 pub fn live_from(v: &Value, now: u64) -> bool {
     let app = v.get("resources").and_then(Value::as_array).is_some_and(|r| r.iter().any(|x| x.get("kind").and_then(Value::as_str) == Some("app")));
     let quiet = v.get("quiet_until").and_then(Value::as_u64).is_some_and(|until| until > now);
-    let free = v.get("free_credit").and_then(Value::as_bool) == Some(true);
-    app && !quiet && !free
+    app && !quiet && !free_from(v)
+}
+
+/// Whether `/v1/resources` says the team runs on the credit it was given
+/// (`free_credit`: never paid, not comped). Then nothing equipe would start by
+/// itself — a routine, an idle wake, a look at old ideas or waits — wakes a
+/// member: each is a paid turn the person did not ask for, and on a free team
+/// they spent the credit meant for the person's own asks. Their messages, and
+/// the work they asked for, run as always.
+pub fn free_from(v: &Value) -> bool {
+    v.get("free_credit").and_then(Value::as_bool) == Some(true)
 }
 
 fn now_unix() -> u64 {
@@ -254,19 +271,31 @@ fn now_unix() -> u64 {
 /// from a cache and refreshes it in the background at most every few minutes,
 /// so the loop's tick never waits on the network.
 pub fn live_cached(platform: &Platform) -> bool {
+    cached(platform).0
+}
+
+/// Whether the platform reports this machine's team on free credit
+/// ([`free_from`]), from the same cache as [`live_cached`]. Unknown (before
+/// the first answer, or the platform unreachable) counts as not free: a paid
+/// team is never held back by a network blip.
+pub fn free_cached(platform: &Platform) -> bool {
+    cached(platform).1
+}
+
+fn cached(platform: &Platform) -> (bool, bool) {
     let mut guard = live_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let stale = guard.as_ref().is_none_or(|l| l.at.elapsed() > LIVE_EVERY);
     let busy = guard.as_ref().is_some_and(|l| l.busy);
-    let known = guard.as_ref().is_some_and(|l| l.live);
+    let known = guard.as_ref().map_or((false, false), |l| (l.live, l.free));
     if stale && !busy && tokio::runtime::Handle::try_current().is_ok() {
         match guard.as_mut() {
             Some(l) => l.busy = true,
-            None => *guard = Some(Live { at: std::time::Instant::now(), live: false, busy: true }),
+            None => *guard = Some(Live { at: std::time::Instant::now(), live: false, free: false, busy: true }),
         }
         let p = platform.clone();
         tokio::spawn(async move {
-            let live = p.has_app().await.unwrap_or(false);
-            *live_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Live { at: std::time::Instant::now(), live, busy: false });
+            let (live, free) = p.standing().await.unwrap_or_default();
+            *live_cache().lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Live { at: std::time::Instant::now(), live, free, busy: false });
         });
     }
     known

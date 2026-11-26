@@ -234,7 +234,10 @@ impl Runtime {
             match (&finding, self.pm_of(squad)) {
                 (Finding::Idle { .. }, Some(pm)) => {
                     self.show_news(pm, shown);
-                    self.hand_to_pm(squad, pm, line).await;
+                    // On free credit an idle board is the person's to fill: no PM turn about it.
+                    if !self.free_hold(squad, "the self-watch's idle note") {
+                        self.hand_to_pm(squad, pm, line).await;
+                    }
                 }
                 _ => self.brief_pm(squad, line, Some(shown)),
             }
