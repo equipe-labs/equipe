@@ -46,9 +46,10 @@ pub struct Step {
     pub step: Option<DeepStep>,
 }
 
-/// Tokens the starter's art-direction turn may use: about $1.5 of strong-tier turns at most, mostly cache reads (a
-/// measured turn: 10–12 tool calls, under 100k tokens of context).
-pub const STARTER_TOKENS: u64 = 2_000_000;
+/// Tokens the starter's art-direction turn may use: about $1.05 of strong-tier turns at most, mostly cache reads (a
+/// measured turn: 10–12 tool calls, under 100k tokens of context), so with the logo round and the photograph the whole
+/// starter brand stays near $2 of credits even at its cap.
+pub const STARTER_TOKENS: u64 = 1_500_000;
 /// The starter's art-direction turn: tool calls, seconds.
 pub const STARTER_TURN: (u32, u64) = (30, 15 * 60);
 /// A deep step's turn when it names no step.
