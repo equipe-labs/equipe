@@ -179,6 +179,10 @@ pub struct Request {
     pub id: RequestId,
     /// In the person's words: the first line of what they said, cut short.
     pub title: String,
+    /// More of what they said, in one line, when the title cut it short: what
+    /// a screen shows on hover. Empty when the title already says it all.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub words: String,
     /// The conversation they asked in, where its news goes. `None`: they put
     /// the ticket on the board themselves, with no conversation.
     #[serde(default, skip_serializing_if = "Option::is_none")]

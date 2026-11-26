@@ -111,6 +111,7 @@ mod tests {
         Request {
             id,
             title: format!("R{id}"),
+            words: String::new(),
             session: Some(2),
             member: Some("designer".into()),
             asked_at,
