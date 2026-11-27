@@ -253,9 +253,11 @@ impl Runtime {
 
     /// The facts a reply in `squad` is checked against, from what is known now (nothing waits on the network).
     fn reply_facts(&mut self, id: SessionId, squad: &str) -> Facts {
-        // What the person last wrote in, in this conversation, their own words only; else what the squad keeps.
+        // The language of the person's latest message, their own words only; when it can't
+        // tell (a few words, a tapped suggestion), the language the squad keeps for them. An
+        // older message never decides: the language changes only when the person changes it.
         let said = self.sessions.get(&id).and_then(|s| {
-            s.transcript.entries().iter().rev().filter_map(|e| if let Entry::User { text, .. } = e { Some(text) } else { None }).take(5).find_map(|text| crate::language::detect(&crate::language::persons_words(text)))
+            s.transcript.entries().iter().rev().find_map(|e| if let Entry::User { text, .. } = e { Some(text) } else { None }).and_then(|text| crate::language::detect(&crate::language::persons_words(text)))
         });
         // A squad that kept the platform's language (English notes read as the person's, before 0.103.194) heals here.
         if let Some(name) = said
@@ -486,6 +488,20 @@ mod tests {
         assert_eq!(promise(said).as_deref(), Some("다음 원패스 수정 때 함께 고칠게요."));
         assert!(promise("I'll fix the clipped word in the next update.").is_some());
         assert!(promise("The new logo is live on the site.").is_none());
+    }
+
+    #[test]
+    fn an_english_reply_to_an_english_founder_is_never_held_for_french() {
+        // ai-based-0k09, 2026-11-27: the guard read the founder's English request as French and held the PM's
+        // English reply until it was rewritten in French.
+        let asked = crate::language::detect(&crate::language::persons_words("[@akki · akki shafiqullah · owner] Please set up our brand kit: logo files, colours, type and voice."));
+        let want = asked.and_then(Lang::from_english_name);
+        assert_eq!(want, Some(Lang::En));
+        let reply = "Akki, the designer will start on the brand kit as soon as the first version of the site is set up. The site's first build creates the logo options, and the brand work picks up from there.";
+        assert!(check(reply, &[], &Facts { language: want, ..Facts::default() }).failed.is_empty());
+        // An English reply is not "not French" on weak evidence either: a French founder's squad holds it, an English one never.
+        assert!(wrong_language(reply, Lang::Fr));
+        assert!(!wrong_language(reply, Lang::En));
     }
 
     #[test]

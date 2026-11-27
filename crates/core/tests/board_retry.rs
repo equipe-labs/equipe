@@ -223,7 +223,7 @@ async fn at_work() -> (Handle, UnboundedReceiver<Event>, PathBuf) {
 
 async fn worktree(handle: &Handle) -> PathBuf {
     let snapshot = handle.snapshot("acme").await;
-    PathBuf::from(snapshot.tickets.iter().find(|t| t.id == 1).and_then(|t| t.worktree.clone()).expect("T-1 has a worktree"))
+    snapshot.tickets.iter().find(|t| t.id == 1).and_then(|t| t.worktree.clone()).expect("T-1 has a worktree")
 }
 
 fn png(path: &Path) {
