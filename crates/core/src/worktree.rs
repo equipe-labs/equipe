@@ -22,6 +22,17 @@ pub type Result<T> = std::result::Result<T, String>;
 /// stopped: each takes milliseconds on a healthy machine, and the daemon must
 /// never wait on one for good (a full disk, a lock, a prompt nobody sees).
 pub const GIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A path in the temp folder that no other call in any process gets:
+/// `<prefix>-<pid>-<time>-<n><suffix>`. The clock alone isn't enough (macOS
+/// gives microseconds): two merges at once once shared a scratch index and
+/// one removed it under the other.
+pub fn scratch_path(prefix: &str, suffix: &str) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
+    std::env::temp_dir().join(format!("{prefix}-{}-{stamp}-{n}{suffix}", std::process::id()))
+}
 /// A push talks to a server, which may be slow.
 const PUSH_TIMEOUT: Duration = Duration::from_secs(180);
 /// How long a command past its time has to stop once asked before it is killed.
@@ -1283,8 +1294,7 @@ fn commit_file_on_main_now(repo: &Path, rel: &str, bytes: &[u8], message: &str) 
     }
     let main = main_branch(repo)?;
     let tip = git(repo, &["rev-parse", &format!("refs/heads/{main}")])?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
-    let scratch = std::env::temp_dir().join(format!("equipe-doc-{}-{stamp}", std::process::id()));
+    let scratch = scratch_path("equipe-doc", "");
     std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
     let worked = (|| {
         let file = scratch.join("file");
@@ -1364,8 +1374,7 @@ fn commit_checkout_files_now(repo: &Path, checkout: &Path, rels: &[String], mess
     if blobs.is_empty() {
         return Ok(Vec::new());
     }
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
-    let index = std::env::temp_dir().join(format!("equipe-own-{}-{stamp}.index", std::process::id()));
+    let index = scratch_path("equipe-own", ".index");
     let tree = (|| {
         git_bytes(repo, &["read-tree", &tip], Some(&index), None)?;
         for (rel, blob, mode) in &blobs {
