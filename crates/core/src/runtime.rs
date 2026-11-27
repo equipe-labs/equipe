@@ -6877,6 +6877,12 @@ runbooks and reports live there, and work across the projects or on running them
                         env.push(("ANTHROPIC_CUSTOM_HEADERS".to_owned(), cost_levers::merged(existing.as_deref(), &added)));
                     }
                     env.extend(cost_levers::output_caps());
+                    // Claude Code's side calls (WebFetch's page reads above all) on its small
+                    // model, not the turn's: behind the gateway it would use the turn's own.
+                    if on_gateway {
+                        let small = cost_levers::small_model(|v| env.iter().any(|(k, _)| k == v) || std::env::var_os(v).is_some());
+                        env.extend(small);
+                    }
                     // How long the member has gone without a turn, by the wall clock (a daemon
                     // restart or a machine asleep leaves no in-memory instant to go by), and
                     // what its last turn cached for.
