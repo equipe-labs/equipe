@@ -40,7 +40,7 @@ enum Gate {
 impl Runtime {
     /// What conversation `id` is on: its ticket, the project's name (empty:
     /// none), and where it works.
-    fn key_context(&mut self, squad: &str, id: SessionId) -> (Option<TicketId>, String, PathBuf) {
+    pub(super) fn key_context(&mut self, squad: &str, id: SessionId) -> (Option<TicketId>, String, PathBuf) {
         // The squad's journal open, so its projects are known.
         let _ = self.journal(squad);
         self.key_context_of(squad, id)

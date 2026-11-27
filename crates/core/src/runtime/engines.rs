@@ -1619,6 +1619,28 @@ fn this_part(entries: &[Entry]) -> &[Entry] {
     &entries[from..]
 }
 
+/// A person's message in a packet, at most about `max` characters — never
+/// cut silently: its beginning and its end (where equipe names the file a
+/// long message is kept in, and its parts), and between them a line that
+/// says how much was left out and where the whole is.
+fn clip_said(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_owned();
+    }
+    let tail = max / 3;
+    let head = max - tail;
+    let start: String = text.chars().take(head).collect();
+    let end: String = text.chars().skip(count - tail).collect();
+    format!(
+        "{}\n\n[… {} characters of this message are left out here. It was {count} characters: the whole is in this conversation's history, \
+and in the file equipe names at its end when it does. Read it whole before you plan or brief work from it.]\n\n{}",
+        start.trim_end(),
+        count - head - tail,
+        end.trim_start()
+    )
+}
+
 /// What the person said, verbatim, newest last, as much as fits.
 fn person_said(entries: &[Entry]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
@@ -1626,7 +1648,7 @@ fn person_said(entries: &[Entry]) -> Vec<String> {
     for entry in entries.iter().rev() {
         let Entry::User { text, kept } = entry else { continue };
         let Some(words) = equipe_protocol::harness::words(text) else { continue };
-        let line = clip(&equipe_protocol::tags::read_back(&words, kept), 1_500);
+        let line = clip_said(&equipe_protocol::tags::read_back(&words, kept), 1_500);
         if size + line.len() > BRIEF_PERSON && !out.is_empty() {
             break;
         }
@@ -1670,7 +1692,7 @@ fn brief_talk(entries: &[Entry]) -> String {
     for entry in entries.iter().rev() {
         let line = match entry {
             Entry::User { text, kept } => match equipe_protocol::harness::words(text) {
-                Some(text) => format!("Person: {}", clip(&equipe_protocol::tags::read_back(&text, kept), BRIEF_LINE)),
+                Some(text) => format!("Person: {}", clip_said(&equipe_protocol::tags::read_back(&text, kept), BRIEF_LINE)),
                 None => continue,
             },
             Entry::Reply { text } => format!("You: {}", clip(text, BRIEF_LINE)),
@@ -1970,6 +1992,23 @@ mod tests {
         // At the desk, with no ticket: the conversation, with no ticket's parts.
         let desk = rotation_packet("pm", 260_000, None, &entries[..1], None, Vec::new());
         assert!(desk.contains("fresh session") && desk.contains("Person: Use Redis") && !desk.contains("## The ticket"), "{desk}");
+    }
+
+    #[test]
+    fn a_long_message_in_a_packet_keeps_its_end_and_says_what_was_left_out() {
+        // A 15k-character brief, its end naming the file equipe keeps it in (the cloud's long-message note).
+        let body: String = (1..=15).map(|i| format!("## Phase {i}\n{}\n\n", "Acceptance criteria and notes. ".repeat(32))).collect();
+        let text = format!("{body}[equipe: a long message. It reached you whole, and it is kept in full at /home/tenki/.equipe/uploads/long-messages/brief.md.]");
+        assert!(text.chars().count() > 15_000);
+        let entries = vec![Entry::User { text: text.clone(), kept: Vec::new() }];
+        for out in [brief_talk(&entries), person_said(&entries).join("\n")] {
+            assert!(out.contains("## Phase 1\n"), "its beginning");
+            assert!(out.contains("long-messages/brief.md"), "its end, with the file: {out}");
+            assert!(out.contains("characters of this message are left out here") && out.contains(&format!("It was {} characters", text.chars().count())), "never cut silently");
+            assert!(out.chars().count() < 3_000, "{}", out.chars().count());
+        }
+        // A short one is as it was.
+        assert_eq!(clip_said("Use Redis", BRIEF_LINE), "Use Redis");
     }
 
     #[test]

@@ -231,6 +231,29 @@ async fn a_requested_key_goes_from_the_card_into_the_store_and_the_member_is_tol
     w.handle.shutdown().await;
 }
 
+/// my-team-qjba, 2026-11-26: the person pasted their key on the member's card, then every `secret_write` by that member
+/// put up a second card ("may pm use the key on no project?"), which went unanswered as a choice: no grant was kept, and
+/// the person pasted the key a second time elsewhere. Their paste answers the member's ask: where that member works, and
+/// on the squad's only project, it is used without asking again; nothing else changes.
+#[tokio::test]
+async fn a_key_the_person_pasted_for_a_member_is_used_there_without_a_second_card() {
+    let mut w = world().await;
+    let asked = w.request().await;
+    assert!(!asked.is_error, "{asked:?}");
+    let seen = until(&mut w.events, |e| matches!(e, Event::SecretAsked { .. })).await;
+    let Some(Event::SecretAsked { ask: card, .. }) = seen.last().cloned() else { panic!() };
+    w.handle.send(Command::SaveSecret { squad: "acme".into(), id: card.id, values: vec![SecretValue(VALUE.into())] });
+    let seen = until(&mut w.events, |e| matches!(e, Event::SquadSecrets { secrets } if !secrets.is_empty())).await;
+    let Some(Event::SquadSecrets { secrets }) = seen.iter().rev().find(|e| matches!(e, Event::SquadSecrets { .. })) else { panic!() };
+    assert!(!secrets[0].any_project, "not every project");
+    assert!(secrets[0].projects.iter().any(|p| p.is_empty()), "where the member works (its desk): {:?}", secrets[0].projects);
+    assert!(secrets[0].projects.iter().any(|p| p == "shop"), "the squad's only project: {:?}", secrets[0].projects);
+    let wrote = w.call("backend", "secret_write", json!({ "name": "anthropic-admin-key", "path": ".env.local", "key": "ANTHROPIC_ADMIN_KEY" })).await;
+    assert!(!wrote.is_error && wrote.text.contains("Wrote anthropic-admin-key") && !wrote.text.contains(VALUE), "no second card: {wrote:?}");
+    assert!(w.handle.snapshot("acme").await.questions.iter().all(|q| !format!("{q:?}").contains("anthropic-admin-key")), "no grant card");
+    w.handle.shutdown().await;
+}
+
 #[tokio::test]
 async fn a_card_that_asks_for_nothing_valid_is_refused_and_a_page_must_be_https() {
     let w = world().await;

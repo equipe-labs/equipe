@@ -200,7 +200,8 @@ this machine's secret store under that name — you never see the value. When th
         };
         let draft = ks::Draft { name: store.name.clone(), service: store.service.clone(), kind: store.kind, value, projects: None, note: String::new() };
         let who = if ask.member.is_empty() { "you".to_owned() } else { ask.member.clone() };
-        if let Err(why) = self.keep_secret(squad, &who, ask.session, draft, store.projects.clone()) {
+        let projects = self.pasted_for(squad, &ask, &store);
+        if let Err(why) = self.keep_secret(squad, &who, ask.session, draft, projects) {
             return self.squad_error(squad, say!(self, "error.secret_not_saved", path = store.name, why = why));
         }
         self.secret_asks(squad).retain(|a| a.id != ask.id);
@@ -215,6 +216,28 @@ this machine's secret store under that name — you never see the value. When th
             return;
         }
         self.set_going(ask.session, format!("[equipe: {note} Carry on.]")).await;
+    }
+
+    /// Where a key the person pasted on a member's card may be used without
+    /// asking them again: where the card said, else where the member who
+    /// asked for it works (the squad's own folder at the desk), and the
+    /// squad's project when it has only one. Their paste answers the member's
+    /// ask; a second card asking whether that member may use it there was
+    /// the key's paste asked twice (my-team-qjba, 2026-11-26). Another
+    /// project's first use still asks.
+    fn pasted_for(&mut self, squad: &str, ask: &SecretAsk, store: &SecretStore) -> Vec<String> {
+        if !store.projects.is_empty() || ask.member.is_empty() {
+            return store.projects.clone();
+        }
+        let (_, current, _) = self.key_context(squad, ask.session);
+        let mut out = vec![current];
+        if let [only] = self.projects(squad).as_slice() {
+            let name = board::project_name(only);
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out
     }
 
     /// The person's values, to the file; the card closes and the member goes on.

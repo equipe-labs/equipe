@@ -874,9 +874,10 @@ pub struct Store<'a>(pub(crate) &'a Connection);
 
 impl Store<'_> {
     /// Keep a new request; its number. `said`: from the person's words in a
-    /// conversation.
+    /// conversation. The words are kept whole, however long: a 15-phase brief
+    /// cut at 4,000 characters lost its Phases 4 to 15 (my-team-qjba,
+    /// 2026-11-27). Lines shown from it are cut where they are shown.
     pub fn create(&self, title: &str, words: &str, session: Option<SessionId>, member: Option<&str>, asked_at: u64, said: bool) -> rusqlite::Result<RequestId> {
-        let words: String = words.chars().take(4000).collect();
         self.0.execute(
             "INSERT INTO requests (title, words, session, member, asked_at, said) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![title, words, session.map(|s| s as i64), member, asked_at as i64, said],
@@ -1567,6 +1568,21 @@ mod tests {
         let text = context(&[dark], &[away], 2_000).unwrap();
         assert!(text.contains("R-4 “Dark mode") && text.contains("R-5 “Admin page of MCP calls” (no ticket yet) · asked ") && text.contains("asked of designer"), "{text}");
         assert!(context(&[], &[login], 2_000).unwrap().contains("no ticket serves yet"), "the PM alone");
+    }
+
+    #[test]
+    fn a_long_request_is_kept_whole() {
+        // my-team-qjba, 2026-11-27: a 15-phase brief kept cut at 4,000 characters lost Phases 4 to 15.
+        let conn = Connection::open_in_memory().unwrap();
+        create_table(&conn).unwrap();
+        let store = Store(&conn);
+        let words: String = (1..=15).map(|i| format!("## Phase {i}\n{}\n\n", "Détail de la phase, critères d'acceptation. ".repeat(23))).collect::<String>() + "END-OF-BRIEF";
+        assert!(words.chars().count() > 15_000, "{}", words.chars().count());
+        let id = store.create("RentWise upgrade", &words, Some(1), Some("pm"), 100, true).unwrap();
+        let row = store.get(id).unwrap();
+        assert_eq!(row.words, words, "every character, Phase 15 and the end included");
+        // Shown as a line, it is still a line.
+        assert!(words_line(&row.words).chars().count() <= WORDS_CHARS);
     }
 
     #[test]
