@@ -282,7 +282,8 @@ mod handed_over {
 
     #[test]
     fn files_handed_over_in_a_tickets_folder_open_from_its_card() {
-        let root = std::env::temp_dir().join(format!("equipe-turn-{}", std::process::id()));
+        // A folder of its own: tests run side by side, and each removes its folder after.
+        let root = std::env::temp_dir().join(format!("equipe-turn-handed-{}", std::process::id()));
         let folder = root.join("outputs/T-287 홍보 글 올리기");
         std::fs::create_dir_all(&folder).unwrap();
         for f in ["A linkedin 붙여넣기.txt", "A 그림 first-run.png"] {
@@ -348,7 +349,7 @@ mod tests {
 
     #[test]
     fn a_folder_on_this_mac_is_found_whole_and_opens() {
-        let root = std::env::temp_dir().join(format!("equipe-turn-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("equipe-turn-folder-{}", std::process::id()));
         let shots = root.join("outputs/T-117 앱스토어 제출/screenshots-6.9");
         std::fs::create_dir_all(&shots).unwrap();
         std::fs::write(root.join("listing.json"), "{}").unwrap();
