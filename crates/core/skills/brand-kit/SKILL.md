@@ -1,6 +1,6 @@
 ---
 name: brand-kit
-description: Use for a product's brand step — a logo round with logo_round (six candidates, the quality gate, one critique, the best three as one decision card), the person's one-tap pick, the final mark, wordmark, favicon set, social image, palette and type saved as tokens.
+description: Use for a product's brand step, a logo round with logo_round (six candidates, the gate, one critique, three options in one card), the person's pick, the kit, favicons, social image, palette and type as tokens.
 ---
 
 # The brand step: from a brief to a kit

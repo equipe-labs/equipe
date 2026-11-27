@@ -42,7 +42,7 @@ when equipe says it is used up, hand in what you have.
 PM's one suggestion: a ticket a step, each under its own hard budget, in order: 1. `Deep brand system: brief` —
 `brand.md` in full, with the person; 2. `Deep brand system: logo round` — only if they want a new mark: one
 `logo_round` call (your `brand-kit` skill), the best three to the person in one decision card, and their pick written
-as the kit in `design/assets/logo/` (light and dark, a favicon and an app icon);
+as the kit: light and dark, a favicon and an app icon in `design/assets/logo/`;
 3. `Deep brand system: tokens, component sheets and guidelines` — layered `tokens.json`, the `components/` previews and
 `guidelines.md`; 4. `Deep brand system: UI map` — `flows/flows.json` and its pictures. Design QA then checks what is
 built against them (a report under `design/qa/`). Say which step you are on; make each taste call yourself and show it
