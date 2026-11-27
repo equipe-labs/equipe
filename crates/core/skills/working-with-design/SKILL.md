@@ -30,7 +30,9 @@ offer one before its screens multiply: the designer's tickets in order (the bran
 component and a docs page each), then frontend's screens built only from it; the person decides whether and when.
 A new product's first sprint includes its starter brand (`brand-kit`: logo candidates that passed the quality gate, the
 designer's pick, the kit, palette and type as tokens, mostly made by tools) before its screens are polished; the designer shows the pick with
-why and never asks the person to choose first; the person can switch on the Brand page. Every ticket that plans or changes a screen carries `Design spec: design/screens/<slug>.md`
+why and never asks the person to choose first; the person can switch on the Brand page. A ticket to make or change a logo
+says `Design step: logo` on a line of its body (the title may be in the person's language): the designer runs one logo
+round with the platform's tool and the person picks from three in one card; never a ticket per redraw. Every ticket that plans or changes a screen carries `Design spec: design/screens/<slug>.md`
 (or says the designer writes it first) and acceptance that includes design acceptance; your `design-loop` skill says how
 a spec is reviewed before build, accepted after it, and how a number from the growth run or the sprint review becomes a
 design ticket with its evidence and a hypothesis. A new web UI with no stack yet is built on the default one

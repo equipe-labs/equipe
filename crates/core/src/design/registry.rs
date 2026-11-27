@@ -404,8 +404,7 @@ pub fn settle_tree<'a>(repo: &Path, merged: &str, tip: &str, head: &str, conflic
 /// A scratch index read from `tree`, each of `files` (path, text) put in
 /// it, written back: the new tree.
 fn edit_tree(repo: &Path, tree: &str, files: &[(&str, String)]) -> Result<String> {
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default();
-    let scratch = std::env::temp_dir().join(format!("equipe-registry-{}-{stamp}", std::process::id()));
+    let scratch = worktree::scratch_path("equipe-registry", "");
     std::fs::create_dir_all(&scratch).map_err(|e| format!("{}: {e}", scratch.display()))?;
     let done = (|| {
         let index = scratch.join("index");

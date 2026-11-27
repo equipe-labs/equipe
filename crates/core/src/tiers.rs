@@ -26,6 +26,7 @@
 //! | Design QA (squad policy `economy`, the default; `crate::design_qa::tier_for`) | standard; deep for a redesign, round 2+, or a precheck that needs judgment | Sonnet · medium (Opus · high) | Sol · low (Sol · high) |
 //! | QA, security review | standard for a narrow checklist or small diff (QA); else strong; deep with a risk tag | Sonnet · medium / Opus · medium | Sol · low / Sol · medium |
 //! | Design work | strong (the starter brand included, `crate::design_tier`, never lowered); standard for a small one | Opus · medium | Sol · medium |
+//! | A logo round (`crate::design_tier::logo_work`: the platform's `logo_round` does the work) | standard; a tier up after the person turns down two rounds | Sonnet · medium | Sol · low |
 //! | Code: a feature, an unclear spec, or several areas | strong | Opus · medium | Sol · medium |
 //! | Code: routine — one area, small diff, clear acceptance criteria | standard | Sonnet · medium | Sol · low |
 //! | Tests added, chores (deps, config), copy, i18n, docs, changelog | standard | Sonnet · medium | Sol · low |
@@ -128,6 +129,15 @@ pub fn rule(w: &Work<'_>) -> Option<Rule> {
     let risk = risk_tags(&text);
     let checked = checkable(w.body);
     let at = |tier, reason, never_lower: bool| Rule { tier, reason, risk: risk.clone(), never_lower: never_lower || !risk.is_empty(), below_floor: false };
+    // A logo round is the platform's `logo_round` tool (brief, candidates, gate, one critique, the decision card): the
+    // designer only drives it, on the standard tier. When the person turns down two rounds, the member hands the ticket
+    // back as beyond it and escalation runs the next one a tier up.
+    if w.role == "designer"
+        && risk.is_empty()
+        && crate::design_tier::classify(w.title, w.body).is_some_and(|s| s.step == Some(crate::design_tier::DeepStep::Logo))
+    {
+        return Some(at(ModelTier::Standard, TierReason::Design, false));
+    }
     // The starter brand is the platform's tools and one art-direction turn: the strong tier (a blind review scored the
     // standard tier's look at 6/10 against 8), under its own small budget (`crate::design_tier`), never lowered.
     if w.role == "designer"
@@ -894,6 +904,10 @@ mod tests {
         // Design work: strong, standard when small.
         assert_eq!(tier("designer", TicketKind::Code, "New empty states", TESTED), (ModelTier::Strong, TierReason::Design, false));
         assert_eq!(tier("designer", TicketKind::Code, "Tweak the icon label", TESTED), (ModelTier::Standard, TierReason::Design, false));
+        // A logo round: the platform's tool does the work, the designer drives it on the standard tier.
+        assert_eq!(tier("designer", TicketKind::Task, "Logo for OnePass", ""), (ModelTier::Standard, TierReason::Design, false));
+        assert_eq!(tier("designer", TicketKind::Task, "Tighten the mark", "Design step: logo"), (ModelTier::Standard, TierReason::Design, false));
+        assert_eq!(tier("designer", TicketKind::Task, "Starter brand for OnePass", "").0, ModelTier::Strong, "the starter's art direction keeps its tier");
         // Design QA: a checklist over small UI changes, unless the squad's policy says higher.
         let qa = rule(&Work { design_qa: true, ..work("designer", TicketKind::Task, "Design QA of T-4", "") }).unwrap();
         assert_eq!((qa.tier, qa.reason, qa.never_lower), (ModelTier::Standard, TierReason::DesignQa, false));

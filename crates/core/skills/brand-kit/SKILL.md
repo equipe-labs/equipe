@@ -1,6 +1,6 @@
 ---
 name: brand-kit
-description: Use for a product's brand step — logo candidates that passed the quality gate, the designer's pick (the person can switch), the final mark, wordmark, favicon set, social image, palette and type saved as tokens.
+description: Use for a product's brand step, a logo round with logo_round (six candidates, the gate, one critique, three options in one card), the person's pick, the kit, favicons, social image, palette and type as tokens.
 ---
 
 # The brand step: from a brief to a kit
@@ -17,37 +17,41 @@ Name (the spelling the person gave), who it is for, three to five attributes eac
 references they admire, one thing it must not look like, and any colour or letter they already love. Ask it with
 tappable answers where the app offers them (see "Asking the person"). Write it to `design/brand.md`.
 
-## 2. Candidates that passed the gate
+## 2. A logo round: one tool call
 
-Make four genuinely different candidates, not four variations of one: a symbol made of simple geometry; an abstract
-mark; a letterform or monogram; an emblem with one clear idea. In a scaffolded project the tool does this already:
-`npm run logo` (started when the product was made) generates them, traces raster pictures to clean SVG, and rejects
-every one that fails its quality gate — legible at 16, 32 and 180 px, contrast on light and dark, at most three
-colours and a path limit, no gradients, no frame, no specks or jagged edges, no letters in the symbol, the wordmark
-read back as the name. If fewer than two pass it tries once more, then falls back to typeset monograms, so there is
-always a logo that passed. `design/concepts/options.json` and `logo-qa.md` say what passed and why. Never make concepts
-by hand with the image tool or draw a logo yourself; `npm run logo -- --force` makes a fresh set for cents.
+A new or changed logo is ONE `logo_round` call (equipe platform tool), not a loop of pictures, redraws and critiques.
+Pass `about` with what the business is in the person's own words from the conversation, and `avoid` / `notes` when
+they said what it must not look like or what they love. It writes the brief from the product's files (no letters when
+the brand is read in several languages), makes six genuinely different candidates in one picture call, holds each to
+the quality gate (legible at 16, 32 and 180 px, contrast on light and dark, at most three colours, no gradients, no
+frame, clean edges, no letters in the symbol, not a duplicate), runs ONE critique of the whole round (unwanted
+readings such as a keyhole or an avatar, accidental letters, look-alikes of known marks, fit, small-size clarity), and
+draws the best three as they will be used: the site header in light and dark, a browser tab at real size, the app
+icon. When the product has no mark of its own yet, the best is already on it. A round costs well under a dollar.
 
-Elsewhere, use the image tool your platform gives you (on equipe cloud, `generate_image` with `purpose: "logo"`) and
-hold every candidate to the same checks: show each at 32 px and 16 px on light and dark, run the critic first as
-`design-process` says, and drop any that is a raster in an SVG wrapper (`<image>`), has gradients, needs more than about
-thirty paths, misspells, or looks like a known brand (search the web for the mark and for the name). Prompt like a
-brand designer, name no existing brand, artist or character, ask for the symbol alone and set the name yourself in a
-licensed typeface. Note on the ticket what a round costs before you start (for the team; never a price in what the person reads).
+Never generate logo pictures with `generate_image` yourself, never draw or redraw a mark by hand, and never run
+`equipe design critique` on logo candidates: the round has its own critique. An existing logo that only needs to
+become clean vector (an imported site's PNG) is `logo_round` with `{"redraw": "<file>"}`: the same mark, no new concepts.
+Outside equipe cloud, `npm run logo` in a scaffolded product does the same steps without the critique.
 
-## 3. The team picks, the person can switch
+## 3. The person picks with one tap
 
-Pick the strongest of the candidates that passed, against the direction in `design/DESIGN.md`, yourself: in a
-scaffolded project keep the tool's pick or switch with `npm run logo -- --pick <letter> --by designer --why "<one line
-tied to the direction>"`. Then show the person the passing options with your pick marked and why, in one message ("I
-went with B: it stays clear as a tab icon and carries the warm, hand-made feel; you can switch on the Brand page").
-Never ask them to choose first. If they switch (the Brand page does it in one tap), that is the logo; note what they
-chose and why in `design/taste.md`.
+Post the answer's `decision` with ONE `ask_decision` call: its options as given, the question and labels written in
+the person's language, the pictures kept. Then hand in and end your turn; start nothing else on the logo before they
+answer. When they answer:
+
+- a letter: `logo_round {"pick": "<its id>"}` writes the kit (step 4) and you hand in;
+- "rounder", "bolder", "simpler": `logo_round {"refine": {"option": "<id>", "how": "rounder"}}` makes that version by
+  code, free; show it with its own card (new version or keep);
+- none of these: `logo_round {"reject": "<their words>"}` runs one more round with their words in the brief. After two
+  turned-down rounds it tells you to hand the ticket back as `cannot`; the next round then runs on a stronger model.
+
+One piece of work makes at most three picture rounds. Note what they chose and why in `design/taste.md`.
 
 ## 4. The final mark and the kit
 
-Refine the pick with one or two passes (simplify, even out the weights, fix the spacing) and save clean SVG:
-`viewBox`, no metadata, no embedded raster, fills from the palette or `currentColor`. Then, in `design/assets/logo/`:
+`logo_round {"pick": ...}` saves clean SVG (`viewBox`, no metadata, no embedded raster, fills from the palette) and
+writes the kit. In `design/assets/logo/`:
 `mark.svg`, `mark-on-dark.svg`, `wordmark.svg` (the name outlined in the brand's type), `lockup.svg`, `favicon.svg`, and
 beside the site's `public/`: `favicon.ico`, `apple-touch-icon.png` (180), `icon-192.png`, `icon-512.png`,
 `og-image.png` (1200×630) and `site.webmanifest`. In a scaffolded project `npm run brand` writes all of these from
