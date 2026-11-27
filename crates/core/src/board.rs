@@ -707,7 +707,7 @@ static STEPS_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
             },
             "required": ["text"],
         },
-        "description": "Checklist items — the spec, the build, the checks — done on this one ticket and branch rather than as tickets of their own. Left out on the ticket that answers the person, equipe gives it the usual ones.",
+        "description": "Checklist items — the spec, the build, the checks — done on this one ticket and branch rather than as tickets of their own: each a line, or {text, who}. [\"Build the form\", {\"text\": \"Check it at 390px\", \"who\": \"designer\"}]. Left out on the ticket that answers the person, equipe gives it the usual ones.",
     })
 });
 
@@ -728,7 +728,8 @@ static IMAGES_SCHEMA: std::sync::LazyLock<Value> = std::sync::LazyLock::new(|| {
         "items": { "type": "string" },
         "maxItems": crate::visuals::HAND_IN,
         "description": "Pictures of it — renders, mockups, screenshots you saved: PNG, JPG, WebP, GIF or SVG, by their \
-path in your worktree or the squad's folder (relative to where you work, or absolute). At most 4 an option.",
+path in your worktree or the squad's folder (relative to where you work, or absolute), or where your browser saved its \
+screenshot — never a web address. At most 4. [\"handin-shots/home-390-light.png\", \"handin-shots/home-1280-dark.png\"]",
     })
 });
 
@@ -859,7 +860,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
                 "properties": {
                     "to": { "type": "string", "description": "Who takes it: a role (frontend) or a member's name." },
                     "note": { "type": "string", "description": "What they need to know to carry on: what is done, where (the prototype's path), what is next — in the person's language." },
-                    "done": { "type": "array", "items": { "type": "integer" }, "description": "The checklist items you finished, by number." },
+                    "done": { "type": "array", "items": { "type": "integer" }, "description": "The checklist items you finished, by number from 1: [1, 2]." },
                     "back": { "type": "boolean", "description": "They do one step and give it back to you (a helper)." },
                     "blocked_on": crate::blocked_on::schema(),
                 },
@@ -868,13 +869,16 @@ It waits on the board as a proposal until the PM or the person accepts it."
         }),
         json!({
             "name": crate::flow::CHECK_STEPS,
-            "description": "The checklist of the ticket you hold: tick off items as each is done (`done`, by number) and add the items its work needs (`add`) — a spec, the build, a check, a fix of what you found — instead of tickets of their own. Re-planning? Name in `replace` the open items your new ones take the place of: never list an item the checklist already has (equipe leaves out repeats), so the person never sees the same step twice.",
+            "description": "The checklist of the ticket you hold: tick off items as each is done (`done`, by number) and add the items its work needs (`add`) — a spec, the build, a check, a fix of what you found — instead of tickets of their own. Re-planning? Name in `replace` the open items your new ones take the place of: never list an item the checklist already has (equipe leaves out repeats), so the person never sees the same step twice. \
+Give at least one of `done`, `add`, `replace`. Examples: tick items 1 and 2 off — {\"done\": [1, 2]}; add an item — {\"add\": [\"Write the tests\"]}; \
+tick 3 and add one for the designer — {\"done\": [3], \"add\": [{\"text\": \"Check it at 390px\", \"who\": \"designer\"}]}; \
+re-plan open items 4 and 5 as one — {\"replace\": [4, 5], \"add\": [\"Build and test the form\"]}.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "done": { "type": "array", "items": { "type": "integer" }, "description": "Items done, by number from 1." },
+                    "done": { "type": "array", "items": { "type": "integer" }, "description": "Items done, by their number in the checklist, from 1: [1, 2]." },
                     "add": STEPS_SCHEMA.clone(),
-                    "replace": { "type": "array", "items": { "type": "integer" }, "description": "Open items, by number, that the items in `add` replace: they leave the checklist. Done items stay." },
+                    "replace": { "type": "array", "items": { "type": "integer" }, "description": "Open items, by number, that the items in `add` replace: they leave the checklist. Done items stay. [4, 5]" },
                 },
             },
         }),
@@ -954,13 +958,18 @@ are shown too. On a code ticket, say whether it changes what users see (`changes
 fresh screenshots and confirm their coverage in `screen_checks`; a squad's designer checks those screens before the \
 person reviews when it has one. equipe's precheck then checks the changed screens: a new S1/S2 finding (content cut off, \
 an AA failure, sideways scroll, text over text) sends the hand-in back to you with the findings — fix them, or hand in \
-again with `waive_findings` saying why they aren't real.",
+again with `waive_findings` saying why they aren't real. \
+Always give `changes_screens`, true or false. Examples — nothing users see: {\"summary\": \"Rate limit on /api/login; tests in \
+auth.test.ts\", \"changes_screens\": false}. A screen changed: {\"summary\": \"New empty state on Projects\", \"changes_screens\": true, \
+\"images\": [\"handin-shots/projects-390-light.png\", \"handin-shots/projects-1280-dark.png\"], \"screen_checks\": [\"languages\", \
+\"widths\", \"light_dark\", \"large_text\"]}. Pictures go by their path in your worktree (relative is fine) or the squad's folder; \
+your browser's screenshots are taken where they land; never a web address.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "summary": { "type": "string", "description": "What you did and how to check it, in a few lines — in the person's language." },
                     "images": IMAGES_SCHEMA.clone(),
-                    "changes_screens": { "type": "boolean", "description": "Code tickets: true when users see a change — a screen, page, layout, style, visible copy, an icon; then give fresh screenshots of each changed screen in `images` and all four `screen_checks`. False for changes nobody sees." },
+                    "changes_screens": { "type": "boolean", "description": "Always give it. true when users see a change — a screen, page, layout, style, visible copy, an icon; then give fresh screenshots of each changed screen in `images` and all four `screen_checks`. false for changes nobody sees, and for work that isn't code." },
                     "screen_checks": {
                         "type": "array",
                         "items": { "type": "string", "enum": ["languages", "widths", "light_dark", "large_text"] },
@@ -975,7 +984,7 @@ again with `waive_findings` saying why they aren't real.",
                         "description": "Checks or tests that fail on main itself just the same (you ran them on main and they failed there too): each by its command or test name. They don't hold your hand-in back: equipe records them as pre-existing on main and keeps one top-priority ticket to fix main. Never wait on, or depend on, a fix for them.",
                     },
                 },
-                "required": ["summary"],
+                "required": ["summary", "changes_screens"],
             },
         }),
         json!({
@@ -1083,7 +1092,12 @@ A pass stands only on your own look: at least two pictures you took of the built
 the spec or mockup beside them (`compared`), the conditions you looked at (`checked`), and no blocker. Blockers are \
 differences from the spec, the tokens or accessibility — they send it back. Polish is what keeps it from looking \
 finished — rhythm, alignment, density, hierarchy, the first impression — never left out, even on a pass: it reaches the \
-person with it. Then end your turn.",
+person with it. Then end your turn. \
+Pictures go by their path in your worktree (handin-shots/home-390-light.png) or the squad's folder; your browser's \
+screenshots are taken where they land; never a web address. Example pass: {\"verdict\": \"pass\", \"findings\": \"Home and \
+sign-up match the spec at 390 and 1280, light and dark.\", \"compared\": true, \"checked\": [\"390\", \"1280\", \"light\", \"dark\", \
+\"empty\", \"error\"], \"images\": [\"handin-shots/home-390-light.png\", \"handin-shots/home-1280-dark.png\"], \"polish\": [\"Sign-up button: 8px \
+more space above it\"]}.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1364,7 +1378,11 @@ Claude Code calls this itself; there is no need to call it.",
 once they have done what it needed. Work in progress and done work are the person's to change. An idea is never started \
 on your own: when its time has come, put it to the person with status proposed and `why` — then it asks them on a card; \
 status todo starts one only when they said so in words. Status idea keeps a proposal or ready work for later, when \
-they say it isn't for now.",
+they say it isn't for now. \
+Only tickets not started (proposed, idea, todo, waiting) take a new title, body, owner, kind, project, dependencies or status; \
+`steps` and `request` work at any open status. For a ticket in progress, add work with `steps` — {\"id\": 12, \"steps\": [\"Add the empty state\"]} — \
+or note it with comment; send work in review back with comment and review \"changes\"; follow up done work with a new ticket (create_ticket). \
+Examples: accept a proposal — {\"id\": 12, \"status\": \"todo\"}; retitle — {\"id\": 12, \"title\": \"Sign-up works on phones\"}.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -1808,14 +1826,49 @@ fn tiles_arg(option: &Value) -> Vec<crate::protocol::decide::Tile> {
     out
 }
 
-/// A list of strings, blanks dropped; a single string counts as one item.
+/// A list a model wrote as a string (`"[1, 2]"`, `"[\"a.png\"]"`): its
+/// items, when the string is a JSON list. Some clients send every argument
+/// as text; the call means the list all the same.
+pub fn list_in_string(text: &str) -> Option<Vec<Value>> {
+    let text = text.trim();
+    (text.starts_with('[') && text.ends_with(']')).then(|| serde_json::from_str(text).ok()).flatten()
+}
+
+/// A list of strings, blanks dropped; a single string counts as one item,
+/// and a list written as a string is that list.
 pub fn arg_strs(args: &Value, key: &str) -> Vec<String> {
-    let items = match args.get(key) {
+    let listed;
+    let items: Vec<&str> = match args.get(key) {
         Some(Value::Array(items)) => items.iter().filter_map(Value::as_str).collect(),
-        Some(Value::String(one)) => vec![one.as_str()],
+        Some(Value::String(one)) => match list_in_string(one) {
+            Some(items) => {
+                listed = items;
+                listed.iter().filter_map(Value::as_str).collect()
+            }
+            None => vec![one.as_str()],
+        },
         _ => Vec::new(),
     };
     items.into_iter().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
+}
+
+/// A list of short labels (`screen_checks`, a check's `checked`), however a
+/// model writes it: a list, the list as a string, one line with the labels
+/// between commas (`"390, 1280, dark"`), or an object of labels each `true`
+/// (`{"languages": true, "widths": true}`). Unlike [`arg_strs`], a plain
+/// string is split at its commas — so only for labels, never for sentences.
+pub fn arg_labels(args: &Value, key: &str) -> Vec<String> {
+    let items = match args.get(key) {
+        Some(Value::Object(map)) => map.iter().filter(|(_, on)| on.as_bool().or_else(|| on.as_str().and_then(|t| t.trim().parse().ok())) == Some(true)).map(|(k, _)| k.clone()).collect(),
+        Some(Value::String(one)) if list_in_string(one).is_none() => one.split([',', ';', '\n']).map(str::to_owned).collect(),
+        _ => arg_strs(args, key),
+    };
+    items.into_iter().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect()
+}
+
+/// A yes or no a model may write as `true` or as the text `"true"`.
+pub fn arg_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(|v| v.as_bool().or_else(|| v.as_str().and_then(|t| t.trim().to_ascii_lowercase().parse().ok())))
 }
 
 /// A string argument, if present and not blank.
@@ -1823,24 +1876,157 @@ pub fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
 }
 
-/// A list of ticket ids, accepting `3` or `"T-3"` for each.
+/// One ticket id or number as a model writes it: `3`, `3.0`, `"3"`, `"T-3"`, `"#3"`.
+fn one_id(v: &Value) -> Option<TicketId> {
+    v.as_u64()
+        .or_else(|| v.as_f64().filter(|f| *f >= 0.0 && f.fract() == 0.0).map(|f| f as u64))
+        .and_then(|n| TicketId::try_from(n).ok())
+        .or_else(|| v.as_str().map(|s| s.trim().trim_start_matches('#')).and_then(parse_ticket_id))
+}
+
+/// A list of ticket ids (or item numbers), as a model writes one: a list of
+/// `3` or `"T-3"`, a lone `3`, `"3, 4"`, or the list as a string (`"[3,4]"`).
+/// Missing or blank: `None`.
 pub fn arg_ids(args: &Value, key: &str) -> Option<Vec<TicketId>> {
-    let items = args.get(key)?.as_array()?;
-    Some(
-        items
-            .iter()
-            .filter_map(|v| v.as_u64().map(|n| n as TicketId).or_else(|| v.as_str().and_then(parse_ticket_id)))
-            .collect(),
-    )
+    match args.get(key)? {
+        Value::Array(items) => Some(items.iter().filter_map(one_id).collect()),
+        Value::Number(_) => Some(one_id(&args[key]).into_iter().collect()),
+        Value::String(text) if text.trim().is_empty() => None,
+        Value::String(text) => match list_in_string(text) {
+            Some(items) => Some(items.iter().filter_map(one_id).collect()),
+            None => Some(text.split([',', ' ', ';']).filter(|s| !s.trim().is_empty()).filter_map(|s| one_id(&Value::String(s.to_owned()))).collect()),
+        },
+        _ => None,
+    }
 }
 
 pub fn arg_id(args: &Value, key: &str) -> Option<TicketId> {
-    let v = args.get(key)?;
-    v.as_u64().map(|n| n as TicketId).or_else(|| v.as_str().and_then(parse_ticket_id))
+    one_id(args.get(key)?)
+}
+
+/// Why the PM's `update_ticket` leaves `ticket` as it is — started, in
+/// review, or closed — and the call that does what `args` meant instead.
+pub fn locked_ticket(ticket: &Ticket, args: &Value) -> String {
+    let id = ticket.id;
+    let head = format!(
+        "T-{id} is {} — from here it's the person's to change, so nothing was changed: update_ticket changes title, body, owner, kind, project, dependencies and status only before work starts (proposed, idea, todo, waiting).",
+        ticket.status.label()
+    );
+    let cancel = arg_str(args, "status") == Some("cancelled");
+    let instead = match ticket.status {
+        TicketStatus::Done | TicketStatus::Cancelled => format!(
+            "Its work is over. For more work on it, make a new ticket: {}.",
+            call(CREATE_TICKET, &json!({ "title": "<the outcome, in the person's language>", "body": format!("Follow-up of T-{id}: <what to do and how to check it>") }))
+        ),
+        TicketStatus::Review => format!(
+            "To send it back to its member with what to change: {}.",
+            call(COMMENT, &json!({ "id": id, "text": "<what to change>", "review": "changes" }))
+        ),
+        _ if cancel => format!(
+            "To stop its work, only when the person asked for it: {}.",
+            call(crate::stops::STOP_WORK, &json!({ "ticket": id, "words": "<what the person said, in their words>" }))
+        ),
+        _ => format!(
+            "To give its member more to do on it: {}. To note something on its record: {}.",
+            call(UPDATE_TICKET, &json!({ "id": id, "steps": ["<the item to add>"] })),
+            call(COMMENT, &json!({ "id": id, "text": "<the note>" }))
+        ),
+    };
+    format!("{head} {instead}")
+}
+
+/// A call a member can make as it is: `tool({...})`, its arguments as JSON —
+/// what an error shows so the retry is right the first time.
+pub fn call(tool: &str, args: &Value) -> String {
+    format!("{tool}({})", serde_json::to_string(args).unwrap_or_else(|_| "{}".into()))
+}
+
+/// A member's call to `tool` again, as it made it, with `with` set on top:
+/// the whole call, copied out, so a refusal shows the one to make next. Only
+/// a text past a few thousand characters is left for the member to keep as
+/// it was.
+pub fn retry(tool: &str, args: &Value, with: Value) -> String {
+    const LONGEST: usize = 4000;
+    let mut again = args.as_object().cloned().unwrap_or_default();
+    let mut kept = Vec::new();
+    for (key, value) in again.iter_mut() {
+        if value.as_str().is_some_and(|t| t.chars().count() > LONGEST) {
+            *value = Value::String(format!("<your {key} as you sent it>"));
+            kept.push(format!("`{key}`"));
+        }
+    }
+    if let Value::Object(with) = with {
+        again.extend(with);
+    }
+    let made = call(tool, &Value::Object(again));
+    if kept.is_empty() { made } else { format!("{made} (with {} exactly as you sent it)", kept.join(", ")) }
+}
+
+/// The arguments of a call a member made that no argument of board tool
+/// `tool` is called: said back so it uses the right names — or nothing.
+pub fn unknown_args(tool: &str, args: &Value) -> Option<String> {
+    let known = tools(true).into_iter().find(|t| t["name"] == tool)?["inputSchema"]["properties"].as_object()?.clone();
+    let unknown: Vec<String> = args.as_object()?.keys().filter(|k| !known.contains_key(k.as_str())).map(|k| format!("`{k}`")).collect();
+    (!unknown.is_empty()).then(|| {
+        let names: Vec<String> = known.keys().map(|k| format!("`{k}`")).collect();
+        format!("{tool} has no {} — its arguments are {}.", unknown.join(", "), names.join(", "))
+    })
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ids_and_lists_are_read_however_a_model_writes_them() {
+        use serde_json::json;
+        let ids = |v: serde_json::Value| super::arg_ids(&json!({ "k": v }), "k");
+        assert_eq!(ids(json!([1, "T-2", "#3"])), Some(vec![1, 2, 3]));
+        assert_eq!(ids(json!(4)), Some(vec![4]));
+        assert_eq!(ids(json!(4.0)), Some(vec![4]));
+        assert_eq!(ids(json!("5, T-6")), Some(vec![5, 6]));
+        assert_eq!(ids(json!("[7,8]")), Some(vec![7, 8]));
+        assert_eq!(ids(json!("")), None);
+        assert_eq!(super::arg_strs(&json!({ "images": "[\"a.png\", \"b.png\"]" }), "images"), vec!["a.png", "b.png"]);
+        assert_eq!(super::arg_strs(&json!({ "images": "a.png" }), "images"), vec!["a.png"]);
+        let labels = |v: serde_json::Value| super::arg_labels(&json!({ "k": v }), "k");
+        assert_eq!(labels(json!("390, 1280; dark")), vec!["390", "1280", "dark"]);
+        assert_eq!(labels(json!("[\"a\", \"b\"]")), vec!["a", "b"]);
+        assert_eq!(labels(json!(["a", " ", "b"])), vec!["a", "b"]);
+        let mut on = labels(json!({ "widths": true, "languages": "true", "large_text": false }));
+        on.sort();
+        assert_eq!(on, vec!["languages", "widths"]);
+        assert_eq!(super::arg_bool(&json!({ "k": "True" }), "k"), Some(true));
+        assert_eq!(super::arg_bool(&json!({ "k": false }), "k"), Some(false));
+        assert_eq!(super::arg_bool(&json!({ "k": "yes please" }), "k"), None);
+    }
+
+    #[test]
+    fn a_refusal_writes_the_whole_call_to_make_next() {
+        use serde_json::json;
+        let again = super::retry("submit_for_review", &json!({ "summary": "Done." }), json!({ "changes_screens": false }));
+        assert_eq!(again, r#"submit_for_review({"changes_screens":false,"summary":"Done."})"#);
+        assert_eq!(super::unknown_args("check_steps", &json!({ "items": [1] })).map(|u| u.contains("`items`") && u.contains("`done`")), Some(true));
+        assert_eq!(super::unknown_args("check_steps", &json!({ "done": [1] })), None);
+    }
+
+    #[test]
+    fn the_pm_changing_started_work_is_told_the_call_that_does_what_it_meant() {
+        use equipe_protocol::TicketStatus;
+        use serde_json::json;
+        let at = |status| {
+            let mut t = ticket(9, "frontend");
+            t.status = status;
+            t
+        };
+        let said = super::locked_ticket(&at(TicketStatus::InProgress), &json!({ "id": 9, "body": "more" }));
+        assert!(said.contains("in progress") && said.contains(r#"update_ticket({"id":9,"steps":"#) && said.contains("comment("), "{said}");
+        let said = super::locked_ticket(&at(TicketStatus::InProgress), &json!({ "id": 9, "status": "cancelled" }));
+        assert!(said.contains(r#"stop_work({"ticket":9"#), "{said}");
+        let said = super::locked_ticket(&at(TicketStatus::Review), &json!({ "id": 9, "title": "x" }));
+        assert!(said.contains(r#""review":"changes""#), "{said}");
+        let said = super::locked_ticket(&at(TicketStatus::Done), &json!({ "id": 9, "title": "x" }));
+        assert!(said.contains("create_ticket(") && said.contains("Follow-up of T-9"), "{said}");
+    }
 
     #[test]
     fn a_need_that_ends_on_a_question_mark_is_a_question_in_any_script() {

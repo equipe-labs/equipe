@@ -63,6 +63,10 @@ impl Runtime {
         let cwd = session.work.as_ref().map_or_else(|| session.cwd.clone(), |w| w.cwd.clone());
         roots.extend(session.work.as_ref().and_then(|w| w.sandbox.as_ref()).map(|s| s.path.clone()));
         roots.extend(session.sandbox.as_ref().map(|s| s.path.clone()));
+        // A screenshot the member's browser took lands in equipe's folder for
+        // that browser, not the worktree: it is the member's own all the same
+        // (and kept past it, `visuals::keep`, as any temp folder's).
+        roots.push(browser::squad_output(squad));
         (cwd, roots)
     }
 

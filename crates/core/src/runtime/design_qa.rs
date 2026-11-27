@@ -216,6 +216,107 @@ pub(super) fn over_budget(calls: u32, secs: u64, (max_calls, max_secs): (u32, u6
     calls >= max_calls || secs >= max_secs
 }
 
+/// The four coverage confirmations a screen-changing hand-in gives.
+const SCREEN_CHECKS: [&str; 4] = ["languages", "widths", "light_dark", "large_text"];
+
+/// A `design_qa` call's verdict and findings, however written: the verdict
+/// in any case (`Pass`, `changes requested`), the findings as `summary` (the
+/// hand-in's name for them). Missing either, refused with the call that
+/// finishes it — the member's own call, with what was missing to fill in.
+pub(super) fn qa_verdict(args: &Value) -> Result<(bool, String), String> {
+    let verdict = board::arg_str(args, "verdict").map(|v| v.to_ascii_lowercase().replace(['-', ' '], "_"));
+    let passed = match verdict.as_deref() {
+        Some("pass" | "passed") => Some(true),
+        Some("changes" | "changes_requested" | "request_changes" | "needs_changes") => Some(false),
+        _ => None,
+    };
+    let summary = board::arg_str(args, "findings").or_else(|| board::arg_str(args, "summary")).map(str::to_owned);
+    match (passed, summary) {
+        (Some(passed), Some(summary)) => Ok((passed, summary)),
+        (passed, summary) => {
+            let mut with = serde_json::Map::new();
+            let mut wanted = Vec::new();
+            if passed.is_none() {
+                wanted.push("a verdict: `pass` or `changes`");
+                with.insert("verdict".into(), json!("<pass or changes>"));
+            }
+            if summary.is_none() {
+                wanted.push("`findings`: in a few lines, what you looked at and how it stands");
+                with.insert("findings".into(), json!("<what you looked at and how it stands>"));
+            }
+            Err(format!("Nothing was finished: give {}. Then: {}.", wanted.join(", and "), retry_call_of(board::DESIGN_QA, args, Value::Object(with))))
+        }
+    }
+}
+
+/// Which of [`SCREEN_CHECKS`] a `screen_checks` label confirms, however it
+/// is spelled: `light_dark`, `Light-Dark`, `light and dark`, `large text`,
+/// `language`. A label that names none of them confirms nothing.
+pub(super) fn screen_check(label: &str) -> Option<&'static str> {
+    let words: String = label.trim().to_ascii_lowercase().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).collect();
+    let words: Vec<&str> = words.split('_').filter(|w| !w.is_empty() && *w != "and" && *w != "mode").collect();
+    match words.as_slice() {
+        ["languages" | "language" | "locales" | "locale"] => Some("languages"),
+        ["widths" | "width" | "breakpoints" | "viewports"] => Some("widths"),
+        ["light", "dark"] | ["dark", "light"] => Some("light_dark"),
+        ["large", "text"] | ["large", "fonts" | "font"] => Some("large_text"),
+        _ => None,
+    }
+}
+
+/// The member's `submit_for_review` call again with `with` set: what a
+/// refusal shows so the next call goes through.
+pub(super) fn retry_call(args: &Value, with: Value) -> String {
+    retry_call_of(board::SUBMIT_FOR_REVIEW, args, with)
+}
+
+/// [`retry_call`] for any tool ([`board::retry`]).
+pub(super) fn retry_call_of(tool: &str, args: &Value, with: Value) -> String {
+    board::retry(tool, args, with)
+}
+
+/// Why `tool` took none of the pictures `args` names (`err`, the first
+/// refused), and how to make each right: a web address is no picture, one
+/// saved where screens aren't given pictures from is copied into the
+/// worktree — the exact commands and the call again, with the paths fixed.
+pub(super) fn pictures_refused(tool: &str, args: &Value, cwd: &Path, roots: &[PathBuf], err: &str) -> String {
+    let given = board::arg_strs(args, "images");
+    let most = crate::visuals::HAND_IN;
+    if given.len() > most {
+        let kept: Vec<String> = given.iter().take(most).cloned().collect();
+        return format!("Nothing was handed in: {err} Keep the {most} that show it best, like {}.", retry_call_of(tool, args, json!({ "images": kept })));
+    }
+    let (mut fixed, mut copies, mut notes) = (Vec::new(), Vec::new(), Vec::new());
+    for g in &given {
+        let name = Path::new(g.trim_end_matches('/')).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "shot.png".into());
+        match crate::visuals::resolve(g, cwd, roots) {
+            Ok(_) => fixed.push(g.clone()),
+            Err(_) if g.starts_with("http://") || g.starts_with("https://") => {
+                notes.push(format!("{g} is a web address, not a picture: open it in your browser, take a screenshot, and give the file's path."));
+                fixed.push(format!("handin-shots/{}.png", name.trim_end_matches(".png")));
+            }
+            Err(why) if crate::protocol::rpc::ImageWhy::of(&why) == crate::protocol::rpc::ImageWhy::Outside => {
+                copies.push(format!("cp '{g}' handin-shots/{name}"));
+                fixed.push(format!("handin-shots/{name}"));
+            }
+            Err(why) => {
+                notes.push(format!("{why}."));
+                fixed.push(g.clone());
+            }
+        }
+    }
+    let copy = if copies.is_empty() {
+        String::new()
+    } else {
+        format!(" Copy {} into your worktree: `mkdir -p handin-shots && {}`.", if copies.len() == 1 { "it" } else { "them" }, copies.join(" && "))
+    };
+    let notes = if notes.is_empty() { String::new() } else { format!(" {}", notes.join(" ")) };
+    format!(
+        "Nothing was handed in: {err}. Pictures go by their path in your worktree (relative, like handin-shots/home-390.png) or the squad's folder; your browser's screenshots are taken where they land.{copy}{notes} Then: {}.",
+        retry_call_of(tool, args, json!({ "images": fixed }))
+    )
+}
+
 impl Runtime {
     /// A tool call of `id`'s turn: on a design QA ticket, a daily review or
     /// an audit, counted against its budget — once past it, the member is
@@ -345,7 +446,7 @@ what you have — say in findings what you couldn't look at — then end your tu
         let Some(work) = session.work.as_ref() else { return Ok(None) };
         let changes = board::changes_arg(args);
         let unchanged = board::arg_str(args, "unchanged").unwrap_or_default();
-        let said = args.get("changes_screens").and_then(Value::as_bool) == Some(true);
+        let said = board::arg_bool(args, "changes_screens") == Some(true);
         let ledger = crate::design::lint::record::read_pending(&work.cwd.join(crate::design::DIR));
         let touched = || work.sandbox.as_ref().and_then(|s| s.touched_files().ok()).unwrap_or_default();
         let screens = said || !ledger.edited.is_empty() || !ledger.checked.is_empty() || touched().iter().any(|f| !f.starts_with(&format!("{DESIGN_DIR}/")) && precheck::ui_file(f));
@@ -392,12 +493,33 @@ Undo them, propose that work as a ticket for an engineer (create_ticket), and ha
         if kind != TicketKind::Code || role == DESIGNER {
             return Ok(false);
         }
-        match args.get("changes_screens").and_then(Value::as_bool) {
-            None => Err("Say whether this changes what users see (changes_screens: true or false). Then hand in again."
-                .into()),
-            Some(true) if pictures == 0 => Err("Screens changed: save fresh screenshots of each changed screen in \
-your worktree, name them in images, and hand in again."
-                .into()),
+        // `"true"`/`"false"` as text means the same.
+        let said = board::arg_bool(args, "changes_screens");
+        match said {
+            None => {
+                let touched = self.sessions.get(&id).and_then(|s| s.work.as_ref()).and_then(|w| w.sandbox.as_ref()).and_then(|s| s.touched_files().ok()).unwrap_or_default();
+                let ui: Vec<&String> = touched.iter().filter(|f| precheck::ui_file(f)).collect();
+                let branch = match ui.as_slice() {
+                    [] => " Your branch changes no screen file, so it is most likely false.".to_owned(),
+                    some => format!(
+                        " Your branch changes {} screen file{} ({}), so it is most likely true.",
+                        some.len(),
+                        if some.len() == 1 { "" } else { "s" },
+                        some.iter().take(4).map(|f| f.as_str()).collect::<Vec<_>>().join(", ")
+                    ),
+                };
+                Err(format!(
+                    "Nothing was handed in: say whether this changes what users see — `changes_screens`, true or false.{branch} \
+Nobody sees it: {}. Users see it: {}, with fresh screenshots of each changed screen saved in your worktree.",
+                    retry_call(args, json!({ "changes_screens": false })),
+                    retry_call(args, json!({ "changes_screens": true, "images": ["handin-shots/<screen>-390-light.png", "handin-shots/<screen>-1280-dark.png"], "screen_checks": SCREEN_CHECKS })),
+                ))
+            }
+            Some(true) if pictures == 0 => Err(format!(
+                "Nothing was handed in: screens changed, so it needs fresh screenshots of each changed screen, saved in your worktree \
+(a browser screenshot is fine where it lands). Then: {}.",
+                retry_call(args, json!({ "images": ["handin-shots/<screen>-390-light.png", "handin-shots/<screen>-1280-dark.png"], "screen_checks": SCREEN_CHECKS }))
+            )),
             Some(true) => {
                 const ALL: [(&str, &str); 4] = [
                     ("languages", "languages"),
@@ -405,15 +527,16 @@ your worktree, name them in images, and hand in again."
                     ("light_dark", "light and dark"),
                     ("large_text", "large text"),
                 ];
-                let checked = board::arg_strs(args, "screen_checks");
-                let missing = ALL.iter().filter(|(key, _)| !checked.iter().any(|got| got == key)).map(|(_, label)| *label).collect::<Vec<_>>();
+                let checked: Vec<&str> = board::arg_labels(args, "screen_checks").iter().filter_map(|l| screen_check(l)).collect();
+                let missing = ALL.iter().filter(|(key, _)| !checked.contains(key)).map(|(_, label)| *label).collect::<Vec<_>>();
                 // A polish follow-up is shown where its findings are; the precheck renders the rest.
                 let light = self.follow_up_of(squad, ticket).is_some_and(|f| f.light_check());
                 if !missing.is_empty() && !light {
                     return Err(format!(
                         "Screens changed: the hand-in screenshots must cover the same range as design QA. Add every \
-screen_checks value; missing: {}. Then hand in again.",
-                        missing.join(", ")
+screen_checks value; missing: {}. Once your screenshots cover them: {}.",
+                        missing.join(", "),
+                        retry_call(args, json!({ "screen_checks": SCREEN_CHECKS }))
                     ));
                 }
                 Ok(self.has_designer(squad))
@@ -1025,17 +1148,12 @@ truncation with the whole text available), hand in again with `waive_findings` s
     pub(super) fn finish_design_qa(&mut self, squad: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let on = self.sessions.get(&id).and_then(|s| s.work.as_ref()).map(|w| w.ticket).ok_or("You're not on a ticket — there is no design QA to finish.")?;
         let checked = self.checked_by(squad, on).ok_or_else(|| format!("T-{on} isn't a design QA ticket: hand it in with submit_for_review."))?;
-        let passed = match board::arg_str(args, "verdict") {
-            Some("pass") => true,
-            Some("changes") => false,
-            _ => return Err("Give a verdict: pass, or changes.".into()),
-        };
-        let summary = board::arg_str(args, "findings").ok_or("Say what you looked at and how it stands.")?.to_owned();
+        let (passed, summary) = qa_verdict(args)?;
         let (cwd, mut roots) = self.picture_places(squad, id);
         // The precheck's pictures count as the designer's own.
         roots.push(precheck_dir(&self.config.home, squad, on));
         let shown = crate::visuals::resolve_all(&board::arg_strs(args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
-            .map_err(|e| format!("{e}. Save the pictures in your worktree and give their paths, then finish again."))?;
+            .map_err(|e| pictures_refused(board::DESIGN_QA, args, &cwd, &roots, &e))?;
         crate::visuals::thumbs::warm(&self.config.home, shown.clone());
         // Its own look, not the engineer's screenshots handed on.
         let own = shown.iter().filter(|s| !checked.images.contains(s)).count();
@@ -1247,7 +1365,7 @@ design_qa, not submit_for_review: a pass needs at least two of your own pictures
 
 #[cfg(test)]
 mod tests {
-    use super::{Narrowed, PrecheckBrief, QA_TURN_CALLS, QA_TURN_SECS, move_precheck, outside_design, over_budget, qa_prompt, retry_delay, reusable_pictures, unseen_under_load};
+    use super::{Narrowed, PrecheckBrief, QA_TURN_CALLS, QA_TURN_SECS, move_precheck, outside_design, over_budget, qa_prompt, qa_verdict, retry_delay, reusable_pictures, screen_check, unseen_under_load};
     use crate::design::precheck::{self, Report, Shot};
     use equipe_protocol::{Ticket, TicketKind, TicketStatus};
     use std::time::Duration;
@@ -1285,6 +1403,27 @@ mod tests {
         let same = Shot { diff: Some(precheck::Diff::default()), ..shot("app/about/default", "390.light.normal", Some("/p/about.png"), false) };
         let report = Report { shots: vec![changed, same], ..Report::default() };
         assert_eq!(reusable_pictures(&report, 8), ["/p/home.png"]);
+    }
+
+    #[test]
+    fn screen_checks_count_however_they_are_spelled_and_nothing_else_does() {
+        for (said, means) in [("light_dark", "light_dark"), ("Light-Dark", "light_dark"), ("light and dark", "light_dark"), ("dark/light mode", "light_dark"), ("large text", "large_text"), ("Large-Text", "large_text"), ("language", "languages"), ("Widths", "widths")] {
+            assert_eq!(screen_check(said), Some(means), "{said}");
+        }
+        for nothing in ["dark", "390", "all", "everything", "text", ""] {
+            assert_eq!(screen_check(nothing), None, "{nothing} confirms none of the four");
+        }
+    }
+
+    #[test]
+    fn a_design_qa_call_missing_its_verdict_or_findings_is_shown_the_call_that_finishes_it() {
+        use serde_json::json;
+        assert_eq!(qa_verdict(&json!({ "verdict": "Pass", "findings": "Matches." })), Ok((true, "Matches.".into())));
+        assert_eq!(qa_verdict(&json!({ "verdict": "changes requested", "summary": "Title off." })), Ok((false, "Title off.".into())), "the hand-in's `summary` is its findings");
+        let said = qa_verdict(&json!({ "verdict": "pass", "checked": ["390", "1280", "dark"] })).unwrap_err();
+        assert!(said.contains("design_qa({") && said.contains("\"findings\"") && said.contains("\"checked\":[\"390\""), "{said}");
+        let said = qa_verdict(&json!({ "verdict": "looks good", "findings": "Fine." })).unwrap_err();
+        assert!(said.contains("`pass` or `changes`") && !said.contains("`findings`:"), "{said}");
     }
 
     #[test]

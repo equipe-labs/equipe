@@ -72,7 +72,6 @@ impl Runtime {
     /// ends, on the same branch and worktree (`turn_end::Reason::Baton`).
     pub(super) fn pass_baton(&mut self, squad: &str, id: SessionId, args: &Value) -> Result<String, String> {
         let note = board::arg_str(args, "note").map(str::trim).filter(|n| !n.is_empty()).ok_or("Say in `note` what they need to carry on: what is done, where, what is next.")?.to_owned();
-        let done: Vec<usize> = board::arg_ids(args, "done").unwrap_or_default().into_iter().map(|n| n as usize).collect();
         let back = args.get("back").and_then(Value::as_bool).unwrap_or(false);
         let (on, holder) = {
             let s = self.sessions.get(&id).ok_or("You're not on the squad.")?;
@@ -121,6 +120,7 @@ end your turn now with a short line."
         if !staffed {
             return Err(format!("Nobody on the squad is {to}. Pass it to a role the squad has, or hand it in."));
         }
+        let done = rules::item_numbers(&flow, on, rules::PASS_BATON, "done", args.get("done"))?;
         if !done.is_empty() {
             rules::tick(&mut flow, &done, &[], Vec::new(), &holder)?;
         }
@@ -145,17 +145,20 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
     /// `check_steps`: tick off and add items of the checklist of the ticket
     /// member `id` holds.
     pub(super) fn check_steps(&mut self, squad: &str, id: SessionId, args: &Value) -> Result<String, String> {
-        let done: Vec<usize> = board::arg_ids(args, "done").unwrap_or_default().into_iter().map(|n| n as usize).collect();
-        let added = rules::steps_arg(args, "add")?;
-        let replace: Vec<usize> = board::arg_ids(args, "replace").unwrap_or_default().into_iter().map(|n| n as usize).collect();
-        if done.is_empty() && added.is_empty() && replace.is_empty() {
-            return Err("Say which items are `done` (by number), or `add` some.".into());
-        }
         let (on, holder) = {
             let s = self.sessions.get(&id).ok_or("You're not on the squad.")?;
             let work = s.work.as_ref().ok_or("You're not on a ticket — its holder ticks its checklist.")?;
             (work.ticket, s.name().unwrap_or_default().to_owned())
         };
+        // Items by number or by their words, however the list is written; a call
+        // that changes nothing is shown the checklist and the calls that would.
+        let flow = self.find_ticket(squad, on).and_then(|t| t.flow.as_deref().cloned()).unwrap_or_default();
+        let done = rules::item_numbers(&flow, on, rules::CHECK_STEPS, "done", args.get("done"))?;
+        let replace = rules::item_numbers(&flow, on, rules::CHECK_STEPS, "replace", args.get("replace"))?;
+        let added = rules::steps_arg(args, "add")?;
+        if done.is_empty() && added.is_empty() && replace.is_empty() {
+            return Err(rules::check_steps_help(on, &flow, board::unknown_args(rules::CHECK_STEPS, args)));
+        }
         self.change_steps(squad, on, &done, &replace, added, &holder)
     }
 

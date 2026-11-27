@@ -88,17 +88,24 @@ pub fn default_steps(slice: bool, kind: TicketKind, owner: Option<&str>, words: 
 /// The `steps` of a `create_ticket` or `check_steps` call: each a string,
 /// or `{text, who}`. Empty texts are left out.
 pub fn steps_arg(args: &Value, key: &str) -> Result<Vec<TicketStep>, String> {
-    let Some(items) = args.get(key) else { return Ok(Vec::new()) };
-    let items = items.as_array().ok_or_else(|| format!("`{key}` is a list: each item a line, or {{\"text\", \"who\"}}."))?;
+    let Some(given) = args.get(key) else { return Ok(Vec::new()) };
+    // One line on its own is a list of one; a list written as a string is that list.
+    let items: Vec<Value> = match given {
+        Value::Array(items) => items.clone(),
+        Value::String(text) => crate::board::list_in_string(text).unwrap_or_else(|| vec![given.clone()]),
+        Value::Object(_) => vec![given.clone()],
+        Value::Null => Vec::new(),
+        _ => return Err(format!("`{key}` is a list of lines, like {{\"{key}\": [\"Write the tests\", {{\"text\": \"Check it at 390px\", \"who\": \"designer\"}}]}}.")),
+    };
     let mut out = Vec::new();
-    for item in items {
+    for item in &items {
         let (text, who) = match item {
             Value::String(s) => (s.trim().to_owned(), None),
             Value::Object(o) => (
                 o.get("text").and_then(Value::as_str).unwrap_or_default().trim().to_owned(),
                 o.get("who").and_then(Value::as_str).map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned),
             ),
-            _ => return Err(format!("Each item of `{key}` is a line, or {{\"text\", \"who\"}}.")),
+            _ => return Err(format!("Each item of `{key}` is a line, or {{\"text\", \"who\"}} — like {{\"{key}\": [\"Write the tests\"]}}; {item} is neither.")),
         };
         if !text.is_empty() {
             out.push(TicketStep { text, who, done: false, by: None });
@@ -122,6 +129,71 @@ pub fn checklist(flow: &TicketFlow) -> String {
         .join("\n")
 }
 
+/// The checklist items `arg` names, numbered from 1: a number (`2`, `"2"`,
+/// `"#2"`), or an item's own words (`"Write the tests"`), one or a list —
+/// or a list written as a string. An item it can't find is refused with the
+/// checklist and the call that names it, for `tool`'s argument `key`.
+pub fn item_numbers(flow: &TicketFlow, ticket: TicketId, tool: &str, key: &str, arg: Option<&Value>) -> Result<Vec<usize>, String> {
+    let Some(arg) = arg else { return Ok(Vec::new()) };
+    let items: Vec<Value> = match arg {
+        Value::Array(items) => items.clone(),
+        Value::Null => Vec::new(),
+        Value::String(text) => match crate::board::list_in_string(text) {
+            Some(items) => items,
+            // A whole item's words, or numbers: "2, 3".
+            None if flow.steps.iter().any(|s| same_item(&s.text) == same_item(text)) => vec![arg.clone()],
+            None => text.split([',', ';']).map(|t| Value::String(t.trim().to_owned())).filter(|t| t.as_str() != Some("")).collect(),
+        },
+        other => vec![other.clone()],
+    };
+    let mut out = Vec::new();
+    for item in &items {
+        let number = item
+            .as_u64()
+            .or_else(|| item.as_f64().filter(|f| *f >= 1.0 && f.fract() == 0.0).map(|f| f as u64))
+            .or_else(|| item.as_str().and_then(|t| t.trim().trim_start_matches('#').trim_end_matches('.').parse().ok()))
+            .map(|n| n as usize);
+        let found = number.or_else(|| {
+            let words = same_item(item.as_str().unwrap_or_default());
+            flow.steps.iter().position(|s| !words.is_empty() && same_item(&s.text) == words).map(|at| at + 1)
+        });
+        match found {
+            Some(n) if !out.contains(&n) => out.push(n),
+            Some(_) => {}
+            None => {
+                let example = flow.steps.iter().position(|s| !s.done).unwrap_or(0) + 1;
+                return Err(format!(
+                    "`{key}` names checklist items by number, and {item} isn't one of T-{ticket}'s. Its checklist:\n{}\nCall it again with the numbers, like {}.",
+                    if flow.steps.is_empty() { "(empty)".to_owned() } else { checklist(flow) },
+                    crate::board::call(tool, &serde_json::json!({ key: [example] }))
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// What `check_steps` says to a call that changes nothing — no `done`, `add`
+/// or `replace` it could read: T-`ticket`'s checklist, and the calls that
+/// tick, add and re-plan it, so the next call is right.
+pub fn check_steps_help(ticket: TicketId, flow: &TicketFlow, unknown: Option<String>) -> String {
+    let unknown = unknown.map(|u| format!(" {u}")).unwrap_or_default();
+    if flow.steps.is_empty() {
+        return format!(
+            "Nothing was changed: give `done` (item numbers) or `add` (new items).{unknown} T-{ticket} has no checklist yet — add its items, like {}.",
+            crate::board::call(CHECK_STEPS, &serde_json::json!({ "add": ["Build the sign-up form", "Test it at 390px and 1280px"] }))
+        );
+    }
+    let open = flow.steps.iter().position(|s| !s.done).map_or(1, |at| at + 1);
+    format!(
+        "Nothing was changed: give `done` (item numbers from 1) or `add` (new items).{unknown} T-{ticket}'s checklist:\n{}\nTo tick item {open} off: {}. To add one: {}. Both in one call: {}.",
+        checklist(flow),
+        crate::board::call(CHECK_STEPS, &serde_json::json!({ "done": [open] })),
+        crate::board::call(CHECK_STEPS, &serde_json::json!({ "add": ["Write the tests"] })),
+        crate::board::call(CHECK_STEPS, &serde_json::json!({ "done": [open], "add": ["Write the tests"] })),
+    )
+}
+
 /// How an item reads when two are compared: case, spacing and a closing
 /// full stop aside — "Put it live." and "put it  live" are one item.
 fn same_item(text: &str) -> String {
@@ -136,7 +208,7 @@ fn same_item(text: &str) -> String {
 pub fn tick(flow: &mut TicketFlow, done: &[usize], replace: &[usize], added: Vec<TicketStep>, by: &str) -> Result<String, String> {
     let has = flow.steps.len();
     if let Some(bad) = done.iter().chain(replace).find(|n| **n == 0 || **n > has) {
-        return Err(format!("There is no item {bad}: the checklist has {has} (numbered from 1)."));
+        return Err(format!("There is no item {bad}: the checklist has {has} (numbered from 1):\n{}", checklist(flow)));
     }
     if let Some(both) = replace.iter().find(|n| done.contains(n)) {
         return Err(format!("Item {both} can't be both done and replaced."));
@@ -515,6 +587,29 @@ pub fn prefer_finishing(ready: usize, capacity: usize, running: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn checklist_items_are_named_by_number_or_by_their_words_and_a_wrong_one_is_shown_the_call() {
+        use equipe_protocol::{TicketFlow, TicketStep};
+        use serde_json::json;
+        let item = |t: &str| TicketStep { text: t.into(), who: None, done: false, by: None };
+        let flow = TicketFlow { steps: vec![item("Build the form"), item("Write the tests.")], ..Default::default() };
+        let named = |v: serde_json::Value| super::item_numbers(&flow, 4, super::CHECK_STEPS, "done", Some(&v));
+        assert_eq!(named(json!([2, 1])), Ok(vec![2, 1]));
+        assert_eq!(named(json!("2")), Ok(vec![2]));
+        assert_eq!(named(json!("1, 2")), Ok(vec![1, 2]));
+        assert_eq!(named(json!("[2]")), Ok(vec![2]));
+        assert_eq!(named(json!(["write the tests"])), Ok(vec![2]));
+        assert_eq!(named(json!("Build the form")), Ok(vec![1]));
+        let wrong = named(json!(["Ship it"])).unwrap_err();
+        assert!(wrong.contains("1. [ ] Build the form") && wrong.contains(r#"check_steps({"done":[1]})"#), "{wrong}");
+        let help = super::check_steps_help(4, &flow, None);
+        assert!(help.contains(r#"check_steps({"done":[1]})"#) && help.contains(r#"check_steps({"add":["Write the tests"]})"#), "{help}");
+        let empty = super::check_steps_help(4, &TicketFlow::default(), None);
+        assert!(empty.contains("no checklist yet") && empty.contains("check_steps({\"add\":"), "{empty}");
+        // One line on its own is a list of one.
+        assert_eq!(super::steps_arg(&json!({ "add": "Check it at 390px" }), "add").unwrap().len(), 1);
+    }
 
     #[test]
     fn a_baton_passed_back_and_forth_past_its_limit_is_a_loop_and_a_hand_in_resets_it() {

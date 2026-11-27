@@ -33,6 +33,36 @@ pub(super) fn check_title(lang: Option<crate::i18n::Lang>, title: &str) -> Resul
     }
 }
 
+/// [`check_title`] for `tool`'s call `args`, refused with the call to make
+/// instead: its title rewritten where taking something out does it (an id
+/// goes to the body), or a slot for the member's own words.
+pub(super) fn check_title_call(lang: Option<crate::i18n::Lang>, tool: &str, title: &str, args: &Value) -> Result<(), String> {
+    let Err(why) = check_title(lang, title) else { return Ok(()) };
+    let script = lang.map_or("", |l| crate::i18n::core(l).get("title.script"));
+    let language = lang.map_or("the squad's language", |l| l.english_name());
+    let mut with = serde_json::Map::new();
+    let fixed = title::suggest(title, script);
+    let new_title = fixed.clone().unwrap_or_else(|| format!("<a short outcome in {language}>"));
+    with.insert("title".into(), Value::String(new_title));
+    // What came out of the title, kept in the body.
+    let dropped: Vec<String> = title::problems(title, script, language)
+        .into_iter()
+        .filter_map(|p| match p {
+            title::Problem::Id(id) => Some(id),
+            _ => None,
+        })
+        .collect();
+    if !dropped.is_empty() {
+        let body = board::arg_str(args, "body").unwrap_or_default();
+        if !dropped.iter().all(|d| body.contains(d.as_str())) {
+            with.insert("body".into(), Value::String(format!("{body}\n\n({})", dropped.join(", ")).trim().to_owned()));
+        }
+    }
+    let nothing = if tool == board::CREATE_TICKET { "Nothing was made." } else { "Nothing was changed." };
+    let lead = if fixed.is_some() { format!("{nothing} Call it again with the title fixed") } else { format!("{nothing} Call it again with the title rewritten") };
+    Err(format!("{why} {lead}: {}.", board::retry(tool, args, Value::Object(with))))
+}
+
 impl Runtime {
     /// The language the squad's person writes in, as last detected from what
     /// they wrote, if equipe speaks it: what a title is written in.

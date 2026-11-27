@@ -1386,6 +1386,18 @@ pub async fn call(client: &reqwest::Client, port: u16, tool: &str, arguments: Va
     message["result"]["content"].as_array().cloned()
 }
 
+/// Where the browsers of `squad`'s members save what they write — their
+/// screenshots among it: `<temp>/equipe-browser/<squad>`, one folder per
+/// browser under it ([`output_dir`]).
+pub fn squad_output(squad: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join("equipe-browser").join(squad)
+}
+
+/// Where browser `key` of `squad` saves what it writes.
+pub fn output_dir(squad: &str, key: &str) -> std::path::PathBuf {
+    squad_output(squad).join(key)
+}
+
 /// What a member's browser shows now: a PNG of the page, and its address.
 pub async fn screenshot(client: &reqwest::Client, port: u16) -> Option<(Vec<u8>, Option<String>)> {
     use base64::Engine as _;
