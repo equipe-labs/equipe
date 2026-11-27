@@ -31,7 +31,9 @@ pub enum DesignTier {
 pub enum DeepStep {
     /// The full brief: audience, attributes, references, voice.
     Brief,
-    /// A fresh logo round past the starter's (the gated pipeline, then the designer's refinement).
+    /// A logo round: the deep system's own, or any designer ticket that is a logo ([`logo_work`]). The platform's
+    /// `logo_round` tool does the round (brief, six candidates, the gate, one critique, a decision card), so the
+    /// designer only drives it: the standard tier (`crate::tiers`) under a small budget.
     Logo,
     /// Layered tokens, the component sheets and the guidelines.
     System,
@@ -50,6 +52,9 @@ pub struct Step {
 /// measured turn: 10–12 tool calls, under 100k tokens of context), so with the logo round and the photograph the whole
 /// starter brand stays near $2 of credits even at its cap.
 pub const STARTER_TOKENS: u64 = 1_500_000;
+/// Tokens a logo round may use. A logo ticket once used 19.4M tokens (five picture rounds, nine Opus critiques, about
+/// $20); with `logo_round` a round is one tool call, the decision card and a hand-in, and a pick or a refinement one more.
+pub const LOGO_TOKENS: u64 = 1_500_000;
 /// The starter's art-direction turn: tool calls, seconds.
 pub const STARTER_TURN: (u32, u64) = (30, 15 * 60);
 /// A deep step's turn when it names no step.
@@ -60,7 +65,7 @@ impl DeepStep {
     pub fn tokens(self) -> u64 {
         match self {
             DeepStep::Brief => 3_000_000,
-            DeepStep::Logo => 2_000_000,
+            DeepStep::Logo => LOGO_TOKENS,
             DeepStep::System => 8_000_000,
             DeepStep::Map => 6_000_000,
         }
@@ -70,7 +75,7 @@ impl DeepStep {
     pub fn turn(self) -> (u32, u64) {
         match self {
             DeepStep::Brief => (60, 20 * 60),
-            DeepStep::Logo => (50, 20 * 60),
+            DeepStep::Logo => (40, 15 * 60),
             DeepStep::System => (140, 50 * 60),
             DeepStep::Map => (120, 45 * 60),
         }
@@ -111,7 +116,7 @@ pub fn classify(title: &str, body: &str) -> Option<Step> {
         return Some(Step { tier: DesignTier::Starter, step: None });
     }
     if !(title.contains("deep brand") || body.contains("design tier: deep")) {
-        return None;
+        return logo_work(&title, &body).then_some(Step { tier: DesignTier::Deep, step: Some(DeepStep::Logo) });
     }
     let step = if title.contains("ui map") || title.contains("flows") {
         Some(DeepStep::Map)
@@ -125,6 +130,19 @@ pub fn classify(title: &str, body: &str) -> Option<Step> {
         None
     };
     Some(Step { tier: DesignTier::Deep, step })
+}
+
+/// A ticket whose work is making or refining a logo: the PM's `Design step: logo` line (titles are often in the
+/// person's language), or a title naming the logo that is not about putting a finished one on the product.
+pub fn logo_work(title: &str, body: &str) -> bool {
+    let (title, body) = (title.to_lowercase(), body.to_lowercase());
+    if body.lines().any(|l| l.trim().trim_start_matches(['-', '*', ' ']).starts_with("design step: logo")) {
+        return true;
+    }
+    let names = title.split(|c: char| !c.is_alphanumeric()).any(|w| matches!(w, "logo" | "logos" | "logomark" | "logotype"));
+    let applies = ["put the", "apply the", "use the", "add the", "swap", "replace the", "on the site", "in the header", "favicon"].iter().any(|w| title.contains(w));
+    let wider = ["design system", "brand system", "screen", "page", "redesign"].iter().any(|w| title.contains(w));
+    names && !applies && !wider
 }
 
 #[cfg(test)]
@@ -151,11 +169,24 @@ mod tests {
     }
 
     #[test]
+    fn a_logo_ticket_is_a_logo_round_by_its_title_or_its_design_step_line() {
+        let logo = Some(Step { tier: DesignTier::Deep, step: Some(DeepStep::Logo) });
+        assert_eq!(classify("Logo for OnePass", ""), logo);
+        assert_eq!(classify("Refine the logo", "Make it calmer"), logo);
+        assert_eq!(classify("Tighten the mark", "Design step: logo\nThe person wants it rounder."), logo, "a title in any language, the line in English");
+        assert_eq!(classify("Put the new logo in the header", ""), None, "putting a finished logo on the site is frontend work");
+        assert_eq!(classify("Replace the logo on the site", ""), None);
+        assert_eq!(classify("Logo page redesign", ""), None);
+        assert_eq!(classify("Catalog filters", ""), None, "a word that only contains the letters");
+        assert_eq!(Step { tier: DesignTier::Deep, step: Some(DeepStep::Logo) }.tokens(), LOGO_TOKENS);
+    }
+
+    #[test]
     fn budgets_are_small_for_the_starter_and_capped_for_each_deep_step() {
         let starter = Step { tier: DesignTier::Starter, step: None };
         assert_eq!(starter.tokens(), STARTER_TOKENS);
         assert!(starter.tokens() < DeepStep::Brief.tokens());
-        assert_eq!(deep_tokens(), 19_000_000);
+        assert_eq!(deep_tokens(), 18_500_000);
         assert_eq!(Step { tier: DesignTier::Deep, step: None }.tokens(), deep_tokens());
         assert!(DeepStep::System.tokens() <= crate::spend::CREDITS_TICKET_BUDGET, "no deep step is allowed more than a credits ticket");
     }
