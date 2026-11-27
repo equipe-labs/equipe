@@ -57,8 +57,11 @@ pub fn detect(text: &str) -> Option<&'static str> {
     }
     // Latin script: the detector proposes, when the text is long enough to tell;
     // the language's own little words must back it.
-    let proposed = (info.confidence() >= 0.5 && text.split_whitespace().count() >= 4).then(|| info.lang().eng_name());
-    latin(text, proposed)
+    // Fewer than four words say nothing ("ok", "and the app?"): the person's known language stands.
+    if text.split_whitespace().count() < 4 {
+        return None;
+    }
+    latin(text, (info.confidence() >= 0.5).then(|| info.lang().eng_name()))
 }
 
 /// The little words of the Latin-script languages people write to a squad in
@@ -166,6 +169,7 @@ mod tests {
         // Nouns alone say nothing: the known language stands.
         assert_eq!(detect("AI based interview prep platform for IB MBB etc"), None);
         assert_eq!(detect("logo files, colours, type, voice"), None);
+        assert_eq!(detect("and the app?"), None, "three words say nothing");
     }
 
     #[test]
