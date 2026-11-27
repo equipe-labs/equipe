@@ -13,6 +13,11 @@ name: Release
 # the clean-machine install check are skipped, and the release carries the
 # previous release's disk images and appcasts unchanged, so the app keeps its
 # current version and downloads keep working. See docs/RELEASING.md.
+#
+# Nothing is published unless CI passed on the tagged commit: the `ci` job
+# waits for ci.yml's run of it (scripts/wait-for-ci.sh) while the builds run,
+# and `publish` needs it. That holds for fast releases too: they skip the
+# desktop app's build and the install check, never the tests.
 
 on:
   push:
@@ -403,12 +408,35 @@ jobs:
           # Again over the top, as an update would.
           EQUIPE_DOWNLOAD_BASE="file://$PWD/dist" EQUIPE_NO_MODIFY_PATH=1 sh install.sh
 
+  # CI passed on the tagged commit: every job of ci.yml's run of it but the
+  # cache warming (its tests and clippy on macOS, Linux and Windows, the
+  # desktop app's tests, the relay, install.sh). It runs beside the builds,
+  # so it costs a release no time unless CI is slower than they are. A tag on
+  # a commit CI failed, or never ran on, builds but isn't published.
+  ci:
+    name: CI passed on this commit
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - name: Wait for CI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/wait-for-ci.sh "$GITHUB_SHA"
+
   # A fast release skips try-install and desktop; anything else they end in
-  # (failed, cancelled) holds the release back.
+  # (failed, cancelled) holds the release back, and so does CI not passing.
   publish:
-    needs: [mode, build, try-install, desktop]
+    needs: [mode, ci, build, try-install, desktop]
     if: >-
       !cancelled() && startsWith(github.ref, 'refs/tags/') &&
+      needs.ci.result == 'success' &&
       needs.build.result == 'success' &&
       (needs.try-install.result == 'success' || (needs.mode.outputs.fast == 'true' && needs.try-install.result == 'skipped')) &&
       (needs.desktop.result == 'success' || (needs.mode.outputs.fast == 'true' && needs.desktop.result == 'skipped'))

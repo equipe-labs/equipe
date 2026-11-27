@@ -27,6 +27,34 @@ machines, then publishes the GitHub Release and updates the Homebrew formula
 and cask. It usually takes about 25 minutes. Most of that is the desktop app
 and Apple's notarization.
 
+## CI gates every release
+
+Nothing is published unless CI passed on the tagged commit. The workflow's
+`ci` job ("CI passed on this commit", `scripts/wait-for-ci.sh`) waits for the
+run of [`ci.yml`](../.github/workflows/ci.yml) on that commit, the one the
+`git push origin HEAD:main vX.Y.Z` above starts, while the builds run beside
+it, and `publish` needs it. Every CI job counts except the release-cache
+warming: the tests and clippy on macOS and Linux, the Windows engines and
+tools, the desktop app's tests and examples, the relay and `install.sh`. A
+release commit's CI run is never cancelled by a later push to main (it gets a
+concurrency group of its own), so the gate always has a finished run to read.
+
+CI usually takes about 20 minutes, less than the builds, so the gate costs a
+release no time. The gate is the CI run itself, not a check someone runs
+locally before tagging, so a failing test on main can't ship unnoticed.
+
+When the gate fails, the builds still finish but nothing is published, and
+the job's log lists CI's failed jobs:
+
+- A real failure: fix it on main and cut the next version.
+- A flaky job: re-run it (`gh run rerun <ci-run-id> --failed`); once CI is
+  green, re-run the release's failed jobs (`gh run rerun <release-run-id>
+  --failed`), which re-runs the gate and then `publish` with the builds that
+  already succeeded.
+- No CI run (the tag was pushed without the commit reaching main): run CI on
+  the tag, `gh workflow run ci.yml --ref vX.Y.Z`, then re-run the release's
+  failed jobs.
+
 The desktop app comes in three builds, made at once on separate machines:
 
 | Build | Disk image | Update feed |
@@ -101,6 +129,10 @@ takes about 10 minutes. The workflow skips:
   updated as usual.
 - **The clean-machine install check** (`try-install`). Each build still runs
   its own `equipe --version` smoke test.
+
+It skips no tests: a fast release is gated on CI exactly as a normal one is
+(see "CI gates every release"), the desktop app's tests included, so it only
+saves the app's build, notarization and install check.
 
 Use it only when the change doesn't need a new app: a change under
 `crates/desktop` (or anything the app shows) reaches people with the next

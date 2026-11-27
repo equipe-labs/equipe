@@ -6,8 +6,12 @@ on:
     branches: [main]
   pull_request:
 
+# A newer push cancels an older run of the same branch, except a release
+# commit's: the Release workflow publishes only what CI passed on the tagged
+# commit (scripts/wait-for-ci.sh), so that run gets a group of its own and
+# always finishes.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.ref }}${{ startsWith(github.event.head_commit.message, 'Release ') && format('-{0}', github.sha) || '' }}
   cancel-in-progress: true
 
 env:
@@ -112,6 +116,7 @@ jobs:
         with:
           persist-credentials: false
       - run: shellcheck -s sh install.sh paste-setup.sh
+      - run: shellcheck scripts/wait-for-ci.sh
       # Every action pinned to a full commit SHA: a tag can be moved under us.
       - name: Actions are pinned
         run: |
