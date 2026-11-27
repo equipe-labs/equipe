@@ -590,6 +590,7 @@ mod tests {
             Command::CreateTicket { squad: s(), draft: TicketDraft::default() },
             Command::StopWork { squad: s(), request: Some(1), ticket: None, words: String::new() },
             Command::LiftStop { squad: s(), stop: 1 },
+            Command::UndoStop { squad: s(), stop: 1 },
             Command::EditTicket { squad: s(), ticket: 1, changes: TicketEdit::default() },
             Command::EditTickets { squad: s(), tickets: vec![1], changes: TicketEdit::default() },
             Command::MoveTicket { squad: s(), ticket: 1, status: None, before: None },
@@ -653,6 +654,7 @@ mod tests {
             Command::SaveBrowserProfile { profile: BrowserProfile { name: "b".into(), label: String::new() } },
             Command::DeleteBrowserProfile { name: "b".into() },
             Command::BrowserProfiles,
+            Command::BrowserAccount { site: "github.com".into() },
             Command::SaveSecret { squad: s(), id: 1, values: vec![secrets::SecretValue("v".into())] },
             Command::DismissSecret { squad: s(), id: 1 },
             Command::SubmitCliSignInCode { squad: s(), id: 1, code: equipe_core::protocol::cli_signin::PastedCode("c".into()) },
@@ -693,6 +695,7 @@ mod tests {
             Command::BrowserDialog { page: 1, accept: true, text: None },
             Command::BrowserPopOut { page: 1, bounds: Some(ScreenBounds { left: 0, top: 0, width: 1, height: 1 }) },
             Command::BrowserSignIn { url: "github.com".into(), window: false },
+            Command::BrowserSignOut { site: "github.com".into() },
             Command::Language { lang: "en".into() },
             Command::Disallow { squad: s(), rule: "r".into() },
             Command::PairStart,
@@ -805,9 +808,9 @@ mod tests {
         variants.sort();
         assert_eq!(sampled, variants, "each command once: a new one is sampled here, and placed in `reads`");
         let going: Vec<String> = commands.iter().filter(|c| reads(c)).map(name).collect();
-        assert_eq!(going, ["ticket_history", "hand_over", "logins", "autopilot", "login_insights", "browser_profiles", "squad_secrets", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions", "design_refs", "design_results"]);
+        assert_eq!(going, ["ticket_history", "hand_over", "logins", "autopilot", "login_insights", "browser_profiles", "browser_account", "squad_secrets", "watch_browser", "devices", "disk_scan", "plan_use", "words_log", "engines", "providers", "models", "design", "project_docs", "search_docs", "design_versions", "design_refs", "design_results"]);
         // What a screen does as the person works is never among them.
-        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy"] {
+        for kept in ["submit", "say", "undo_words", "decide", "accept", "merge", "create_ticket", "move_ticket", "answer_questions", "confirm_accept", "focus", "language", "start", "start_side_chat", "side_chat_submit", "taste", "disk_clean", "add_provider", "remove_provider", "test_provider", "keep_doc_copy", "undo_stop", "browser_sign_out"] {
             assert!(!going.iter().any(|g| g == kept), "{kept} changes something");
         }
         // Outside the real view, everything goes, as ever.

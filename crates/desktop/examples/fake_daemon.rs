@@ -1184,6 +1184,7 @@ fn fake_stops() -> Vec<equipe_core::protocol::requests::Stop> {
         since: unix() - 5 * 3600,
         cancelled: vec![3481, 3482],
         refused: 6,
+        all: false,
     }]
 }
 
