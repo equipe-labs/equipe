@@ -1852,6 +1852,25 @@ pub fn arg_strs(args: &Value, key: &str) -> Vec<String> {
     items.into_iter().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()
 }
 
+/// A list of short labels (`screen_checks`, a check's `checked`), however a
+/// model writes it: a list, the list as a string, one line with the labels
+/// between commas (`"390, 1280, dark"`), or an object of labels each `true`
+/// (`{"languages": true, "widths": true}`). Unlike [`arg_strs`], a plain
+/// string is split at its commas — so only for labels, never for sentences.
+pub fn arg_labels(args: &Value, key: &str) -> Vec<String> {
+    let items = match args.get(key) {
+        Some(Value::Object(map)) => map.iter().filter(|(_, on)| on.as_bool().or_else(|| on.as_str().and_then(|t| t.trim().parse().ok())) == Some(true)).map(|(k, _)| k.clone()).collect(),
+        Some(Value::String(one)) if list_in_string(one).is_none() => one.split([',', ';', '\n']).map(str::to_owned).collect(),
+        _ => arg_strs(args, key),
+    };
+    items.into_iter().map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect()
+}
+
+/// A yes or no a model may write as `true` or as the text `"true"`.
+pub fn arg_bool(args: &Value, key: &str) -> Option<bool> {
+    args.get(key).and_then(|v| v.as_bool().or_else(|| v.as_str().and_then(|t| t.trim().to_ascii_lowercase().parse().ok())))
+}
+
 /// A string argument, if present and not blank.
 pub fn arg_str<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
@@ -1969,6 +1988,16 @@ mod tests {
         assert_eq!(ids(json!("")), None);
         assert_eq!(super::arg_strs(&json!({ "images": "[\"a.png\", \"b.png\"]" }), "images"), vec!["a.png", "b.png"]);
         assert_eq!(super::arg_strs(&json!({ "images": "a.png" }), "images"), vec!["a.png"]);
+        let labels = |v: serde_json::Value| super::arg_labels(&json!({ "k": v }), "k");
+        assert_eq!(labels(json!("390, 1280; dark")), vec!["390", "1280", "dark"]);
+        assert_eq!(labels(json!("[\"a\", \"b\"]")), vec!["a", "b"]);
+        assert_eq!(labels(json!(["a", " ", "b"])), vec!["a", "b"]);
+        let mut on = labels(json!({ "widths": true, "languages": "true", "large_text": false }));
+        on.sort();
+        assert_eq!(on, vec!["languages", "widths"]);
+        assert_eq!(super::arg_bool(&json!({ "k": "True" }), "k"), Some(true));
+        assert_eq!(super::arg_bool(&json!({ "k": false }), "k"), Some(false));
+        assert_eq!(super::arg_bool(&json!({ "k": "yes please" }), "k"), None);
     }
 
     #[test]

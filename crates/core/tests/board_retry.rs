@@ -322,3 +322,23 @@ async fn a_title_with_an_id_or_an_arrow_is_shown_the_call_with_it_fixed() {
         assert!(!again.is_error, "{title}: {again:?}");
     }
 }
+
+#[tokio::test]
+async fn screen_checks_written_as_one_line_or_spelled_their_own_way_count() {
+    // Seen from members: the four as one line, with dashes and spaces; and as an object of yeses.
+    for checks in [json!("languages, widths, light-dark, large text"), json!({ "languages": true, "widths": true, "light_dark": true, "large_text": true })] {
+        let (handle, _events, _home) = at_work().await;
+        let work = worktree(&handle).await;
+        png(&work.join("handin-shots").join("hero-390-light.png"));
+        let said = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": true, "images": ["handin-shots/hero-390-light.png"], "screen_checks": checks })).await;
+        assert!(!said.is_error, "{checks}: {said:?}");
+    }
+    // One left out is still said, with the call that confirms all four.
+    let (handle, _events, _home) = at_work().await;
+    let work = worktree(&handle).await;
+    png(&work.join("handin-shots").join("hero-390-light.png"));
+    let said = tool(&handle, "frontend", "submit_for_review", json!({ "summary": "Hero done.", "changes_screens": true, "images": ["handin-shots/hero-390-light.png"], "screen_checks": "languages, widths, dark" })).await;
+    assert!(said.is_error && said.text.contains("missing: light and dark, large text"), "{}", said.text);
+    let again = tool(&handle, "frontend", "submit_for_review", written_call(&said.text, "submit_for_review")).await;
+    assert!(!again.is_error, "{again:?}");
+}

@@ -48,9 +48,17 @@ pub struct Proof {
 
 impl Proof {
     /// Read from `design_qa`'s arguments; `own_shots` is the runtime's count.
+    /// Lists written as strings count as lists (`checked` as `"390, 1280,
+    /// dark"` too — they are labels), and `compared` as the text `"true"`.
     pub fn read(args: &Value, own_shots: usize) -> Proof {
-        let list = |key: &str| args.get(key).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect()).unwrap_or_default();
-        Proof { own_shots, compared: args.get("compared").and_then(Value::as_bool).unwrap_or(false), checked: list("checked"), blockers: list("blockers"), polish: list("polish") }
+        use crate::board::{arg_bool, arg_labels, arg_strs};
+        Proof {
+            own_shots,
+            compared: arg_bool(args, "compared").unwrap_or(false),
+            checked: arg_labels(args, "checked"),
+            blockers: arg_strs(args, "blockers"),
+            polish: arg_strs(args, "polish"),
+        }
     }
 
     /// Why a pass can't stand on this, if it can't — said to the designer.
@@ -601,6 +609,17 @@ mod tests {
         assert!(proof(json!({ "compared": true, "checked": ["1280"] }), 3).refuses_pass().unwrap().contains("conditions"), "one width alone");
         let blocked = json!({ "compared": true, "checked": ["390", "1280", "dark"], "blockers": ["Title 20px, spec 24px"] });
         assert!(proof(blocked, 3).refuses_pass().unwrap().contains("verdict changes"));
+    }
+
+    #[test]
+    fn a_verdict_written_with_lists_as_text_reads_as_the_lists_it_means() {
+        // Seen from cloud designers: `checked` as one line, `compared` as text, a lone blocker as a string.
+        let as_text = json!({ "compared": "true", "checked": "390, 1280, dark", "polish": "[\"Hero padding uneven\"]" });
+        assert_eq!(proof(as_text, 2).refuses_pass(), None);
+        let p = proof(json!({ "compared": true, "checked": ["390", "1280", "dark"], "blockers": "Title 20px, spec 24px" }), 2);
+        assert_eq!(p.blockers, ["Title 20px, spec 24px"], "a blocker is a sentence: never split at its commas");
+        assert!(p.refuses_pass().unwrap().contains("verdict changes"), "a blocker written as text still holds a pass back");
+        assert_eq!(p.refuses_changes(), None);
     }
 
     #[test]
