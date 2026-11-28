@@ -76,28 +76,28 @@ impl Reference {
     /// when written, else the bare design it came with (`prototype/`, or an
     /// imported site in `reference/pages/` or `reference/`), else none.
     pub fn find(root: &Path) -> Option<Reference> {
-        if let Ok(text) = std::fs::read_to_string(root.join(SIGNATURE)) {
-            if let Ok(f) = serde_json::from_str::<File>(&text) {
-                let screens = f.screens.iter().filter_map(|v| label(v, &["id", "name", "screen"])).collect();
-                let items = f
-                    .items
-                    .iter()
-                    .filter_map(|v| {
-                        let id = label(v, &["id", "name"])?;
-                        let name = label(v, &["name", "title", "id"]).unwrap_or_else(|| id.clone());
-                        Some(Item { id, name })
-                    })
-                    .collect();
-                return Some(Reference { source: f.source.trim().to_owned(), screens, items });
-            }
+        if let Ok(text) = std::fs::read_to_string(root.join(SIGNATURE))
+            && let Ok(f) = serde_json::from_str::<File>(&text)
+        {
+            let screens = f.screens.iter().filter_map(|v| label(v, &["id", "name", "screen"])).collect();
+            let items = f
+                .items
+                .iter()
+                .filter_map(|v| {
+                    let id = label(v, &["id", "name"])?;
+                    let name = label(v, &["name", "title", "id"]).unwrap_or_else(|| id.clone());
+                    Some(Item { id, name })
+                })
+                .collect();
+            return Some(Reference { source: f.source.trim().to_owned(), screens, items });
         }
         for dir in ["prototype", "reference/pages", "reference"] {
             let d = root.join(dir);
-            if is_dir(&d) {
-                if let Some(p) = page_in(&d) {
-                    let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
-                    return Some(Reference { source: rel, screens: Vec::new(), items: Vec::new() });
-                }
+            if is_dir(&d)
+                && let Some(p) = page_in(&d)
+            {
+                let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+                return Some(Reference { source: rel, screens: Vec::new(), items: Vec::new() });
             }
         }
         None
