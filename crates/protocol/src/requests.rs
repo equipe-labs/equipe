@@ -194,6 +194,11 @@ pub struct Request {
     /// longer, then not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at: Option<u64>,
+    /// The plan's name as the PM last gave it, in the person's language:
+    /// renamed with the plan when it is revised, so a card never keeps the
+    /// old plan's words. `None`: none given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_title: Option<String>,
 }
 
 /// What a request's news is about, the most telling first: one line says it

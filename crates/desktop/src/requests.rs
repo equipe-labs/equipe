@@ -108,7 +108,7 @@ mod tests {
     }
 
     fn request(id: u64, asked_at: u64, closed_at: Option<u64>, steps: Vec<Step>) -> Request {
-        Request {
+        Request { plan_title: None,
             id,
             title: format!("R{id}"),
             session: Some(2),
