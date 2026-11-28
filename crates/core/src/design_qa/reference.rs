@@ -38,6 +38,9 @@ pub struct Reference {
     pub screens: Vec<String>,
     /// The signature items the build must keep.
     pub items: Vec<Item>,
+    /// The screen the design opens on (`first_screen` in signature.json, else
+    /// the first of `screens`): opening the built site must show it too.
+    pub first_screen: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -48,6 +51,8 @@ struct File {
     screens: Vec<Value>,
     #[serde(default)]
     items: Vec<Value>,
+    #[serde(default)]
+    first_screen: Option<String>,
 }
 
 fn label(v: &Value, keys: &[&str]) -> Option<String> {
@@ -79,7 +84,8 @@ impl Reference {
         if let Ok(text) = std::fs::read_to_string(root.join(SIGNATURE))
             && let Ok(f) = serde_json::from_str::<File>(&text)
         {
-            let screens = f.screens.iter().filter_map(|v| label(v, &["id", "name", "screen"])).collect();
+            let screens: Vec<String> = f.screens.iter().filter_map(|v| label(v, &["id", "name", "screen"])).collect();
+            let first_screen = f.first_screen.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).or_else(|| screens.first().cloned());
             let items = f
                 .items
                 .iter()
@@ -89,7 +95,7 @@ impl Reference {
                     Some(Item { id, name })
                 })
                 .collect();
-            return Some(Reference { source: f.source.trim().to_owned(), screens, items });
+            return Some(Reference { source: f.source.trim().to_owned(), screens, items, first_screen });
         }
         for dir in ["prototype", "reference/pages", "reference"] {
             let d = root.join(dir);
@@ -97,7 +103,7 @@ impl Reference {
                 && let Some(p) = page_in(&d)
             {
                 let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
-                return Some(Reference { source: rel, screens: Vec::new(), items: Vec::new() });
+                return Some(Reference { source: rel, ..Default::default() });
             }
         }
         None
@@ -122,12 +128,19 @@ open it in your browser for states that need a click), put each pair side by sid
 handin-shots/<screen>-side.png`), and judge with both pictures, not the diff number. Screens to compare: {screens}. For each, give \
 `side_by_side` an entry {{\"screen\": \"…\", \"same_feel\": true|false, \"why\": \"…\", \"pictures\": [\"handin-shots/<screen>-side.png\"]}}, \
 its side-by-side picture also in `images`; a pass needs every one true, each judged from its own picture, never from the engineer's \
-hand-in alone, and nothing written as \"not confirmed\" or \"didn't render\": what you couldn't check is not a pass. A screen that no \
+hand-in alone, and nothing written as \"not confirmed\" or \"didn't render\": what you couldn't check is not a pass.{first} A screen that no \
 longer feels like the reference (its structure, motion, mood or signature element replaced by a generic look or a kit component) is a blocker. \
 Check the other half too: every equipe ui piece used for what the reference does not have (new screens, menus, selects, inputs, dialogs, \
 toasts) restyled to the reference's tokens and at the quality bar: accessible, its states (hover, focus, empty, error, loading), no native \
 select or date input.{items}",
             src = if self.source.is_empty() { "prototype/index.html" } else { self.source.as_str() },
+            first = match &self.first_screen {
+                Some(f) => format!(
+                    " The design opens on `{f}`: open the built site at its root (https://…/, not a deep link) at 1280 and 390 and put \
+that beside the design's first view; its entry carries that address in `url`. If opening the site shows anything else: \"{FIRST_SCREEN_BLOCKER}\", an S1 blocker."
+                ),
+                None => String::new(),
+            },
         )
     }
 }
@@ -141,6 +154,8 @@ pub struct Feel {
     /// The side-by-side picture(s) it was judged from: the reference and the
     /// build at the same width and state (`handin-shots/<screen>-side.png`).
     pub pictures: Vec<String>,
+    /// The address the build was opened at for this verdict.
+    pub url: String,
 }
 
 fn truthy(v: &Value) -> Option<bool> {
@@ -179,7 +194,8 @@ pub fn read_feel(args: &Value) -> Vec<Feel> {
                     Some(Value::String(s)) => s.split([',', '\n']).map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect(),
                     _ => Vec::new(),
                 };
-                Some(Feel { screen, same, why, pictures })
+                let url = m.get("url").and_then(Value::as_str).unwrap_or("").trim().to_owned();
+                Some(Feel { screen, same, why, pictures, url })
             }
             Value::String(line) => {
                 let (screen, rest) = line.split_once(':')?;
@@ -187,7 +203,7 @@ pub fn read_feel(args: &Value) -> Vec<Feel> {
                 let word = rest.split(|c: char| !c.is_alphanumeric()).next().unwrap_or("");
                 let same = truthy(&Value::String(word.to_owned())).unwrap_or(false);
                 let screen = screen.trim();
-                (!screen.is_empty()).then(|| Feel { screen: screen.to_owned(), same, why: rest.to_owned(), pictures: Vec::new() })
+                (!screen.is_empty()).then(|| Feel { screen: screen.to_owned(), same, why: rest.to_owned(), pictures: Vec::new(), url: String::new() })
             }
             _ => None,
         })
@@ -225,6 +241,19 @@ pub fn hedges(args: &Value) -> Vec<String> {
     }
     HEDGES.iter().filter(|h| text.contains(*h)).map(|h| (*h).to_owned()).collect()
 }
+
+/// Opening the site: an address with no path past `/` (a query or hash
+/// with no route is fine: `?r=1`).
+pub fn is_site_root(url: &str) -> bool {
+    let u = url.trim();
+    let rest = u.split_once("://").map_or(u, |(_, r)| r);
+    let path = rest.find('/').map_or("", |i| &rest[i..]);
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    !u.is_empty() && path.trim_matches('/').is_empty()
+}
+
+/// The S1 blocker when the built site doesn't open on the design's first screen.
+pub const FIRST_SCREEN_BLOCKER: &str = "Opening the site doesn't show the same first screen as the person's design";
 
 fn base_name(p: &str) -> String {
     p.rsplit(['/', '\\']).next().unwrap_or(p).trim().to_ascii_lowercase()
@@ -265,6 +294,19 @@ pub fn refuses(reference: &Reference, feel: &[Feel], seen: &[String], own: &[Str
                 "a side-by-side picture of your own for each verdict — the reference and the build at the same width and state, made with `equipe design diff`, named in its entry's `pictures` and given in `images` (the engineer's pictures don't count) — not yet for: {}",
                 blind.join(", ")
             ));
+        }
+    }
+    if let Some(first) = reference.first_screen.as_deref() {
+        let opened = feel.iter().find(|f| norm(&f.screen) == norm(first));
+        match opened {
+            Some(f) if f.same && is_site_root(&f.url) => {}
+            Some(f) if f.same => missing.push(format!(
+                "the first screen ({first}) judged from opening the site itself: give its entry the site root you opened in `url` (https://…/), not a deep link{}. Otherwise: {FIRST_SCREEN_BLOCKER} (S1), verdict changes",
+                if f.url.is_empty() { String::new() } else { format!(" — you opened {}", f.url) }
+            )),
+            _ => missing.push(format!(
+                "a side-by-side verdict for {first}, the screen the person's design opens on, rendered from the site root (`url`), feeling the same. Otherwise: {FIRST_SCREEN_BLOCKER} (S1), verdict changes"
+            )),
         }
     }
     if !hedged.is_empty() {
@@ -325,7 +367,7 @@ mod tests {
 
     #[test]
     fn a_pass_needs_every_screen_side_by_side_feeling_the_same_and_every_signature_item() {
-        let r = Reference { source: "prototype/index.html".into(), screens: vec!["grid".into(), "Meeting space".into()], items: vec![Item { id: "orb".into(), name: "Orb".into() }, Item { id: "canvas".into(), name: String::new() }] };
+        let r = Reference { source: "prototype/index.html".into(), screens: vec!["grid".into(), "Meeting space".into()], items: vec![Item { id: "orb".into(), name: "Orb".into() }, Item { id: "canvas".into(), name: String::new() }], first_screen: None };
         // Render checks alone: refused.
         let why = refuses(&r, &[], &[], &[], &[]);
         assert!(why[0].contains("side by side") && why[1].contains("orb, canvas"), "{why:?}");
@@ -346,7 +388,7 @@ mod tests {
     #[test]
     fn a_same_feel_verdict_judged_from_the_engineers_pictures_or_left_unconfirmed_is_no_pass() {
         // T-69 and T-70 on asap: "same feel" from the hand-in pictures, "not confirmed" for the rest, and passed.
-        let r = Reference { source: "prototype/index.html".into(), screens: vec!["lock".into()], items: vec![Item { id: "orb".into(), name: "Orb".into() }] };
+        let r = Reference { source: "prototype/index.html".into(), screens: vec!["lock".into()], items: vec![Item { id: "orb".into(), name: "Orb".into() }], first_screen: None };
         let args = json!({
             "findings": "Passes. I did not render the built preview or the demo side by side myself. Not confirmed: the amber reschedule state.",
             "side_by_side": [{"screen": "lock", "same_feel": true, "pictures": ["handin-shots/t68/lock-390-2.png"]}],
@@ -366,5 +408,35 @@ mod tests {
         let clean = json!({ "findings": "Same feel on every screen.", "side_by_side": args["side_by_side"].clone() });
         assert!(hedges(&clean).is_empty() && hedges(&json!({ "findings": "I didn\u{2019}t render the demo" })) == vec!["didn't render"]);
         assert!(refuses(&r, &read_feel(&clean), &["orb".into()], &["/w/handin-shots/t68/lock-390-2.png".into()], &[]).is_empty());
+    }
+
+    #[test]
+    fn opening_the_built_site_must_show_the_designs_first_screen() {
+        let dir = tmp("first");
+        std::fs::create_dir_all(dir.join("design/reference")).unwrap();
+        std::fs::write(dir.join(SIGNATURE), r#"{"source":"prototype/index.html","screens":["scheduling","meeting-space"],"items":[]}"#).unwrap();
+        // No `first_screen`: the first of `screens`.
+        let r = Reference::find(&dir).unwrap();
+        assert_eq!(r.first_screen.as_deref(), Some("scheduling"));
+        assert!(r.brief().contains("opens on `scheduling`") && r.brief().contains(FIRST_SCREEN_BLOCKER));
+        std::fs::write(dir.join(SIGNATURE), r#"{"source":"prototype/index.html","first_screen":"meeting-space","screens":["scheduling","meeting-space"]}"#).unwrap();
+        let r = Reference::find(&dir).unwrap();
+        assert_eq!(r.first_screen.as_deref(), Some("meeting-space"));
+
+        let r = Reference { source: "prototype/index.html".into(), screens: vec!["scheduling".into()], items: vec![], first_screen: Some("scheduling".into()) };
+        let judged = |url: &str, same: bool| {
+            let (feel, own) = shot(read_feel(&json!({ "side_by_side": [{"screen": "scheduling", "same_feel": same, "url": url}] })));
+            refuses(&r, &feel, &[], &own, &[])
+        };
+        // Opened at the root, same feel: passes.
+        assert!(judged("https://evolved-spec.equipe.page/", true).is_empty());
+        assert!(judged("https://evolved-spec.equipe.page/?r=1", true).is_empty());
+        // A deep link, or no address: not the first screen as people see it.
+        let why = judged("https://evolved-spec.equipe.page/e/zdClBFHU1X", true);
+        assert!(why.len() == 1 && why[0].contains(FIRST_SCREEN_BLOCKER) && why[0].contains("/e/zdClBFHU1X"), "{why:?}");
+        assert!(judged("", true)[0].contains(FIRST_SCREEN_BLOCKER));
+        // Opened at the root but it doesn't feel the same: blocked.
+        assert!(judged("https://evolved-spec.equipe.page/", false).iter().any(|w| w.contains(FIRST_SCREEN_BLOCKER)));
+        assert!(is_site_root("http://localhost:5173") && !is_site_root("http://localhost:5173/meeting"));
     }
 }

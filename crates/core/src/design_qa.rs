@@ -544,7 +544,7 @@ mod tests {
         assert_eq!(against(gate(Some(&report(vec![shot("auth/login/default", true, false)], vec![new]))), Some(&r)).decision, Decision::SendBack);
         assert_eq!(against(gate(Some(&report(vec![shot("auth/login/default", false, false)], vec![]))), Some(&r)).decision, Decision::Designer);
         // The designer's pass needs the side-by-side verdicts and the signature.
-        let r = reference::Reference { source: "prototype/index.html".into(), screens: vec!["lock".into()], items: vec![reference::Item { id: "orb".into(), name: "Orb".into() }] };
+        let r = reference::Reference { source: "prototype/index.html".into(), screens: vec!["lock".into()], items: vec![reference::Item { id: "orb".into(), name: "Orb".into() }], first_screen: None };
         let base = json!({ "compared": true, "checked": ["390", "1280", "dark"] });
         assert!(Proof::read(&base, 2).refuses_pass_against(Some(&r)).unwrap().contains("side by side"));
         let full = json!({ "compared": true, "checked": ["390", "1280", "dark"], "side_by_side": [{"screen": "lock", "same_feel": true, "pictures": ["handin-shots/lock-side.png"]}], "signature": ["orb"] });
