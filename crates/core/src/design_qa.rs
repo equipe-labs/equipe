@@ -49,6 +49,10 @@ pub struct Proof {
     pub side_by_side: Vec<reference::Feel>,
     /// The reference's signature items seen in the build (their ids).
     pub signature: Vec<String>,
+    /// File names of its own pictures (in `images`, not the engineer's).
+    pub own_pictures: Vec<String>,
+    /// "Not confirmed", "didn't render"… in its own words.
+    pub hedged: Vec<String>,
 }
 
 impl Proof {
@@ -65,7 +69,15 @@ impl Proof {
             polish: arg_strs(args, "polish"),
             side_by_side: reference::read_feel(args),
             signature: arg_labels(args, "signature"),
+            own_pictures: Vec::new(),
+            hedged: reference::hedges(args),
         }
+    }
+
+    /// With the paths of its own pictures, which the runtime resolved.
+    pub fn with_own_pictures(mut self, pictures: impl IntoIterator<Item = String>) -> Proof {
+        self.own_pictures = pictures.into_iter().collect();
+        self
     }
 
     /// Why a pass can't stand on this, if it can't — said to the designer.
@@ -93,7 +105,7 @@ impl Proof {
             missing.push("no blocker left — a blocker sends it back: verdict changes".to_owned());
         }
         if let Some(r) = reference {
-            missing.extend(reference::refuses(r, &self.side_by_side, &self.signature));
+            missing.extend(reference::refuses(r, &self.side_by_side, &self.signature, &self.own_pictures, &self.hedged));
         }
         (!missing.is_empty()).then(|| format!("A pass needs {}. Look at it yourself, then finish again.", missing.join("; ")))
     }
@@ -535,9 +547,11 @@ mod tests {
         let r = reference::Reference { source: "prototype/index.html".into(), screens: vec!["lock".into()], items: vec![reference::Item { id: "orb".into(), name: "Orb".into() }] };
         let base = json!({ "compared": true, "checked": ["390", "1280", "dark"] });
         assert!(Proof::read(&base, 2).refuses_pass_against(Some(&r)).unwrap().contains("side by side"));
-        let full = json!({ "compared": true, "checked": ["390", "1280", "dark"], "side_by_side": [{"screen": "lock", "same_feel": true}], "signature": ["orb"] });
-        assert_eq!(Proof::read(&full, 2).refuses_pass_against(Some(&r)), None);
-        assert!(Proof::read(&full, 2).report("ok").contains("lock: same feel"));
+        let full = json!({ "compared": true, "checked": ["390", "1280", "dark"], "side_by_side": [{"screen": "lock", "same_feel": true, "pictures": ["handin-shots/lock-side.png"]}], "signature": ["orb"] });
+        assert!(Proof::read(&full, 2).refuses_pass_against(Some(&r)).unwrap().contains("picture of your own"));
+        let own = || Proof::read(&full, 2).with_own_pictures(["/w/handin-shots/lock-side.png".to_owned(), "/w/b.png".to_owned()]);
+        assert_eq!(own().refuses_pass_against(Some(&r)), None);
+        assert!(own().report("ok").contains("lock: same feel"));
     }
 
     #[test]

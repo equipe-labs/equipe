@@ -1162,8 +1162,8 @@ truncation with the whole text available), hand in again with `waive_findings` s
             .map_err(|e| pictures_refused(board::DESIGN_QA, args, &cwd, &roots, &e))?;
         crate::visuals::thumbs::warm(&self.config.home, shown.clone());
         // Its own look, not the engineer's screenshots handed on.
-        let own = shown.iter().filter(|s| !checked.images.contains(s)).count();
-        let proof = crate::design_qa::Proof::read(args, own);
+        let own: Vec<String> = shown.iter().filter(|s| !checked.images.contains(s)).cloned().collect();
+        let proof = crate::design_qa::Proof::read(args, own.len()).with_own_pictures(own);
         let reference = checked.worktree.as_deref().and_then(crate::design_qa::reference::Reference::find);
         if let Some(why) = if passed { proof.refuses_pass_against(reference.as_ref()) } else { proof.refuses_changes() } {
             return Err(why);
