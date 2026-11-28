@@ -1091,3 +1091,22 @@ async fn a_first_version_goes_out_public_and_only_a_live_products_change_waits_f
     assert!(equipe_core::flow::held_for_person(&second.body), "{}", second.body);
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn done_work_that_changed_no_code_has_nothing_to_merge_and_raises_no_error() {
+    // Team Aman's T-66, 2026-11-28: "Put asap live on its free address" changed no code; merging it failed with
+    // "T-66 has no branch to merge" and the PM's turn ended in the catch-up fallback.
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let journal = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap();
+    let t = equipe_core::protocol::Ticket { project: Some(repo.clone()), ..serde_json::from_value(json!({ "id": 0, "title": "Put the shop live on its free address", "body": "-", "status": "done", "owner": null, "assignee": null, "project": null, "depends_on": [], "branch": null, "created_by": "pm", "note": null })).unwrap() };
+    let id = journal.create_ticket(&t).unwrap();
+    drop(journal);
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    handle.send(Command::Merge { squad: "acme".into(), ticket: id, push: false });
+    let seen = until(&mut events, |e| matches!(e, Event::TicketChanged { ticket, .. } if ticket.id == id && ticket.merged == Some(true)) || matches!(e, Event::Error { .. })).await;
+    assert!(!seen.iter().any(|e| matches!(e, Event::Error { .. })), "{seen:#?}");
+    handle.shutdown().await;
+}
