@@ -78,12 +78,74 @@ pub fn default_steps(slice: bool, kind: TicketKind, owner: Option<&str>, words: 
             step(words.get("flow.step.precheck"), None),
         ];
     }
-    if kind != TicketKind::Code {
-        return Vec::new();
-    }
-    let who = owner.map(role_of);
-    vec![step(words.get("flow.step.change"), who), step(words.get("flow.step.tests"), who)]
+    // Other work starts with none: "Make the change" and "Tests and checks pass" told the person nothing (Team
+    // Aman's Google sign-in work, 2026-11-28). Its holder writes the real ones first ([`PLAN_STEPS`]).
+    let _ = (kind, owner);
+    Vec::new()
 }
+
+/// The checklist words equipe itself once wrote for any work, in any
+/// language: they say nothing of what the person will get.
+const PLACEHOLDERS: [&str; 5] = ["flow.step.change", "flow.step.tests", "flow.step.prototype", "flow.step.build", "flow.step.precheck"];
+
+/// Whether `text` is one of equipe's placeholder items, in any language.
+pub fn is_placeholder(text: &str) -> bool {
+    let key = same_item(text);
+    PLACEHOLDERS.iter().any(|k| crate::i18n::every(k).iter().any(|w| same_item(w) == key))
+}
+
+/// The open placeholder items taken off a checklist made before equipe
+/// stopped writing them; a slice keeps its own, which say whose part is
+/// whose until its holder renames them. How many went.
+pub fn drop_placeholders(flow: &mut TicketFlow) -> usize {
+    if flow.slice {
+        return 0;
+    }
+    let had = flow.steps.len();
+    flow.steps.retain(|s| s.done || !is_placeholder(&s.text));
+    had - flow.steps.len()
+}
+
+/// An item of `added` that another open ticket's checklist already has
+/// open, word for word: with that ticket. One checklist names its own
+/// work's pieces; a rule for all of them (a look to match) copied onto each
+/// says nothing of either (Team Aman, 2026-11-28: the PM put "Match the new
+/// buttons and steps to the look in the person's design reference" on both
+/// the Google and the Outlook work). Short items and going live are common
+/// to much work and pass.
+pub fn shared_step<'a>(ticket: TicketId, added: &[TicketStep], others: impl IntoIterator<Item = &'a Ticket>) -> Option<(String, TicketId)> {
+    let others: Vec<&Ticket> = others.into_iter().filter(|t| t.id != ticket && !t.status.is_closed()).collect();
+    added.iter().filter(|a| a.text.split_whitespace().count() >= 5 && !is_live_step(&a.text)).find_map(|a| {
+        let key = same_item(&a.text);
+        others
+            .iter()
+            .find(|t| t.flow.as_deref().is_some_and(|f| f.steps.iter().any(|s| !s.done && same_item(&s.text) == key)))
+            .map(|t| (a.text.clone(), t.id))
+    })
+}
+
+/// Why `text`, an item of `other` already, isn't added to `ticket`.
+pub fn shared_step_refusal(ticket: TicketId, text: &str, other: TicketId) -> String {
+    format!(
+        "Not added: \u{201c}{text}\u{201d} is already an item of T-{other}. A checklist names its own work's pieces, the ones the person \
+watches tick off. A rule for all work (a look to match, a check to run) goes in the squad's memory or the ticket's description, where every \
+member reads it, not copied onto each checklist. Name what it means for T-{ticket} instead (\"Style the Outlook button like the \
+reference's buttons\")."
+    )
+}
+
+/// Whether work's checklist still has to be written: fewer than two items,
+/// or a placeholder still open.
+pub fn needs_plan(flow: Option<&TicketFlow>) -> bool {
+    flow.is_none_or(|f| f.steps.len() < 2 || f.steps.iter().any(|s| !s.done && is_placeholder(&s.text)))
+}
+
+/// What the holder of work whose checklist isn't written yet is told first.
+pub const PLAN_STEPS: &str = "Its checklist isn't written yet, and the person follows the work by it. First thing now, before \
+you build, write it with `check_steps`: `add` 2 to 6 concrete pieces the person will get, each a short plain sentence in their \
+language (\"A Sign in button in the header\", \"Fill the times grid from Google Calendar\"), going live last; `replace` any \
+item that only says \"Make the change\" or \"Tests and checks pass\". As you find more work, add or split items the same way. \
+Whenever you tell the person a piece is built, tick it in that same turn (add it first if it isn't on the list).";
 
 /// The `steps` of a `create_ticket` or `check_steps` call: each a string,
 /// or `{text, who}`. Empty texts are left out.
@@ -508,6 +570,10 @@ the built screens against the prototype when it is handed in — no design QA ti
     if !flow.steps.is_empty() {
         out.push_str(&format!("\nIts checklist:\n{}\n", checklist(flow)));
     }
+    if needs_plan(Some(flow)) {
+        out.push_str(PLAN_STEPS);
+        out.push('\n');
+    }
     out.push_str(&format!(
         "Work that is part of it — a spec, the build, a check — is an item of this checklist (`check_steps` adds and ticks them), \
 never a ticket of its own. When your items are done and another's are next, pass the baton with `pass_baton` (to {}): \
@@ -870,7 +936,7 @@ mod tests {
         let steps = default_steps(true, TicketKind::Code, Some("designer"), words);
         assert_eq!(steps.iter().map(|s| s.who.as_deref()).collect::<Vec<_>>(), vec![Some(DESIGNER), Some(FRONTEND), None]);
         assert!(steps.iter().all(|s| !s.text.is_empty() && !s.text.starts_with("flow.")));
-        assert_eq!(default_steps(false, TicketKind::Code, Some("backend-2"), words)[0].who.as_deref(), Some("engineer"));
+        assert!(default_steps(false, TicketKind::Code, Some("backend-2"), words).is_empty(), "no placeholders: its holder writes the real ones");
         assert!(default_steps(false, TicketKind::Task, Some("pm"), words).is_empty());
     }
 
@@ -1065,6 +1131,69 @@ mod tests {
         flow.steps[0].unconfirmed = true;
         tick(&mut flow, &[1], &[], Vec::new(), "frontend").unwrap();
         assert!(!flow.steps[0].unconfirmed);
+    }
+
+    #[test]
+    fn placeholder_steps_give_way_to_the_real_pieces() {
+        // Team Aman, 2026-11-28: "Google sign-in and Google Calendar for asap" showed the person "Make the change" and
+        // "Tests and checks pass" while Kai's update named the real pieces.
+        let item = |t: &str, who: Option<&str>| TicketStep { text: t.into(), who: who.map(str::to_owned), ..Default::default() };
+        let mut flow = TicketFlow {
+            steps: vec![
+                item("Make the change", Some("frontend")),
+                item("Tests and checks pass", Some("frontend")),
+                item("Match the new buttons and steps to the look in the person's design reference", Some("frontend")),
+            ],
+            ..Default::default()
+        };
+        assert!(is_placeholder("make the change.") && is_placeholder("Tests and checks pass"));
+        assert!(is_placeholder(core(Lang::Ko).get("flow.step.change")), "in every language");
+        assert!(!is_placeholder("A Sign in button in the header"));
+        assert!(needs_plan(Some(&flow)) && needs_plan(None));
+        assert!(brief(&flow, "frontend", 64).contains("`check_steps`"), "its holder is told to write them");
+        // On its next turn the placeholders go; one real item is not a plan yet.
+        assert_eq!(drop_placeholders(&mut flow), 2);
+        assert_eq!(flow.steps.len(), 1);
+        assert!(needs_plan(Some(&flow)));
+        // The builder writes the pieces it builds, and ticks them as they are built.
+        let pieces = steps_arg(
+            &serde_json::json!({ "add": ["Fill the times grid from Google Calendar", "Add to Google Calendar, with an optional Meet link", "A Sign in button in the header", "Put it live"] }),
+            "add",
+        )
+        .unwrap();
+        tick(&mut flow, &[], &[], pieces, "frontend").unwrap();
+        assert!(!needs_plan(Some(&flow)));
+        assert!(!brief(&flow, "frontend", 64).contains("isn't written yet"));
+        // A slice keeps its own until renamed: they say whose part is whose.
+        let mut slice = TicketFlow { steps: default_steps(true, TicketKind::Code, None, core(Lang::En)), slice: true, ..Default::default() };
+        assert_eq!(drop_placeholders(&mut slice), 0);
+        assert!(needs_plan(Some(&slice)), "but its holder is asked to rename them");
+        // Done ones stay: they are history.
+        let mut done = TicketFlow { steps: vec![TicketStep { text: "Make the change".into(), done: true, ..Default::default() }], ..Default::default() };
+        assert_eq!(drop_placeholders(&mut done), 0);
+    }
+
+    #[test]
+    fn one_rule_copied_onto_several_checklists_is_refused() {
+        // Team Aman, 2026-11-28: the PM saved the design reference to memory, then put the same item on both the Google
+        // (T-63) and the Outlook (T-64) work.
+        let rule = "Match the new buttons and steps to the look in the person's design reference";
+        let with = |id: TicketId, steps: &[&str]| {
+            let mut t = ticket(id, "work");
+            t.status = TicketStatus::Todo;
+            t.flow = Some(Box::new(TicketFlow { steps: steps.iter().map(|s| TicketStep { text: (*s).into(), ..Default::default() }).collect(), ..Default::default() }));
+            t
+        };
+        let board = [with(63, &[rule]), with(64, &[])];
+        let added = |t: &str| vec![TicketStep { text: t.into(), ..Default::default() }];
+        assert_eq!(shared_step(64, &added(rule), &board), Some((rule.to_owned(), 63)));
+        assert!(shared_step_refusal(64, rule, 63).contains("memory"));
+        assert_eq!(shared_step(63, &added(rule), &board), None, "its own checklist");
+        assert_eq!(shared_step(64, &added("Style the Outlook button like the reference's buttons"), &board), None, "its own piece");
+        assert_eq!(shared_step(64, &added("Put it live"), &board), None, "common to much work");
+        let mut closed = board.clone();
+        closed[0].status = TicketStatus::Done;
+        assert_eq!(shared_step(64, &added(rule), &closed), None, "only open work");
     }
 
     #[test]

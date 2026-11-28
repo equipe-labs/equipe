@@ -210,12 +210,17 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
         }
         let (ticket, holder) = (work.ticket, s.name().unwrap_or_default().to_owned());
         let Some(flow) = self.find_ticket(&squad, ticket).and_then(|t| t.flow.as_deref().cloned()) else { return };
-        if !rules::ticked_nothing(&flow, &holder, began) {
+        // Its checklist still unwritten: that first, with its next turn.
+        let line = if rules::needs_plan(Some(&flow)) {
+            format!("[equipe] T-{ticket}: {}", rules::PLAN_STEPS)
+        } else if rules::ticked_nothing(&flow, &holder, began) {
+            rules::tick_reminder(ticket, &flow, &holder)
+        } else {
             return;
-        }
-        let line = rules::tick_reminder(ticket, &flow, &holder);
+        };
+        let prefix: String = line.chars().take(40).collect();
         if let Some(session) = self.sessions.get_mut(&id)
-            && !session.briefing.iter().any(|b| b.starts_with(&format!("[equipe] T-{ticket}: you ticked nothing")))
+            && !session.briefing.iter().any(|b| b.starts_with(&prefix))
         {
             session.briefing.push(line);
             self.save_waiting(id);
@@ -281,6 +286,24 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
         }
     }
 
+    /// What `tell_person` says back to member `id`, with a reminder to tick
+    /// what it just told the person is built while items are open for it.
+    pub(super) fn tick_nudge(&mut self, squad: &str, id: SessionId, said: String) -> String {
+        let Some(s) = self.sessions.get(&id) else { return said };
+        let (Some(ticket), Some(holder)) = (s.work.as_ref().map(|w| w.ticket), s.member.as_ref().map(|m| m.name.clone())) else { return said };
+        let flow = self.find_ticket(squad, ticket).and_then(|t| t.flow.as_deref().cloned());
+        if rules::needs_plan(flow.as_ref()) {
+            return format!("{said}\n{}", rules::PLAN_STEPS);
+        }
+        if flow.is_some_and(|f| !rules::open_for(&f, &holder).is_empty()) {
+            return format!(
+                "{said}\nIf that says a piece of T-{ticket} is built, tick it now with `check_steps` (`done`; add it first if it isn't on the checklist): \
+the person follows the work by it."
+            );
+        }
+        said
+    }
+
     /// `ticket`'s checklist kept as `flow`, and told to the screens.
     fn save_flow(&mut self, squad: &str, ticket: TicketId, flow: &TicketFlow) {
         let Some(journal) = self.journal(squad) else { return };
@@ -298,6 +321,13 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
         let found = self.find_ticket(squad, ticket).ok_or_else(|| format!("There is no T-{ticket}."))?;
         if found.status.is_closed() {
             return Err(format!("T-{ticket} is {} — its checklist is closed.", found.status.label()));
+        }
+        // The same item copied onto other open work: refused, with what to do instead.
+        if !added.is_empty()
+            && let Some(all) = self.journal(squad).and_then(|j| j.tickets().ok())
+            && let Some((text, other)) = rules::shared_step(ticket, &added, &all)
+        {
+            return Err(rules::shared_step_refusal(ticket, &text, other));
         }
         let mut flow = found.flow.as_deref().cloned().unwrap_or_default();
         let had = flow.steps.len();

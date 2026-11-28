@@ -8060,6 +8060,17 @@ built is on its branch — and finish it; don't start over or read everything ag
             ticket.model = Some(choice.ticket);
         }
 
+        // Placeholder items from before equipe stopped writing them ("Make the change"): gone, so its holder writes the
+        // real ones first (flow::PLAN_STEPS in its brief).
+        if let Some(mut flow) = ticket.flow.as_deref().cloned()
+            && crate::flow::drop_placeholders(&mut flow) > 0
+        {
+            if let Some(journal) = self.journal(&squad) {
+                let _ = journal.set_ticket_flow(ticket_id, Some(&flow));
+            }
+            crate::daemon_log!("equipe: {squad}: T-{ticket_id}: placeholder checklist items taken off; its holder writes the real ones");
+            ticket.flow = Some(Box::new(flow));
+        }
         let assignee_before = ticket.assignee.clone();
         ticket.status = TicketStatus::InProgress;
         ticket.assignee = Some(name.clone());
@@ -11534,6 +11545,9 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 // Its checklist, when given; and no tickets for meta work, or for the next part
                 // of a request that goes on the same ticket by the baton (`flow`).
                 let steps = crate::flow::steps_arg(&args, "steps")?;
+                if let Some((text, other)) = crate::flow::shared_step(0, &steps, tickets.iter()) {
+                    return Err(crate::flow::shared_step_refusal(0, &text, other).replace("T-0", "this ticket"));
+                }
                 if !idea {
                     let working = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
                     let serves = working.and_then(|w| self.journal(&squad).and_then(|j| j.requests().of_ticket(w)));
@@ -12079,7 +12093,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
                 ))
             }
             board::ASK_DECISION => self.ask_decision(&squad, &member, id, &args),
-            board::TELL_PERSON if !is_pm => self.tell_person(&squad, id, &args),
+            board::TELL_PERSON if !is_pm => self.tell_person(&squad, id, &args).map(|said| self.tick_nudge(&squad, id, said)),
             board::TELL_PERSON => Err("You are the PM: say it in your reply, the person is already talking to you.".into()),
             crate::growth::PROPOSE => self.propose_growth(&squad, &member, id, &args),
             crate::sprint::DEFINE => self.define_experiment(&squad, &member, id, &args),
@@ -13407,6 +13421,10 @@ lesson in your memory before you start, so the next ticket begins with it.\n"
     if let Some(flow) = ticket.flow.as_deref().filter(|f| board_tools && (f.driver.is_some() || !f.steps.is_empty())) {
         let holder = ticket.assignee.as_deref().or(ticket.owner.as_deref()).unwrap_or_default();
         out.push_str(&crate::flow::brief(flow, holder, ticket.id));
+        out.push('\n');
+    } else if board_tools && ticket.kind == TicketKind::Code {
+        // Code work with no checklist: the person sees its steps too.
+        out.push_str(crate::flow::PLAN_STEPS);
         out.push('\n');
     }
     if !ticket.remaining.is_empty() {
