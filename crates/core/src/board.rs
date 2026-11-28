@@ -1181,7 +1181,9 @@ comes to you as a message — do only what they said yes to, once they have. The
 through at once (a standing allowance the person granted, or the policy for live data): then the call says so, and you \
 go ahead exactly as you described. For a write to a live system you will repeat (test records, say), offer a \
 `standing` scope the person can grant once: the system, a marker every such record carries in its title, the ops, \
-and how many days you may delete what you made — never anything broader.",
+and how many days you may delete what you made — never anything broader. Never ask after the fact: when you already did \
+something that needed their yes (published, made public, sent), undo it yourself at once (make it private again, take it \
+down) and tell them in one plain line — don't ask them to approve keeping it.",
         "inputSchema": {
             "type": "object",
             "properties": {
