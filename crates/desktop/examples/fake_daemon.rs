@@ -1185,6 +1185,7 @@ fn fake_stops() -> Vec<equipe_core::protocol::requests::Stop> {
         cancelled: vec![3481, 3482],
         refused: 6,
         all: false,
+        keep: vec![],
     }]
 }
 
