@@ -257,6 +257,18 @@ fn checkout(worktree: &Path) -> (String, Vec<(String, Vec<u8>)>) {
     (git(worktree, &["rev-parse", "HEAD"]), files)
 }
 
+/// The worktree as `disk` had it: every file the same, and HEAD the same
+/// commit or one `wip:` checkpoint on top of it (a turn's end commits what
+/// its run made, so a stop never leaves it only in the worktree).
+fn kept(worktree: &Path, disk: &(String, Vec<(String, Vec<u8>)>), why: &str) {
+    let now = checkout(worktree);
+    assert_eq!(now.1, disk.1, "{why}: every file as it was");
+    if now.0 != disk.0 {
+        assert_eq!(git(worktree, &["rev-parse", "HEAD~1"]), disk.0, "{why}: HEAD is the commit before, or a checkpoint on it");
+        assert!(git(worktree, &["log", "-1", "--format=%s"]).starts_with("wip:"), "{why}: only a wip checkpoint on top");
+    }
+}
+
 /// The board's and the sidebar's reading of a ticket's run, from one
 /// snapshot: the member's state as the sidebar shows it, fed to the same
 /// computation the board uses.
@@ -318,7 +330,7 @@ async fn a_run_that_ended_without_a_hand_in_stalls_after_its_lease_and_the_perso
     assert_eq!(run_seen(&after_stall, 1), Some(RunView::Stalled), "board and sidebar agree");
     assert!(after_stall.sessions.iter().any(|s| s.session == 2 && s.work.is_none()), "the sidebar shows it free");
     assert!(!after_stall.sessions.iter().any(|s| s.run.is_some_and(|r| r.of == 2)), "its run is over");
-    assert_eq!(checkout(&worktree), disk, "nothing committed, reset or cleaned by the stall");
+    kept(&worktree, &disk, "nothing committed, reset or cleaned by the stall");
     let told = |e: &Event| matches!(e, Event::Notice { text, .. } if text.contains("T-1's run stopped without a hand-in"));
     if !seen.iter().any(told) {
         until(&mut events, told).await;
@@ -329,7 +341,7 @@ async fn a_run_that_ended_without_a_hand_in_stalls_after_its_lease_and_the_perso
     handle.send(Command::Requeue { squad: "acme".into(), ticket: 1, operation: "card:1:a".into(), how: Recovery::Resume });
     until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     let prompt = engine.prompt_with("brought it back").await;
-    assert!(prompt.contains("Same branch and worktree, nothing reset, committed or cleaned"), "{prompt}");
+    assert!(prompt.contains("Same branch and worktree, nothing reset or cleaned"), "{prompt}");
     for _ in 0..100 {
         if engine.runs().len() > runs_before {
             break;
@@ -345,7 +357,7 @@ async fn a_run_that_ended_without_a_hand_in_stalls_after_its_lease_and_the_perso
     assert_eq!((run.state, run.generation), (ExecutionState::Active, 2), "a new generation");
     assert_ne!(run.session, first_run.session, "a new runtime session on the same member and engine");
     assert_eq!((resumed.id, resumed.branch.clone(), resumed.worktree.clone()), (1, first.branch.clone(), first.worktree.clone()));
-    assert_eq!(checkout(&worktree), disk, "the commit and every file as they were");
+    kept(&worktree, &disk, "the commit and every file as they were");
 
     // The same approval again — a double click, a retry: one recovery.
     handle.send(Command::Requeue { squad: "acme".into(), ticket: 1, operation: "card:1:a".into(), how: Recovery::Resume });
@@ -568,7 +580,7 @@ async fn an_approved_add_hands_its_roles_stalled_ticket_to_the_new_member_but_ne
     assert_eq!((handed.owner.as_deref(), handed.assignee.as_deref()), (Some("engineer"), Some("engineer")));
     assert_eq!((handed.branch.clone(), handed.worktree.clone()), (stalled.branch.clone(), stalled.worktree.clone()), "the same branch and worktree");
     assert_eq!((execution(&handed).state, execution(&handed).generation), (ExecutionState::Active, 2));
-    assert_eq!(checkout(&worktree), disk);
+    kept(&worktree, &disk, "kept");
     let mut after = ids(&handle.snapshot("acme").await);
     after.retain(|id| *id != 2);
     assert_eq!(after, before, "no recovery ticket");
@@ -671,7 +683,7 @@ async fn an_approved_recovery_waiting_across_a_restart_starts_exactly_once() {
     assert!(!seen.iter().any(|e| matches!(e, Event::WorkStarted { ticket: 5, .. })), "the recovery goes first: {seen:#?}");
     let run = execution(&ticket(&handle, 1).await);
     assert_eq!((run.state, run.generation, run.operation.as_str()), (ExecutionState::Active, queued.generation, "card:1:c"), "the run it reserved, once");
-    assert_eq!(checkout(&worktree), disk);
+    kept(&worktree, &disk, "kept");
     // Replayed after the restart: nothing more.
     handle.send(Command::Requeue { squad: "acme".into(), ticket: 1, operation: "card:1:c".into(), how: Recovery::Resume });
     until(&mut screen, |e| matches!(e, Event::Notice { text, .. } if text.contains("already brought back"))).await;
@@ -770,7 +782,7 @@ async fn closing_a_numbered_member_hands_what_still_names_it_to_its_role() {
     assert_eq!((taken.branch.clone(), taken.worktree.clone()), (stalled.branch.clone(), stalled.worktree.clone()), "the same branch and worktree");
     assert!(run.operation.starts_with("member-left:frontend-2:1:"), "{run:?}");
     assert_eq!(run.generation, execution(&stalled).generation + 1);
-    assert_eq!(checkout(&worktree), disk, "its commit and every file as they were");
+    kept(&worktree, &disk, "its commit and every file as they were");
     let branch = stalled.branch.clone().expect("a branch");
     assert!(git(&repo, &["log", "--format=%s", &branch]).contains("hero so far"), "the committed work survives");
     engine.prompt_with("brought it back").await;

@@ -28,7 +28,7 @@
 //! replies to equipe's own notes ("The S-2 target is a known loop… I'm leaving
 //! this wake alone.", "I didn't plan a sprint: nothing has been built yet"),
 //! the team's work codes (T-12, S-1) in what the person reads, and English
-//! role names inside Korean ("Designer가 조사 중이에요"). So a turn equipe
+//! role names inside Korean ("Designer" with a Korean particle, in a Korean sentence). So a turn equipe
 //! started — a wake, a monitor's note, a sprint's planning — tells the person
 //! nothing unless it put something to them (a card, a question, a sign-in);
 //! a message naming a work code is asked again, and a role's English name in
@@ -126,7 +126,7 @@ pub(super) fn equipes_turn(entries: &[Entry]) -> bool {
 const CODE_LETTERS: [char; 3] = ['T', 'S', 'B'];
 
 /// The byte ranges of the team's work codes in `text` (T-12, S-1, B-43): a
-/// letter, a dash and digits, standing alone ("S-1을" too; "TP-3", "T-shirt"
+/// letter, a dash and digits, standing alone (with a particle after it too; "TP-3", "T-shirt"
 /// and "COVID-19" are not).
 fn code_ranges(text: &str) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
@@ -207,8 +207,8 @@ const ROLE_WORDS: [(&str, &str); 19] = [
 ];
 
 /// `text` with the roles' English names said in `lang`, for a language
-/// written in its own script — "Designer가" to a Korean founder is
-/// "디자이너가". Never inside code, a link's address or a path. In a
+/// written in its own script — "Designer" to a Korean founder is
+/// the Korean word for designer. Never inside code, a link's address or a path. In a
 /// Latin-script language the English word may be that language's too
 /// ("le designer"): left as it is.
 pub(super) fn with_roles_in(text: &str, lang: Lang) -> String {

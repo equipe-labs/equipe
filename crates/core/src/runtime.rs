@@ -13444,8 +13444,8 @@ session on the same ticket."
         });
         if sandbox.is_some() {
             out.push_str(
-                " Same branch and worktree, nothing reset, committed or cleaned — the commit and the uncommitted and untracked files \
-are as the last run left them. Look at `git status` and what is already done first, then carry on from there.",
+                " Same branch and worktree, nothing reset or cleaned — what the last run made is there, committed on the branch as a \
+`wip:` checkpoint or still in the worktree. Look at `git status`, `git log` and what is already done first, then carry on from there.",
             );
         }
         out.push('\n');
