@@ -372,7 +372,7 @@ async fn with_model_choice_off_members_own_models_run_and_nothing_climbs() {
     assert_eq!(handle.snapshot("acme").await.model_choice, ModelChoice::Off);
     tool(&handle, "pm", "create_ticket", json!({ "title": "Add a settings page", "body": "Run `npm test` to check.", "owner": "frontend" })).await;
     until(&mut events, |e| matches!(e, Event::WorkStarted { ticket: 1, .. })).await;
-    assert_eq!(arg_after(&nth_prompt(&bin, 1).await, "--model"), Some("sonnet"), "the member's own");
+    assert_eq!(arg_after(&nth_prompt(&bin, 1).await, "--model"), Some("opus"), "the member's own: the software engineer's, the strong model");
     assert_eq!(ticket(&handle).await.model.unwrap().reason, TierReason::MemberOwn);
     for text in ["Wrong.", "Still wrong."] {
         assert!(!raised(&round(&handle, &mut events, text, "correctness").await));
