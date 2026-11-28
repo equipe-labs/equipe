@@ -79,7 +79,7 @@ pub struct Live {
     pub running: HashSet<TicketId>,
     /// Members with a turn under way, or a run of theirs.
     pub busy: HashSet<String>,
-    /// Any turn of the squad's under way, at a desk too.
+    /// Any turn of the squad's under way, at a desk too — not the PM's off tickets.
     pub any: bool,
 }
 

@@ -221,14 +221,73 @@ don't ask them in words meanwhile."
         true
     }
 
-    /// `text` to the PM as a routine's would be: now, or after its turn.
+    /// `text` to the PM as a routine's would be: now, or after its turn —
+    /// unless it is a status note that repeats over an unchanged board
+    /// ([`crate::wake_gate`]): then counted, and read with its next turn.
     pub(super) async fn hand_to_pm(&mut self, squad: &str, pm: SessionId, text: String) {
+        if self.held_back(squad, pm, &text) {
+            return;
+        }
+        self.hand_to_pm_ungated(squad, pm, text).await;
+    }
+
+    /// [`Runtime::hand_to_pm`] past the wake gate: for a caller that asked it already.
+    pub(super) async fn hand_to_pm_ungated(&mut self, squad: &str, pm: SessionId, text: String) {
         // In the heartbeat's pass: kept, to go with the rest of the pass's in one turn.
         if let Some(batch) = self.pm_batch.as_mut() {
             batch.push((squad.to_owned(), pm, text));
             return;
         }
         self.hand_to_pm_now(squad, pm, text).await;
+    }
+
+    /// Whether the wake gate holds `text` back from `squad`'s PM `pm`: when it
+    /// does, the PM's briefing carries one line counting what was held, the
+    /// squad's journal counts it, and no model turn starts.
+    pub(super) fn held_back(&mut self, squad: &str, pm: SessionId, text: &str) -> bool {
+        use crate::wake_gate::{DIGEST_PREFIX, Decision, Kind};
+        let Some(kind) = Kind::of(text) else { return false };
+        // News waits in its briefing (an engine back, room on the disk, a finding): the turn reads it.
+        let news = self.sessions.get(&pm).is_some_and(|s| s.briefing.iter().any(|line| !line.starts_with(DIGEST_PREFIX)));
+        let board = self.board_print(squad);
+        let Decision::Skip { digest } = self.wake_gate.check(squad, text, board, news, now_secs()) else { return false };
+        crate::daemon_log!("equipe: {squad}: the PM's {} note repeats over an unchanged board; held back, no turn", kind.label());
+        if let Some(Err(err)) = self.journal(squad).map(|j| j.count_wake_skip(kind.label())) {
+            crate::daemon_log!("equipe: {squad}: the held-back wake wasn't counted: {err}");
+        }
+        if let Some(session) = self.sessions.get_mut(&pm) {
+            session.briefing.retain(|line| !line.starts_with(DIGEST_PREFIX));
+            session.briefing.push(digest);
+        }
+        self.save_waiting(pm);
+        true
+    }
+
+    /// A fingerprint of what the PM acts on in `squad`: each ticket's status,
+    /// owner and last change, and what waits on the person.
+    fn board_print(&mut self, squad: &str) -> u64 {
+        let tickets: Vec<(u32, String, Option<String>, Option<u64>)> =
+            self.tickets(squad).iter().map(|t| (u32::from(t.id), format!("{:?}", t.status), t.assignee.clone(), t.updated_at)).collect();
+        let asks: Vec<(String, Vec<u32>, u64)> = self
+            .waiting_asks(squad)
+            .iter()
+            .map(|a| (a.label.clone(), a.tickets.iter().map(|t| u32::from(*t)).collect(), a.since))
+            .collect();
+        crate::wake_gate::fingerprint(&(tickets, asks))
+    }
+
+    /// A turn of `id` starts on `body`: for a PM, what the wake gate held back
+    /// was read with it; a turn that isn't one of the gate's own notes (the
+    /// person, an answer, a hand-in, a failure) lets the next note through.
+    pub(super) fn pm_turn_seen(&mut self, id: SessionId, body: &str) {
+        let Some(session) = self.sessions.get(&id).filter(|s| s.is_pm()) else { return };
+        let Some(squad) = session.squad.clone() else { return };
+        let only_notes = self.pm_woken.contains(&id) && ["[equipe self-watch]", "[Waiting on the person"].iter().any(|tag| body.contains(tag));
+        if only_notes {
+            self.wake_gate.read(&squad);
+        } else {
+            self.wake_gate.forget(&squad);
+        }
     }
 
     async fn hand_to_pm_now(&mut self, squad: &str, pm: SessionId, text: String) {

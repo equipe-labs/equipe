@@ -867,6 +867,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         pm_woken: HashSet::new(),
         unseen_told: HashMap::new(),
         pm_batch: None,
+        wake_gate: Default::default(),
         previews: crate::live_preview::Watched::default(),
         design_sessions: HashMap::new(),
         on_phone: false,
@@ -1627,6 +1628,8 @@ struct Runtime {
     /// While the heartbeat's pass runs: what it hands each PM, kept to go in one wake
     /// when the pass ends (`runtime::heartbeat`).
     pm_batch: Option<Vec<(String, SessionId, String)>>,
+    /// Status notes to the PM that repeat over an unchanged board, answered in code (`crate::wake_gate`).
+    wake_gate: crate::wake_gate::Gate,
     /// The pages of members' the person's screens have open in a live preview.
     previews: crate::live_preview::Watched,
     /// The design sessions on, by the designer's conversation
@@ -6035,6 +6038,7 @@ runbooks and reports live there, and work across the projects or on running them
         if self.hold_for_limit(id, &turn_context::full(&parts, &body)) {
             return;
         }
+        self.pm_turn_seen(id, &body);
         if let Some(session) = self.sessions.get_mut(&id) {
             session.answers_person = false;
             session.turn_began = Some(now_secs());

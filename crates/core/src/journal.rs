@@ -786,6 +786,8 @@ impl Journal {
             "CREATE TABLE IF NOT EXISTS turn_endings (at INTEGER NOT NULL, kind TEXT NOT NULL, ticket INTEGER, member TEXT)",
             [],
         );
+        // Status notes to the PM the wake gate held back (`crate::wake_gate`): no turn ran for them.
+        let _ = conn.execute("CREATE TABLE IF NOT EXISTS wake_skips (at INTEGER NOT NULL, kind TEXT NOT NULL)", []);
         // Conversations that went on in a fresh engine session at a context
         // budget (`crate::runtime`'s `hygiene`): counted for the usage report.
         let _ = conn.execute(
@@ -1683,6 +1685,20 @@ impl Journal {
         )?;
         self.conn.execute("DELETE FROM turn_endings WHERE at < ?1", [now() - KEPT_FOR_RETROS])?;
         Ok(())
+    }
+
+    /// Count a status note to the PM held back by the wake gate (`crate::wake_gate`): no turn ran for it.
+    pub fn count_wake_skip(&self, kind: &str) -> Result<()> {
+        self.conn.execute("INSERT INTO wake_skips (at, kind) VALUES (?1, ?2)", params![now(), kind])?;
+        self.conn.execute("DELETE FROM wake_skips WHERE at < ?1", [now() - KEPT_FOR_RETROS])?;
+        Ok(())
+    }
+
+    /// How many status notes the wake gate held back since `since`, by kind, most first.
+    pub fn wake_skips_since(&self, since: u64) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare("SELECT kind, COUNT(*) FROM wake_skips WHERE at >= ?1 GROUP BY kind ORDER BY COUNT(*) DESC, kind")?;
+        let rows = stmt.query_map([since as i64], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
+        rows.collect()
     }
 
     /// How many turns ended each way since `since`, by kind, most first.
@@ -3077,9 +3093,13 @@ impl Journal {
         Ok(out)
     }
 
-    /// When the squad's last turn ended, any member's, on a ticket or not.
+    /// When the squad's last turn of work ended: any member's, on a ticket or
+    /// not — but not the PM's own turns off tickets. Those read the board and
+    /// talk; counted as work, a PM woken over an idle board would reset the
+    /// idle clock itself and be woken again over the same board, forever.
     pub fn last_turn_ended(&self) -> Result<Option<u64>> {
-        let at: Option<i64> = self.conn.query_row("SELECT MAX(ended) FROM turns", [], |r| r.get(0))?;
+        let at: Option<i64> =
+            self.conn.query_row("SELECT MAX(ended) FROM turns WHERE NOT (role = ?1 AND ticket IS NULL)", [crate::roles::PM], |r| r.get(0))?;
         Ok(at.map(|a| a.max(0) as u64))
     }
 
@@ -4282,6 +4302,37 @@ mod tests {
         assert_eq!(j.member_last_turn("frontend").unwrap(), Some(LastTurn { ended: at - 60, cached_short: false }));
         j.record_turn(&turn("pm", at - 10)).unwrap();
         assert_eq!(j.member_last_turn("pm").unwrap(), Some(LastTurn { ended: at - 10, cached_short: false }), "nothing known of what it cached: not short");
+    }
+
+    #[test]
+    fn the_pms_own_turns_off_tickets_are_not_the_squad_at_work() {
+        let home = temp_home();
+        let j = Journal::for_squad(&home, "acme").unwrap();
+        let at = now() as u64;
+        let turn = |member: &str, ticket: Option<TicketId>, ended: u64| crate::retro::Turn {
+            member: member.into(),
+            role: member.into(),
+            ticket,
+            began: ended - 30,
+            ended,
+            outcome: "completed".into(),
+            tokens: 10,
+        };
+        assert_eq!(j.last_turn_ended().unwrap(), None);
+        j.record_turn(&turn("frontend", Some(3), at - 3_600)).unwrap();
+        // Woken over the idle board, the PM reads it and talks: still idle since the frontend's turn.
+        j.record_turn(&turn("pm", None, at - 60)).unwrap();
+        assert_eq!(j.last_turn_ended().unwrap(), Some(at - 3_600));
+        // The PM on a ticket of its own is work.
+        j.record_turn(&turn("pm", Some(4), at - 30)).unwrap();
+        assert_eq!(j.last_turn_ended().unwrap(), Some(at - 30));
+        // Another member's desk turn counts, as before.
+        j.record_turn(&turn("designer", None, at - 10)).unwrap();
+        assert_eq!(j.last_turn_ended().unwrap(), Some(at - 10));
+        // The wake gate's count.
+        j.count_wake_skip("self-watch").unwrap();
+        j.count_wake_skip("self-watch").unwrap();
+        assert_eq!(j.wake_skips_since(at - 5).unwrap(), vec![("self-watch".to_owned(), 2)]);
     }
 
     #[test]

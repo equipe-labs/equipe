@@ -189,7 +189,11 @@ impl Runtime {
             if !s.is_working() && !s.is_preparing() {
                 continue;
             }
-            live.any = true;
+            // The PM talking or reading the board off tickets isn't the squad at work: an idle
+            // board stays idle through it (else its wake would end the finding and start it over).
+            if !(s.is_pm() && s.work.is_none()) {
+                live.any = true;
+            }
             if let Some(w) = &s.work {
                 live.running.insert(w.ticket);
             }
@@ -233,8 +237,12 @@ impl Runtime {
             let shown = finding.said(words);
             match (&finding, self.pm_of(squad)) {
                 (Finding::Idle { .. }, Some(pm)) => {
+                    // The same note over the same board again: no turn, and no repeat of the news.
+                    if self.held_back(squad, pm, &line) {
+                        continue;
+                    }
                     self.show_news(pm, shown);
-                    self.hand_to_pm(squad, pm, line).await;
+                    self.hand_to_pm_ungated(squad, pm, line).await;
                 }
                 _ => self.brief_pm(squad, line, Some(shown)),
             }
