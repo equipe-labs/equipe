@@ -14,7 +14,18 @@ impl Runtime {
     /// What the PM is handed for the retro: the routine, then the facts of
     /// the week since the last one.
     pub(super) fn retro_message(&mut self, squad: &str, routine: &Routine, now: u64) -> String {
-        let from = rules::since(routine.last_run, now);
+        let born = self.journal(squad).and_then(Journal::born);
+        let from = rules::since(routine.last_run, now, born);
+        // Headed in the person's language, whatever language the routine was made in.
+        let mut routine = routine.clone();
+        if let Some(lang) = self.squad_language(squad) {
+            routine.title = crate::i18n::core(lang).get("routine.retro.title").to_owned();
+        }
+        let for_the_person = self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full;
+        if for_the_person {
+            routine.prompt = rules::FOR_THE_PERSON.to_owned();
+        }
+        let routine = &routine;
         let projects = self.projects(squad);
         // Still waiting on the person: the decisions put to them and not answered.
         let open: Vec<Wait> = self
@@ -39,6 +50,10 @@ impl Runtime {
         waits.extend(open);
         let facts = rules::gather(&Week { from, to: now, tickets: &tickets, events: &events, turns: &turns, waits: &waits, briefs: rules::briefs(&crate::squad_home::path(&self.config.home, squad), &projects) });
         crate::daemon_log!("equipe: {squad}: weekly retro {} handed to the PM ({} shipped, {} troubles)", routine.id, facts.shipped.len(), facts.troubles.len());
+        // A non-developer's recap is written from what they can see: none of the team's own numbers.
+        if for_the_person {
+            return rules::message(routine, &rules::facts_for_the_person(&facts, &routines::Local));
+        }
         let mut facts = rules::facts_text(&facts, &routines::Local);
         // Decisions made in the person's words this week, and where they went wrong — only when there were any.
         if let Some(line) = self.words_week(squad, from) {

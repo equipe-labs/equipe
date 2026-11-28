@@ -566,6 +566,8 @@
   "match.blocked_words": "contraseña|verificación en dos pasos|configuración de seguridad|privacidad y seguridad|eliminar cuenta|eliminar mi cuenta|método de pago|pagar ahora|comprar ahora|realizar pedido|finalizar compra",
   "match.outward_words": "enviar|compartir|invitar|aceptar|unirse|publicar|llamar|subir|adjuntar|reenviar",
   "match.visual_words": "paleta|maqueta|tipografía",
+  "match.draft_words": "bocetos|propuestas|opciones|versiones|variantes",
+  "match.stop_others": "el resto del trabajo|las demás tareas|todo lo demás|otras tareas",
   "match.privacy_settings_words": "ajustes del sistema|preferencias del sistema|privacidad y seguridad|seguridad y privacidad",
   "match.privacy_screen_words": "grabación de pantalla|grabación de pantalla y audio del sistema|captura de pantalla",
   "match.privacy_accessibility_words": "accesibilidad",
@@ -1048,5 +1050,10 @@
   "guard.claim_nothing_waiting": "nada te espera|nada le espera|no tienes que hacer nada|no necesitas hacer nada|nada pendiente de tu parte|nada pendiente por tu parte",
   "guard.claim_credits_out": "se acabaron los créditos|sin créditos|créditos agotados|añade créditos|agregar créditos",
   "guard.claim_live": "ya está en línea|está en vivo|ya está publicado|ya está publicada|se publicó",
-  "guard.promise": "la próxima vez|lo arreglaré|lo corregiré|lo arreglaremos|lo corregiremos|en el próximo cambio"
+  "guard.promise": "la próxima vez|lo arreglaré|lo corregiré|lo arreglaremos|lo corregiremos|en el próximo cambio",
+  "guard.money_units": "créditos|crédito|dólares",
+  "guard.cost_words": "costo|coste|costará|costaría|aproximadamente|unos|estim",
+  "guard.purchase_words": "dominio|presupuesto de anuncios",
+  "guard.apply_words": "aplicar|aplicaré|publicar|poner en línea",
+  "guard.promise_confirm": "cuando lo confirmes|una vez que confirmes|cuando confirmes|cuando elijas|después de que elijas|en cuanto elijas"
 }

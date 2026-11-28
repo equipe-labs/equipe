@@ -562,6 +562,8 @@
   "match.blocked_words": "密碼|雙重認證|安全性設定|隱私權與安全性|刪除帳號|刪除帳戶|付款|支付|結帳|立即購買|提交訂單|轉帳",
   "match.outward_words": "傳送|發送|分享|共享|邀請|接受|加入|發布|發佈|提交|通話|上傳|附件|轉寄|轉發",
   "match.visual_words": "標誌|配色|字體|布局|版面|圖示",
+  "match.draft_words": "方案|草稿|版本|設計稿",
+  "match.stop_others": "其他工作|其他的工作|別的工作|其餘的|其他任務",
   "match.privacy_settings_words": "系統設定|系統偏好設定|隱私權與安全性|安全性與隱私權",
   "match.privacy_screen_words": "螢幕錄製|螢幕與系統音訊錄製|螢幕錄影|螢幕擷取",
   "match.privacy_accessibility_words": "輔助使用",
@@ -1036,5 +1038,10 @@
   "guard.claim_nothing_waiting": "沒有需要您|沒有等您|無需您|不需要您處理",
   "guard.claim_credits_out": "額度用完|點數用完|餘額不足|請儲值|請加值",
   "guard.claim_live": "已上線|已經上線|已發布到正式|已部署上線",
-  "guard.promise": "下次|之後再修|稍後修復|下次修改時"
+  "guard.promise": "下次|之後再修|稍後修復|下次修改時",
+  "guard.money_units": "點數|積分|美元",
+  "guard.cost_words": "費用|花費|預計|大約|左右",
+  "guard.purchase_words": "網域|域名|廣告費",
+  "guard.apply_words": "套用|上線|發布|生效",
+  "guard.promise_confirm": "您確認後|等您確認|確認之後再|您選好後|等您選好"
 }

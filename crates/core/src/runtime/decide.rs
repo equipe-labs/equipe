@@ -78,6 +78,21 @@ impl Runtime {
         if let Some((n, why)) = questions.iter().enumerate().find_map(|(n, q)| crate::worth_asking::judge(q).map(|w| (n, w))) {
             return Err(why.said(n + 1));
         }
+        // A card asks what to do, never with what the team's work would cost (the owner, 2026-11-28).
+        for q in &questions {
+            let text = std::iter::once(q.question.as_str()).chain(q.options.iter().flat_map(|o| [o.label.as_str(), o.description.as_str()])).collect::<Vec<_>>().join("\n");
+            if let Some(said) = super::reply_guard::quotes_cost(&text) {
+                return Err(format!(
+                    "Not asked: the card gives the person a cost estimate for the team's work (“{said}”). Describe each option by what it does, \
+with no amount in money or credits, and ask again. Only a real purchase from another company, like a domain, says its real price."
+                ));
+            }
+        }
+        // A non-developer is never asked how the team should work: a retro's changes (each with its `lesson`) are the PM's.
+        if self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full && crate::retro::lessons_of(args, questions.len()).lessons.iter().any(|l| !l.trim().is_empty()) {
+            return Err("Not put to the person: they are not a developer, and how the team works is the team's to decide. Make the change yourself with your own tools and keep its lesson in the squad's memory (`remember`, fact \"lessons\"). Ask them only what only they know about their business."
+                .into());
+        }
         // A non-developer's squad is never asked for a developer's step, nor to invent the product's admin password.
         if self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full {
             for q in &questions {

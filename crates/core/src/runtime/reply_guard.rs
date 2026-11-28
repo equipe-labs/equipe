@@ -56,6 +56,9 @@ struct Held {
     board: bool,
     /// Why a message of this turn was held back.
     failed: Vec<String>,
+    /// The tickets the turn made or changed: held for the person's yes when
+    /// its message promises to wait for it (`guard.promise_confirm`).
+    tickets: Vec<TicketId>,
     /// The last short line taken for narration: the turn's message after all
     /// when nothing follows it ("Starting on it now." and then a ticket).
     narrated: Option<String>,
@@ -155,9 +158,59 @@ fn prose(text: &str) -> String {
     out
 }
 
-/// Whether `text` is written in another language than `want`, as far as plain code can tell.
+/// Whether `text` is written in another language than `want`, as far as plain
+/// code can tell: as a whole, or by one line of it in another language. A
+/// Korean reply that opened on an English line ("I made one picture-saving
+/// mistake and two new requests have come in since. Here's where things
+/// stand.", inhwadoen, 2026-11-28) read as Korean by its share of Hangul.
 pub(super) fn wrong_language(text: &str, want: Lang) -> bool {
     let text = prose(text);
+    whole_in_another(&text, want) || text.lines().any(|line| line_in_another(line, want))
+}
+
+/// Whether one line of prose is a sentence of another language than `want`.
+/// Only what can't be a name or a list: a line in another script, or a line
+/// the detector reads as another Latin language with its little words
+/// ("Pretendard, Noto Sans KR, Gothic A1" is no English sentence). Between two
+/// Latin languages a line alone never decides: a quote is not a reply.
+fn line_in_another(line: &str, want: Lang) -> bool {
+    // A quote is someone else's words; a link's text is a page's title.
+    if line.trim_start().starts_with('>') {
+        return false;
+    }
+    let line = &unquoted(line);
+    let letters = line.chars().filter(|c| c.is_alphabetic()).count();
+    if letters < 20 {
+        return false;
+    }
+    let cjk = line.chars().filter(|c| ('\u{AC00}'..='\u{D7A3}').contains(c) || ('\u{3040}'..='\u{30FF}').contains(c) || ('\u{4E00}'..='\u{9FFF}').contains(c)).count();
+    match want {
+        Lang::Ko | Lang::Ja | Lang::ZhHans | Lang::ZhHant => {
+            cjk == 0 && crate::language::sentence_language(line).is_some()
+        }
+        _ => cjk >= 10 && cjk * 10 >= letters * 3,
+    }
+}
+
+/// `line` without what it quotes ("…", “…”) and without the text of its links (`[…](…)`).
+fn unquoted(line: &str) -> String {
+    let mut out = String::new();
+    let mut inside: Option<char> = None;
+    for c in line.chars() {
+        match (inside, c) {
+            (None, '"') => inside = Some('"'),
+            (None, '“') => inside = Some('”'),
+            (None, '[') => inside = Some(']'),
+            (Some(end), c) if c == end => inside = None,
+            (Some(_), _) => {}
+            (None, c) => out.push(c),
+        }
+    }
+    out
+}
+
+fn whole_in_another(text: &str, want: Lang) -> bool {
+    let text = text.to_owned();
     let letters = text.chars().filter(|c| c.is_alphabetic()).count();
     if letters < 20 {
         return false;
@@ -218,7 +271,58 @@ pub(super) fn check(text: &str, told: &[String], facts: &Facts) -> Checked {
         let how: Vec<String> = facts.not_live.iter().map(|(p, how)| format!("{p}: {how}")).collect();
         failed.push(format!("it says it is live, but not all of it is yet ({})", how.join("; ")));
     }
+    if let Some(said) = quotes_cost(&text) {
+        failed.push(format!(
+            "it tells the person what the team's work will cost (“{said}”): say what will be done and ask for their OK, with no amount \
+in money or credits — only a real purchase from another company, like a domain, keeps its real price"
+        ));
+    }
     Checked { text, failed }
+}
+
+/// The sentence of `text` that tells the person what the team's work will
+/// cost — an amount in money or credits beside a word of cost or estimate
+/// ("about $3", "roughly 300 credits"), if any. The owner, 2026-11-28: no
+/// estimates up front. A real purchase from another company (a domain) says
+/// its real price, and a price of the person's own product is no estimate.
+pub(super) fn quotes_cost(text: &str) -> Option<String> {
+    let units = crate::i18n::every("guard.money_units");
+    let costs = crate::i18n::every("guard.cost_words");
+    let purchases = crate::i18n::every("guard.purchase_words");
+    let ends = |c: char| matches!(c, '.' | '!' | '?' | '\n' | '。' | '！' | '？');
+    for sentence in text.split(ends) {
+        let lower = sentence.to_lowercase();
+        let chars: Vec<char> = lower.chars().collect();
+        let dollar = chars.windows(2).any(|w| w[0] == '$' && w[1].is_ascii_digit()) || chars.windows(3).any(|w| w[0] == '$' && w[1] == ' ' && w[2].is_ascii_digit());
+        let in_units = units.iter().any(|u| {
+            let u = u.to_lowercase();
+            lower.match_indices(&u).any(|(at, _)| lower[..at].trim_end().chars().last().is_some_and(|c| c.is_ascii_digit()))
+        });
+        if (dollar || in_units) && costs.iter().any(|w| lower.contains(&w.to_lowercase())) && !purchases.iter().any(|w| lower.contains(&w.to_lowercase())) {
+            return Some(sentence.trim().chars().take(240).collect());
+        }
+    }
+    None
+}
+
+/// The promise in `text` to wait for the person's pick or yes before
+/// applying something ("I'll apply it once you confirm"), if any: its sentence.
+/// Only a promise about applying or putting live counts ("once you pick, it starts",
+/// once you pick it starts, is no promise to hold anything).
+pub(super) fn waits_for_yes(text: &str) -> Option<String> {
+    let applies = crate::i18n::every("guard.apply_words");
+    let ends = |c: char| matches!(c, '.' | '!' | '?' | '\n' | '。' | '！' | '？');
+    text.split(ends).map(str::trim).find(|s| says(s, "guard.promise_confirm").is_some() && applies.iter().any(|w| s.to_lowercase().contains(&w.to_lowercase()))).map(str::to_owned)
+}
+
+/// What the PM is told of the tickets equipe held for the person's yes after its promise.
+fn held_for_yes(said: &str, tickets: &[TicketId]) -> String {
+    let list = tickets.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ");
+    format!(
+        "[equipe: you told the person: “{said}”. So {list}, made or changed in that turn, wait for their yes: they stay on their \
+branch and preview, and nothing of them lands or goes live until you accept them with the person's words in `confirmed`. One that \
+isn't what you promised to wait on: `update_ticket` with `wait_for_person: false`.]"
+    )
 }
 
 /// The promise of later work in `text`, if any: its sentence.
@@ -246,6 +350,16 @@ person about this; if it promised nothing, do nothing.]"
 }
 
 impl Runtime {
+    /// The PM's turn in `id` made or changed `ticket` on the board.
+    pub(super) fn board_touched(&mut self, id: SessionId, ticket: TicketId) {
+        if self.reply_guarded(id) {
+            let held = self.reply_guard.held.entry(id).or_default();
+            if !held.tickets.contains(&ticket) {
+                held.tickets.push(ticket);
+            }
+        }
+    }
+
     /// Whether `id` is the PM's own conversation with the person.
     fn reply_guarded(&self, id: SessionId) -> bool {
         self.sessions.get(&id).is_some_and(|s| s.is_pm() && s.work.is_none() && s.run_of.is_none())
@@ -376,6 +490,10 @@ impl Runtime {
                 if !failed.is_empty() && !again {
                     crate::daemon_log!("equipe: {squad}: the PM's reply held back and asked again: {}", failed.join("; "));
                     self.reply_guard.asked_again.insert(id);
+                    // What this turn put on the board goes with the message written again.
+                    if !held.tickets.is_empty() {
+                        self.reply_guard.held.insert(id, Held { tickets: held.tickets, ..Held::default() });
+                    }
                     let _ = self.internal.send(Internal::Wake { session: id, prompt: ask_again(&failed, facts.language) });
                     return vec![ended];
                 }
@@ -383,6 +501,21 @@ impl Runtime {
                     crate::daemon_log!("equipe: {squad}: a repeated paragraph left out of the PM's reply");
                 }
                 self.keep_told(id, &checked.text);
+                // Promised to wait for their pick or yes: what the turn put on the board waits for it too.
+                if !held.tickets.is_empty()
+                    && let Some(said) = waits_for_yes(&checked.text)
+                {
+                    let mut kept = Vec::new();
+                    for ticket in &held.tickets {
+                        if self.hold_for_person(&squad, "equipe", *ticket, true).is_ok() {
+                            kept.push(*ticket);
+                        }
+                    }
+                    if !kept.is_empty() {
+                        crate::daemon_log!("equipe: {squad}: the PM promised to wait for the person's yes: {kept:?} held until they say it");
+                        self.brief_pm(&squad, held_for_yes(&said, &kept), None);
+                    }
+                }
                 if !held.board
                     && let Some(said) = promise(&checked.text)
                 {
@@ -444,6 +577,26 @@ mod tests {
     }
 
     #[test]
+    fn one_english_line_in_a_korean_reply_is_caught_and_names_are_not() {
+        // inhwadoen, 2026-11-28: the reply opened on an English line, the rest Korean.
+        let mixed = "I made one picture-saving mistake and two new requests have come in since. Here's where things stand.\n\n\
+예린님, 아까 안 보였던 A안 첫 화면 그림이에요.\n\n말씀하신 글꼴과 카메라 그림은 디자이너가 다시 고르고 있어요. 글꼴은 장식적인 타자기체 대신 고딕 계열로 바꿀 거예요.";
+        assert!(wrong_language(mixed, Lang::Ko));
+        assert!(wrong_language("녹화 파일을 줄였어요.\nI made the recording smaller so it plays more easily on your phone.", Lang::Ko));
+        // Before: the whole message's share of Hangul alone let it through.
+        assert!(!whole_in_another(&prose(mixed), Lang::Ko));
+        // A quote of someone's English words, or a link's title, is not the reply's language.
+        assert!(!wrong_language("민성 님이 저장소에 협업자로 넣어 달라고 하셨어요. 넣어 드릴지 정해 주시면 바로 처리할게요. 보내신 말은 이랬어요.\n> \"Can you add me as a collaborator on the repository? I'll push our feature on a branch.\"", Lang::Ko));
+        assert!(!wrong_language("컴퓨터 제어 기능을 켜려면 아래 안내를 따라 설치해 주세요. 설치가 끝나면 바로 이어서 진행할게요.\n- [How to install Claude Desktop computer use on your Mac](https://example.com/a)", Lang::Ko));
+        // Names, fonts and links in a Korean reply are no English sentence.
+        let names = "글꼴은 이렇게 바꿨어요.\n- Pretendard Variable, Noto Sans KR, Gothic A1, D2Coding\n- 미리보기: https://jungkyung-lab.equipe.page/develop?look=a";
+        assert!(!wrong_language(names, Lang::Ko));
+        assert!(!wrong_language("A안을 그대로 두고 카메라 그림만 세 가지로 다시 그렸어요. 본문은 SUIT, 제목과 숫자는 D2Coding이에요.", Lang::Ko));
+        // An English reply with one Korean line (a quote of the person) is caught for an English founder only when it is a sentence.
+        assert!(wrong_language("The new hero is live.\n새 첫 화면이 실제 주소에 올라갔고 휴대폰에서도 잘 보여요.", Lang::En));
+    }
+
+    #[test]
     fn a_claim_the_state_contradicts_holds_the_reply_with_the_facts() {
         let mut f = facts();
         f.waiting = vec!["confirming the goal for o1path (Goal page)".into(), "this week's plan for o1path: 3 idea(s) to say go to (Goal page)".into()];
@@ -460,6 +613,38 @@ mod tests {
         let mut f = Facts { language: Some(Lang::En), ..Facts::default() };
         f.not_live = vec![("product".into(), "its deploy is under way".into())];
         assert_eq!(check("The six-language OnePass is live now at its real address.", &[], &f).failed.len(), 1);
+    }
+
+    #[test]
+    fn a_cost_estimate_is_held_and_a_purchase_or_a_product_price_is_not() {
+        for said in ["시안 세 개를 만들면 약 $3 정도 들어요. 진행할까요?", "이 작업은 300 크레딧 정도 예상돼요.", "It would cost about $1.50; shall I go ahead?", "That's roughly 250 credits of work."] {
+            assert!(quotes_cost(said).is_some(), "{said}");
+            assert_eq!(check(said, &[], &Facts::default()).failed.len(), 1, "{said}");
+        }
+        for said in [
+            "jungkyung-lab.com 도메인은 1년에 $12.99예요. 살까요?",
+            "Apple Developer 멤버십 연 $99 하나로 직접 배포와 스토어 둘 다 됩니다.",
+            "한 명이 숨질 때 사회적 비용은 미국 교통부 기준으로 약 $13M이에요.",
+            "2025년 데이터로 계산하면 한 장에 평균 약 $101이에요.",
+            "The domain shutter.page is $14 a year from the registrar.",
+            "프로 요금제를 월 $29로 가격표에 넣었어요.",
+            "I put the Pro plan at $29/month on your pricing page.",
+            "크레딧이 충분해서 작업은 그대로 진행돼요.",
+        ] {
+            assert!(quotes_cost(said).is_none(), "{said}");
+        }
+    }
+
+    #[test]
+    fn only_a_promise_to_apply_after_their_yes_holds_work() {
+        for said in ["미리보기 링크와 폰·컴퓨터 화면 사진부터 보여드리고, 확인해 주시면 그때 반영할게요.", "I'll show you the preview first and apply it once you confirm.", "고르신 안으로 사이트에 적용할게요. 고르시면 바로 적용해요."] {
+            assert!(waits_for_yes(said).is_some(), "{said}");
+        }
+        for said in ["고르시면 T-527 디자인 시스템 작업이 시작돼요.", "카드에서 고르시면 그대로 처리하겠습니다.", "확인하시면 보내요.", "Pick one on the card and the work starts."] {
+            assert!(waits_for_yes(said).is_none(), "{said}");
+        }
+        let asked = held_for_yes("확인해 주시면 그때 반영할게요.", &[36]);
+        assert!(asked.contains("T-36") && asked.contains("`confirmed`") && asked.contains("wait_for_person: false"), "{asked}");
     }
 
     #[test]
@@ -599,5 +784,42 @@ mod replay {
             }
         }
         println!("\nturns {} · replies shown {shown} · narration kept off the chat {narration_dropped} · held and asked again {held} · repeated paragraphs dropped {repeats} · promises put on the board {promises}", turns.len());
+    }
+}
+
+/// Real PM replies through the checks, before (the whole message's script
+/// share alone) and after (each line too, cost estimates, promises to wait):
+/// `EQUIPE_GUARD_CORPUS=<file> cargo test -p equipe-core --lib guard_corpus -- --ignored --nocapture`.
+/// The file: `[{squad, lang, text}]`, `lang` the squad's language by its English name.
+#[cfg(test)]
+mod corpus {
+    use super::*;
+
+    #[test]
+    #[ignore = "reads recorded PM replies named by EQUIPE_GUARD_CORPUS"]
+    fn guard_corpus() {
+        let Ok(file) = std::env::var("EQUIPE_GUARD_CORPUS") else { return };
+        let replies: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(file).unwrap()).unwrap();
+        let (mut before, mut after, mut cost, mut wait) = (0, 0, 0, 0);
+        for r in &replies {
+            let (Some(text), Some(lang)) = (r["text"].as_str(), r["lang"].as_str().and_then(Lang::from_english_name)) else { continue };
+            let old = whole_in_another(&prose(text), lang);
+            let new = wrong_language(text, lang);
+            before += usize::from(old);
+            after += usize::from(new);
+            if new && !old {
+                let line = prose(text).lines().find(|l| line_in_another(l, lang)).unwrap_or_default().to_owned();
+                println!("NEW-LANG [{}] {:?}", r["squad"], line.chars().take(160).collect::<String>());
+            }
+            if let Some(said) = quotes_cost(text) {
+                cost += 1;
+                println!("COST [{}] {said:?}", r["squad"]);
+            }
+            if let Some(said) = waits_for_yes(text) {
+                wait += 1;
+                println!("WAIT [{}] {said:?}", r["squad"]);
+            }
+        }
+        println!("replies {} · wrong language before {before}, after {after} · cost estimates {cost} · promises to wait {wait}", replies.len());
     }
 }

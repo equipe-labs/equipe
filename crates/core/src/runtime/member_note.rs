@@ -46,6 +46,16 @@ impl Runtime {
         let text = board::arg_str(args, "text").ok_or("Say something: give `text`.")?;
         let text = clean_text(text);
         let choices = clean_choices(args);
+        // Shown as it is, with no PM between: in the person's language or not at all (inhwadoen,
+        // 2026-11-28: "I made the recording smaller so it plays more easily…" reached a Korean founder).
+        if let Some(want) = self.squad_language(squad)
+            && std::iter::once(text.as_str()).chain(choices.iter().map(String::as_str)).any(|t| super::reply_guard::wrong_language(t, want))
+        {
+            return Err(format!(
+                "Not shown: the person reads {lang}, and this isn't all in {lang}. Write it again in {lang} — every line and choice — in plain words.",
+                lang = want.english_name()
+            ));
+        }
         let session = self.sessions.get(&id).ok_or("You're not on the squad.")?;
         let from = session.member.clone().ok_or("Only a member of the squad speaks to the person.")?;
         let ticket = session.work.as_ref().map(|w| w.ticket);

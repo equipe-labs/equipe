@@ -485,6 +485,40 @@ pub enum Held {
     Gated(crate::person_gate::Why),
     /// The PM's own work: never landed by whoever made it.
     PmsOwn,
+    /// The person was promised to see it and say yes first ([`HOLD_LINE`]):
+    /// it stays on its branch and preview until they do.
+    PersonConfirms,
+}
+
+/// The line a ticket's body carries while it waits for the person's yes
+/// before it lands and goes live: put there by `wait_for_person` on
+/// `create_ticket`/`update_ticket`, or by equipe when the PM told the person
+/// it would wait for their pick or confirmation (inhwadoen, 2026-11-28: "I'll
+/// apply it once you confirm", and it went live twelve minutes later).
+pub const HOLD_LINE: &str = "live: after the person's yes";
+
+/// Whether a ticket's `body` holds it for the person's yes.
+pub fn held_for_person(body: &str) -> bool {
+    body.lines().any(|l| l.trim().eq_ignore_ascii_case(HOLD_LINE))
+}
+
+/// `body` held for the person's yes (`hold`) or let go.
+pub fn with_hold(body: &str, hold: bool) -> String {
+    let rest: Vec<&str> = body.lines().filter(|l| !l.trim().eq_ignore_ascii_case(HOLD_LINE)).collect();
+    let rest = rest.join("\n").trim_end().to_owned();
+    match (hold, rest.is_empty()) {
+        (false, _) => rest,
+        (true, true) => HOLD_LINE.to_owned(),
+        (true, false) => format!("{rest}\n\n{HOLD_LINE}"),
+    }
+}
+
+/// Whether `confirmed`, the person's yes the PM quotes, is in what they
+/// said lately (`said`, newest last): a few words of theirs, as they wrote them.
+pub fn yes_heard(confirmed: &str, said: &[String]) -> bool {
+    let plain = |t: &str| t.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+    let quoted = plain(confirmed.trim_matches(|c: char| c == '"' || c == '“' || c == '”' || c.is_whitespace()));
+    quoted.chars().count() >= 2 && said.iter().any(|s| plain(s).contains(&quoted))
 }
 
 /// Who lands `ticket`, ready (handed in, its design check passed), with
@@ -499,6 +533,9 @@ pub fn landing(self_land: bool, pm_accepts: bool, ticket: &Ticket, changed: &[St
 pub fn landing_with(self_land: bool, pm_accepts: bool, ticket: &Ticket, changed: &[String], sql: &std::collections::BTreeMap<String, String>, pms_own: bool) -> Landing {
     if !pm_accepts {
         return Landing::Pm(Held::PersonAccepts);
+    }
+    if held_for_person(&ticket.body) {
+        return Landing::Pm(Held::PersonConfirms);
     }
     if pms_own {
         return Landing::Pm(Held::PmsOwn);
@@ -796,6 +833,28 @@ mod tests {
         assert_eq!(landing(true, true, &t, &many, false), Landing::Pm(Held::Gated(crate::person_gate::Why::Visible)));
         let said = digest(&[(4, "Tidy the toolbar".into(), "frontend".into(), "The toolbar fits on phones.".into())]);
         assert!(said.contains("T-4 Tidy the toolbar — frontend: The toolbar fits on phones.") && said.contains(REVERT_LANDED));
+    }
+
+    #[test]
+    fn work_promised_to_the_person_first_waits_for_their_yes() {
+        // inhwadoen, 2026-11-28: "I'll apply it once you confirm", and it was live twelve minutes later.
+        let t = ticket(36, "Apply look A and the shutter dial to the site");
+        let held = Ticket { body: with_hold("Apply A to the home page.", true), ..t.clone() };
+        assert!(held_for_person(&held.body) && held.body.starts_with("Apply A to the home page."), "{}", held.body);
+        assert_eq!(landing(true, true, &held, &["src/home.tsx".into()], false), Landing::Pm(Held::PersonConfirms));
+        assert_eq!(landing(true, true, &held, &[], true), Landing::Pm(Held::PersonConfirms), "the PM's own too");
+        assert_eq!(landing(true, false, &held, &[], false), Landing::Pm(Held::PersonAccepts), "a squad where the person accepts already waits for them");
+        let lifted = Ticket { body: with_hold(&held.body, false), ..held.clone() };
+        assert_eq!(lifted.body, "Apply A to the home page.");
+        assert_eq!(landing(true, true, &lifted, &["src/home.tsx".into()], false), Landing::Member);
+        assert_eq!(with_hold(&with_hold("x", true), true), with_hold("x", true), "held once");
+        assert_eq!(with_hold("", true), HOLD_LINE);
+        // Their yes, quoted as they wrote it, in what they said lately.
+        let said = vec!["시안 다 봤어".to_owned(), "좋아, A안으로 반영해줘!".to_owned()];
+        assert!(yes_heard("A안으로 반영해줘", &said));
+        assert!(yes_heard("“좋아, A안으로  반영해줘!”", &said));
+        assert!(!yes_heard("네, 반영해 주세요", &said), "words they never wrote");
+        assert!(!yes_heard("", &said) && !yes_heard("좋", &said));
     }
 
     #[test]

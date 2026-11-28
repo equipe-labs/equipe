@@ -566,6 +566,8 @@
   "match.blocked_words": "password|passcode|passkey|two-factor|security settings|privacy & security|touch id & password|users & groups|delete account|close account|delete my account|payment|checkout|pay now|buy now|place order|billing",
   "match.outward_words": "send|share|invite|accept|join|post|submit|publish|call|upload|attach|forward",
   "match.visual_words": "logo|icon|color|colour|palette|mockup|mock-up|wireframe|layout|font|typeface|typography|illustration|banner|visual",
+  "match.draft_words": "drafts|draft|options|variants|variations|mockups|mock-ups|versions|directions|concepts|designs|looks",
+  "match.stop_others": "the other work|other work|the other tasks|other tasks|everything else|the rest of the work|anything else for now",
   "match.privacy_settings_words": "system settings|system preferences|privacy & security|privacy and security|security & privacy|security and privacy",
   "match.privacy_screen_words": "screen recording|screen & system audio recording|screen and system audio recording|screen capture|screencapture",
   "match.privacy_accessibility_words": "accessibility",
@@ -1048,5 +1050,10 @@
   "guard.claim_nothing_waiting": "nothing is waiting on you|nothing waits on you|nothing new is waiting on you|nothing is waiting for you|nothing needs you|nothing for you to do|no action needed from you|nothing is needed from you",
   "guard.claim_credits_out": "credits ran out|out of credits|credits have run out|credits are used up|add credits to continue|paused for credits",
   "guard.claim_live": "is live now|is now live|now live at|went live|is live at|live on the real address",
-  "guard.promise": "next time|i'll fix|i will fix|we'll fix|will fix it|fix it later|in the next update|in the next change"
+  "guard.promise": "next time|i'll fix|i will fix|we'll fix|will fix it|fix it later|in the next update|in the next change",
+  "guard.money_units": "credits|credit|usd|dollars",
+  "guard.cost_words": "cost|costs|estimate|estimated|about|around|roughly|approximately|will use|would use|would take",
+  "guard.purchase_words": "domain|registrar|membership|subscription|ad budget|ad spend|per year from|plan from",
+  "guard.apply_words": "apply|go live|goes live|put it live|put it on the site|publish|ship it|roll it out",
+  "guard.promise_confirm": "once you confirm|after you confirm|when you confirm|once you've confirmed|once you pick|after you pick|once you choose|after you choose|once you've picked|when you've picked|before it goes live|wait for your pick|wait for your ok|wait for your go-ahead"
 }

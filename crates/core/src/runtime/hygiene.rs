@@ -45,6 +45,12 @@ pub const NATIVE_DESK_TOKENS: u64 = 300_000;
 /// The same for a conversation on a ticket.
 pub const NATIVE_TICKET_TOKENS: u64 = 360_000;
 
+/// Where Claude Code's own compaction starts for a desk conversation on its
+/// standard (200k) window: 40k under it, room for the largest single step a
+/// turn takes. Its summary, made by the model over the whole conversation,
+/// keeps what equipe's text hand-off would lose (pictures seen, decisions).
+pub const STANDARD_DESK_COMPACT: u64 = 160_000;
+
 /// The environment variable Claude Code reads to leave out its 1M-token
 /// window variants, so the standard window — and with it the engine's own
 /// compaction — comes early.
@@ -66,7 +72,12 @@ pub(super) fn window_for(engine: Engine, on_ticket: bool, native: bool, large: b
     match engine {
         // On the standard window the engine compacts on its own, early; its
         // window flag matters only where a larger one is allowed.
-        Engine::Claude if !large => Window { env: Some((DISABLE_1M_ENV.to_owned(), "1".to_owned())), compact_at: None },
+        // A desk conversation (the PM's) compacts a little before the engine's own point, so one
+        // step that reads much (pictures, a long file) still fits: a PM at 195k failed every
+        // turn with "Prompt is too long" (inhwadoen, 2026-11-28).
+        Engine::Claude if !large => {
+            Window { env: Some((DISABLE_1M_ENV.to_owned(), "1".to_owned())), compact_at: (native && !on_ticket).then_some(STANDARD_DESK_COMPACT) }
+        }
         Engine::Claude => Window { env: None, compact_at: budget },
         Engine::Codex => Window { env: None, compact_at: budget },
     }
@@ -259,7 +270,9 @@ mod tests {
     #[test]
     fn claude_code_leaves_its_1m_window_out_unless_a_large_one_is_allowed_and_codex_only_gets_its_limit() {
         let env = Some((DISABLE_1M_ENV.to_owned(), "1".to_owned()));
-        assert_eq!(window_for(Engine::Claude, false, true, false), Window { env: env.clone(), compact_at: None });
+        assert_eq!(window_for(Engine::Claude, false, true, false), Window { env: env.clone(), compact_at: Some(STANDARD_DESK_COMPACT) });
+        assert_eq!(window_for(Engine::Claude, true, true, false), Window { env: env.clone(), compact_at: None });
+        assert_eq!(window_for(Engine::Claude, false, false, false), Window { env: env.clone(), compact_at: None });
         assert_eq!(window_for(Engine::Claude, true, true, true), Window { env: None, compact_at: Some(NATIVE_TICKET_TOKENS) });
         assert_eq!(window_for(Engine::Claude, false, true, true), Window { env: None, compact_at: Some(NATIVE_DESK_TOKENS) });
         assert_eq!(window_for(Engine::Claude, false, false, true), Window { env: None, compact_at: None });

@@ -73,6 +73,7 @@ impl Runtime {
         request: Option<RequestId>,
         ticket: Option<TicketId>,
         all: bool,
+        keep: Vec<TicketId>,
     ) -> Result<Stop, String> {
         let (chain, checks) = self.stop_chain(squad, request, ticket);
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
@@ -91,7 +92,8 @@ impl Runtime {
             let titles: Vec<&str> = tickets.iter().filter(|t| !checks.contains(&t.id)).map(|t| t.title.as_str()).collect();
             if titles.is_empty() { rules::terms_of(&[words.as_str()]) } else { rules::terms_of(&titles) }
         };
-        let mut stop = Stop { id: 0, words, terms, paths, request, tickets: chain, by: by.to_owned(), since: now_secs(), cancelled: Vec::new(), refused: 0, all };
+        let keep = if all { keep } else { Vec::new() };
+        let mut stop = Stop { id: 0, words, terms, paths, request, tickets: chain, by: by.to_owned(), since: now_secs(), cancelled: Vec::new(), refused: 0, all, keep };
         stop.id = journal.stops().create(&stop).map_err(|e| e.to_string())?;
         // Its open tickets go now: whoever works one stops.
         let open: Vec<TicketId> = tickets.iter().filter(|t| !t.status.is_closed()).map(|t| t.id).collect();
@@ -125,7 +127,15 @@ until they answer, neither merge it nor deploy anything that adds to it.",
             )
         };
         let line = if stop.all {
-            let in_flight = self.in_flight(squad);
+            let in_flight: Vec<_> = self.in_flight(squad).into_iter().filter(|(t, ..)| self.pause_holding(squad, *t).is_some()).collect();
+            let kept = if stop.keep.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " What they want to go on goes on as usual: {}, with the rest of the request it serves.",
+                    stop.keep.iter().map(|t| format!("T-{t}")).collect::<Vec<_>>().join(", ")
+                )
+            };
             let flight = if in_flight.is_empty() {
                 "Nothing else was under way.".to_owned()
             } else {
@@ -136,7 +146,7 @@ until they answer, neither merge it nor deploy anything that adds to it.",
             };
             format!(
                 "The person paused all the team's work (S-{}): “{}” — {cancelled}. Until they say go, no ticket starts — equipe's own \
-checks, speed and design reviews too — nothing is merged and nothing is deployed, but work for what they ask after this. {flight}{live_line} \
+checks, speed and design reviews too — nothing is merged and nothing is deployed, but work for what they ask after this.{kept} {flight}{live_line} \
 Tell them in plain words what was under way and that it waits for their go. When they say go, call `stop_work` with `lift`.",
                 stop.id, stop.words
             )
@@ -172,7 +182,7 @@ done so far is kept, and they can ask for it again here any time. No tools, no o
             return self.squad_error(squad, say!(self, "error.stop_what"));
         }
         let all = request.is_none() && ticket.is_none() && rules::pauses_all(words);
-        if let Err(err) = self.stop_work(squad, "you", words, Vec::new(), Vec::new(), request, ticket, all).await {
+        if let Err(err) = self.stop_work(squad, "you", words, Vec::new(), Vec::new(), request, ticket, all, Vec::new()).await {
             self.squad_error(squad, err);
         }
     }
@@ -250,7 +260,12 @@ done so far is kept, and they can ask for it again here any time. No tools, no o
     pub(super) fn pause_holding(&self, squad: &str, ticket: TicketId) -> Option<Stop> {
         let pause = self.pause_in_force(squad)?;
         let journal = self.journals.get(squad)?;
-        let asked = journal.requests().of_ticket(ticket).and_then(|r| journal.requests().get(r)).map(|row| row.asked_at);
+        let request = journal.requests().of_ticket(ticket);
+        // What the person kept going ("stop the other work"): it, and the rest of its request.
+        if pause.keep.contains(&ticket) || request.is_some_and(|r| pause.keep.iter().any(|k| journal.requests().of_ticket(*k) == Some(r))) {
+            return None;
+        }
+        let asked = request.and_then(|r| journal.requests().get(r)).map(|row| row.asked_at);
         (!rules::goes_on_in(&pause, asked)).then_some(pause)
     }
 
@@ -429,8 +444,23 @@ words that it is ready and waits for their go — never merge or deploy it befor
         {
             return Err(format!("There is no T-{t}."));
         }
+        let keep: Vec<TicketId> = args.get("keep").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).map(|t| t as TicketId).collect()).unwrap_or_default();
+        if let Some(t) = keep.iter().find(|t| self.find_ticket(&call.squad, **t).is_none()) {
+            return Err(format!("There is no T-{t} to keep going."));
+        }
+        // "Stop the other work": what they talk about goes on, everything else waits — never the reverse.
+        let others = rules::stops_the_others(words);
+        if others && keep.is_empty() {
+            return Err("The person said to stop the OTHER work: what they are talking about goes on, and is not what to stop. Call again with \
+`scope: \"all\"` and `keep`: the tickets they want to go on (the one they mean, its drafts or options). Everything else then waits for their go."
+                .into());
+        }
+        if ticket.is_some_and(|t| keep.contains(&t)) {
+            return Err("The same ticket can't be stopped and kept going. `keep` is what goes on; leave out `ticket`.".into());
+        }
         // "Pause everything", in the PM's call or in the person's own words: all of the team's work.
         let all = board::arg_str(args, "scope") == Some("all")
+            || !keep.is_empty()
             || rules::pauses_all(words)
             || self.person_said_to(member).iter().any(|(text, at)| now.saturating_sub(*at) <= crate::requests::ASKED_WITHIN && rules::pauses_all(text));
         if !all && terms.is_empty() && paths.is_empty() && request.is_none() && ticket.is_none() {
@@ -438,11 +468,13 @@ words that it is ready and waits for their go — never merge or deploy it befor
         }
         if all && let Some(pause) = self.pause_in_force(&call.squad) {
             if ticket.is_some() || request.is_some() {
-                let _ = self.stop_work(&call.squad, &call.member, words, terms, paths, request, ticket, false).await?;
+                let _ = self.stop_work(&call.squad, &call.member, words, terms, paths, request, ticket, false, Vec::new()).await?;
             }
             return Ok(format!("All work is paused already (S-{}): nothing starts, lands or goes live until the person says go. Tell them so in one plain line.", pause.id));
         }
-        let stop = self.stop_work(&call.squad, &call.member, words, terms, paths, request, ticket, all).await?;
+        // Others stopped: the kept work is no chain to cancel.
+        let (request, ticket) = if keep.is_empty() { (request, ticket) } else { (None, None) };
+        let stop = self.stop_work(&call.squad, &call.member, words, terms, paths, request, ticket, all, keep).await?;
         if stop.all {
             return Ok(format!(
                 "Paused all work as S-{}. {}; nothing starts, lands or goes live until the person says go (`stop_work` with `lift`: {}). Tell them in plain words what was under way and that it waits for their go.",

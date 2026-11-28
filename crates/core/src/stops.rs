@@ -106,6 +106,16 @@ pub fn goes_on_in(pause: &Stop, asked_at: Option<u64>) -> bool {
     asked_at.is_some_and(|at| at > pause.since)
 }
 
+/// Whether `text` (the person's words) stops the *other* work — "stop the
+/// rest", "pause everything else" — so that what they talk about goes on.
+/// Read as one thing to stop, the PM cancelled the very drafts the person
+/// wanted finished (inhwadoen, 2026-11-28). The words are each language's
+/// (`match.stop_others`).
+pub fn stops_the_others(text: &str) -> bool {
+    let t = text.to_lowercase();
+    crate::i18n::every("match.stop_others").iter().any(|w| t.contains(&w.to_lowercase()))
+}
+
 /// Whether `text` (the person's words) says "pause everything": all of the
 /// team's work, not one kind of it.
 pub fn pauses_all(text: &str) -> bool {
@@ -191,6 +201,7 @@ pub fn create_table(conn: &Connection) -> rusqlite::Result<()> {
     // Journals from before pauses of all work and stopped commits.
     let _ = conn.execute("ALTER TABLE stops ADD COLUMN all_work INTEGER NOT NULL DEFAULT 0", []);
     let _ = conn.execute("ALTER TABLE stops ADD COLUMN heads TEXT NOT NULL DEFAULT ''", []);
+    let _ = conn.execute("ALTER TABLE stops ADD COLUMN keep TEXT NOT NULL DEFAULT ''", []);
     Ok(())
 }
 
@@ -213,7 +224,7 @@ impl Store<'_> {
     /// Keep a new stop, in force from `stop.since`; its number.
     pub fn create(&self, stop: &Stop) -> rusqlite::Result<StopId> {
         self.0.execute(
-            "INSERT INTO stops (words, terms, paths, request, tickets, by, since, cancelled, all_work) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO stops (words, terms, paths, request, tickets, by, since, cancelled, all_work, keep) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 stop.words,
                 stop.terms.join("\n"),
@@ -223,7 +234,8 @@ impl Store<'_> {
                 stop.by,
                 stop.since as i64,
                 joined(&stop.cancelled),
-                stop.all as i64
+                stop.all as i64,
+                joined(&stop.keep)
             ],
         )?;
         Ok(self.0.last_insert_rowid() as StopId)
@@ -248,7 +260,7 @@ impl Store<'_> {
 
     /// Those in force, the oldest first.
     pub fn in_force(&self) -> Vec<Stop> {
-        let Ok(mut stmt) = self.0.prepare("SELECT id, words, terms, paths, request, tickets, by, since, cancelled, refused, all_work FROM stops WHERE lifted_at IS NULL ORDER BY id") else {
+        let Ok(mut stmt) = self.0.prepare("SELECT id, words, terms, paths, request, tickets, by, since, cancelled, refused, all_work, keep FROM stops WHERE lifted_at IS NULL ORDER BY id") else {
             return Vec::new();
         };
         stmt.query_map([], |r| {
@@ -264,6 +276,7 @@ impl Store<'_> {
                 cancelled: ids(&r.get::<_, String>(8)?),
                 refused: r.get::<_, i64>(9)?.max(0) as u32,
                 all: r.get::<_, i64>(10)? != 0,
+                keep: ids(&r.get::<_, String>(11)?),
             })
         })
         .and_then(|rows| rows.collect())
@@ -322,6 +335,7 @@ mod tests {
             cancelled: vec![],
             refused: 0,
             all: false,
+            keep: Vec::new(),
         }
     }
 
@@ -368,6 +382,13 @@ mod tests {
         for said in ["stop polishing the gallery", "pause the newsletter", "everything looks great", "wait for my go-ahead on the logo", "Don't stop, everything is great"] {
             assert!(!pauses_all(said), "{said}");
         }
+        // "Stop the other work": what they talk about goes on (inhwadoen, 2026-11-28, the drafts were cancelled instead).
+        for said in ["시안 결정될 때까지 다른 작업은 멈춰줘", "Stop the other work until I pick a draft", "Pause everything else for now", "나머지 작업은 잠깐 멈춰"] {
+            assert!(stops_the_others(said), "{said}");
+        }
+        for said in ["stop polishing the gallery", "갤러리 다듬는 건 그만해", "pause everything"] {
+            assert!(!stops_the_others(said), "{said}");
+        }
         let pause = Stop { all: true, since: 1_000, ..stop(&[], &[], &[], None) };
         assert!(!goes_on_in(&pause, None) && !goes_on_in(&pause, Some(900)) && !goes_on_in(&pause, Some(1_000)), "work from before waits");
         assert!(goes_on_in(&pause, Some(1_001)), "what the person asks after goes on");
@@ -385,7 +406,8 @@ mod tests {
         create_table(&conn).unwrap();
         create_table(&conn).unwrap(); // again: the columns are there already
         let store = Store(&conn);
-        let id = store.create(&Stop { all: true, ..stop(&[], &[], &[29], None) }).unwrap();
+        let id = store.create(&Stop { all: true, keep: vec![16, 17], ..stop(&[], &[], &[29], None) }).unwrap();
+        assert_eq!(store.get(id).map(|s| s.keep), Some(vec![16, 17]), "what goes on is kept with the pause");
         store.set_heads(id, &[(29, "a1b2c3d4e5f6".into()), (30, "not-a-commit".into())]).unwrap();
         assert!(store.in_force()[0].all);
         assert_eq!(store.heads_in_force(), [(id, 29, "a1b2c3d4e5f6".to_owned())]);

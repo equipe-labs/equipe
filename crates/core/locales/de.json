@@ -566,6 +566,8 @@
   "match.blocked_words": "passwort|kennwort|zwei-faktor|sicherheitseinstellungen|datenschutz & sicherheit|konto löschen|zahlung|bezahlen|jetzt kaufen|zur kasse|bestellung aufgeben|kostenpflichtig bestellen",
   "match.outward_words": "senden|teilen|einladen|annehmen|beitreten|posten|absenden|anrufen|hochladen|anhängen|weiterleiten|veröffentlichen",
   "match.visual_words": "farbe|schriftart",
+  "match.draft_words": "entwürfe|varianten|optionen|versionen|richtungen",
+  "match.stop_others": "die anderen aufgaben|alles andere|die restliche arbeit|andere arbeit",
   "match.privacy_settings_words": "systemeinstellungen|datenschutz & sicherheit|datenschutz und sicherheit",
   "match.privacy_screen_words": "bildschirmaufnahme|bildschirm- und systemaudioaufnahme",
   "match.privacy_accessibility_words": "bedienungshilfen",
@@ -1048,5 +1050,10 @@
   "guard.claim_nothing_waiting": "nichts wartet auf sie|nichts wartet auf dich|nichts zu tun für sie|keine aktion von ihnen|von ihnen wird nichts gebraucht",
   "guard.claim_credits_out": "guthaben ist aufgebraucht|keine credits mehr|credits aufgebraucht|credits sind aufgebraucht|credits aufladen",
   "guard.claim_live": "ist jetzt live|ist live|ging live|ist jetzt online",
-  "guard.promise": "beim nächsten|nächstes mal|ich behebe das später|werde ich beheben|später beheben"
+  "guard.promise": "beim nächsten|nächstes mal|ich behebe das später|werde ich beheben|später beheben",
+  "guard.money_units": "credits|dollar",
+  "guard.cost_words": "kosten|kostet|etwa|ungefähr|schätz|rund",
+  "guard.purchase_words": "domain|werbebudget",
+  "guard.apply_words": "übernehmen|anwenden|live stellen|veröffentlichen",
+  "guard.promise_confirm": "sobald du bestätigst|wenn du bestätigst|nach deiner bestätigung|sobald du gewählt hast|sobald du dich entschieden hast|sobald sie bestätigen"
 }

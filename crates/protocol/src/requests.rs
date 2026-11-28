@@ -271,6 +271,10 @@ pub struct Stop {
     /// what they ask after it began.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub all: bool,
+    /// A pause of all work but this ("stop the other work"): these tickets,
+    /// and the rest of the person's requests they serve, go on.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keep: Vec<TicketId>,
 }
 
 fn is_zero(n: &u32) -> bool {

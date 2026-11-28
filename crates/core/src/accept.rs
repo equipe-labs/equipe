@@ -38,6 +38,7 @@ acceptance, so never put it to the person.",
             "properties": {
                 "tickets": { "type": "array", "items": { "type": "integer" }, "description": "The handed-in tickets you accept." },
                 "checked": { "type": "string", "description": "What you checked and found, in a line — kept on each ticket for the person." },
+                "confirmed": { "type": "string", "description": "For work held for the person's yes (`wait_for_person`): their words saying yes, quoted as they wrote them in this conversation. Held work isn't accepted without them." },
                 "push": { "type": "boolean", "description": "Push main once merged — when the person asked for it to go live (\"ship it\"), or the project always ships what is on main. Pushed is on main, not live: equipe then runs the project's go-live command (`.equipe/deploy.json`, or `set_deploy`), and it is live once that or the project's deploy succeeded." },
             },
             "required": ["tickets", "checked"],

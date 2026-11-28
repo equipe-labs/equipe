@@ -100,7 +100,7 @@ pub fn pm_line(member: &str, id: u32, title: &str, usd: f64) -> String {
     format!(
         "{member} proposed T-{id} “{title}”, which nobody asked for: it doesn't start until the person says yes. Similar work \
 cost about {} — that is for you to weigh whether it is worth their credit, never a line for them. If it is worth it, suggest it in \
-one plain line by what it would change for them (\"The team suggests …\"), with no cost or price unless they ask what it costs; \
+one plain line by what it would change for them (\"The team suggests …\"), with no cost, price or credits — not even when they ask; \
 when they say yes, `update_ticket` it with their `request` and it starts. Otherwise cancel it. Never start it, or another ticket \
 doing the same, without their yes.",
         said(usd)
@@ -195,7 +195,7 @@ mod tests {
         // Owner, 2026-11-26, after a PM reply ended "예상 비용은 약 $1.50~$3.50예요": "예상 비용 보여주지 말자".
         let (member, pm) = (reply(28, 1.5), pm_line("designer", 28, "Logo refresh", 1.5));
         assert!(member.contains("for the team's planning only") && member.contains("never a price"), "{member}");
-        assert!(pm.contains("never a line for them") && pm.contains("no cost or price unless they ask"), "{pm}");
+        assert!(pm.contains("never a line for them") && pm.contains("no cost, price or credits — not even when they ask"), "{pm}");
         assert_eq!(cost_talk(&member), Vec::<String>::new());
         assert_eq!(cost_talk(&pm), Vec::<String>::new());
         // The words this module gave before tell the PM to say the cost: the check catches them.
