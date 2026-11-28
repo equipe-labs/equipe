@@ -431,8 +431,7 @@ pub fn cloud_answer(printed: &str) -> Option<CloudAnswer> {
     let value = printed
         .match_indices('{')
         .filter_map(|(at, _)| serde_json::Deserializer::from_str(&printed[at..]).into_iter::<serde_json::Value>().next()?.ok())
-        .filter(|v| v.get("deployed").is_some_and(serde_json::Value::is_array))
-        .last()?;
+        .rfind(|v| v.get("deployed").is_some_and(serde_json::Value::is_array))?;
     let list = |key: &str| value.get(key).and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
     let named = |e: &serde_json::Value| e.get("app").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
     let why = |e: &serde_json::Value| e.get("why").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
