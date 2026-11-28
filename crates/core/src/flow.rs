@@ -224,6 +224,7 @@ pub fn tick(flow: &mut TicketFlow, done: &[usize], replace: &[usize], added: Vec
         }
         item.done = true;
         item.by = Some(by.to_owned());
+        item.unconfirmed = false;
     }
     let mut gone: Vec<usize> = replace.to_vec();
     gone.sort_unstable();
@@ -286,8 +287,99 @@ pub fn merge_repeats(flow: &mut TicketFlow) -> usize {
     gone
 }
 
+/// What a member's tool call showed about its ticket's work, read from the
+/// call's own answer: evidence its checklist is ticked by, so items don't
+/// wait on the member remembering `check_steps` (Team Aman's T-65 ran twice,
+/// deployed its preview four times and passed QA, and ticked none of 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Evidence {
+    /// The "done" checklist passed (`qa_check`).
+    Passed,
+    /// A build is up on the product's private preview.
+    Preview,
+    /// It went live: a live deploy, a version promoted, main deployed.
+    Live,
+}
+
+/// The platform tools a member's run shows its work with.
+const PLATFORM: &str = "mcp__equipe-platform__";
+
+/// The [`Evidence`] in a finished tool call, if any: its name, whether it
+/// succeeded, and what it answered.
+pub fn evidence_of(tool: &str, ok: bool, output: &str) -> Option<Evidence> {
+    let name = tool.strip_prefix(PLATFORM)?;
+    if !ok {
+        return None;
+    }
+    // Spaces and escapes aside: the answer may come as JSON inside a text.
+    let compact: String = output.chars().filter(|c| !c.is_whitespace() && *c != '\\').collect();
+    match name {
+        // Its answer says `ok` for the whole checklist; a failed one says what to fix next.
+        "qa_check" => (compact.contains("\"ok\":true") && !compact.contains("\"ok\":false") && !output.contains("Fix every failed check")).then_some(Evidence::Passed),
+        // Only an answer with the address it is at: a refusal is no deploy.
+        "deploy_site" if compact.contains("\"url\":\"http") => Some(if compact.contains("\"preview\":true") { Evidence::Preview } else { Evidence::Live }),
+        "promote_version" => Some(Evidence::Live),
+        "deploy_main" => crate::go_live::cloud_answer(output).filter(|a| !a.live.is_empty()).map(|_| Evidence::Live),
+        _ => None,
+    }
+}
+
+/// Whether `text`, a checklist item, is putting the work live — by the
+/// go-live words of every language equipe speaks (`flow.live_words`): whole
+/// words where words are spaced, as written where they are not.
+pub fn is_live_step(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    crate::i18n::every("flow.live_words").iter().any(|w| {
+        let w = w.to_lowercase();
+        if w.chars().any(|c| c >= '\u{2E80}') {
+            return lower.contains(&w);
+        }
+        lower.match_indices(&w).any(|(at, _)| {
+            let before = lower[..at].chars().next_back();
+            let after = lower[at + w.len()..].chars().next();
+            before.is_none_or(|c| !c.is_alphanumeric()) && after.is_none_or(|c| !c.is_alphanumeric())
+        })
+    })
+}
+
+/// The items `evidence` ticks off during a run of `holder`: a passed check,
+/// the holder's open items short of going live; going live, every open
+/// go-live item, whoever it is named for. A preview alone ticks nothing
+/// while the work goes on — it counts at the hand-in.
+pub fn ticked_by(flow: &TicketFlow, holder: &str, evidence: Evidence) -> Vec<usize> {
+    match evidence {
+        Evidence::Passed => open_for(flow, holder).into_iter().filter(|n| !is_live_step(&flow.steps[n - 1].text)).collect(),
+        Evidence::Preview => Vec::new(),
+        Evidence::Live => flow.steps.iter().enumerate().filter(|(_, s)| !s.done && is_live_step(&s.text)).map(|(i, _)| i + 1).collect(),
+    }
+}
+
+/// What a hand-in by `holder` does to its items still open, given what its
+/// run showed (`shown`): `(confirmed, unconfirmed)`. Each item but a go-live
+/// one is ticked — confirmed when the run passed a check or put a build up,
+/// else on the member's word ([`TicketStep::unconfirmed`]). A go-live item
+/// is ticked only by going live: otherwise it stays open, for the deploy
+/// after landing to tick.
+pub fn hand_in_ticks(flow: &TicketFlow, holder: &str, shown: &[Evidence]) -> (Vec<usize>, Vec<usize>) {
+    let built = !shown.is_empty();
+    let live = shown.contains(&Evidence::Live);
+    let (mut confirmed, mut unconfirmed) = (Vec::new(), Vec::new());
+    for n in open_for(flow, holder) {
+        if is_live_step(&flow.steps[n - 1].text) {
+            if live {
+                confirmed.push(n);
+            }
+        } else if built {
+            confirmed.push(n);
+        } else {
+            unconfirmed.push(n);
+        }
+    }
+    (confirmed, unconfirmed)
+}
+
 /// The numbers (from 1) of the items still open for `holder`: what its
-/// hand-in, or its baton passed with no `done`, ticks off.
+/// baton passed with no `done` ticks off.
 pub fn open_for(flow: &TicketFlow, holder: &str) -> Vec<usize> {
     flow.steps.iter().enumerate().filter(|(_, s)| !s.done && s.who.as_deref().is_none_or(|w| w == holder || w == role_of(holder))).map(|(i, _)| i + 1).collect()
 }
@@ -911,6 +1003,78 @@ mod tests {
         assert!(ticked_nothing(&flow, "designer", u64::MAX), "the designer's item is open and nothing was ticked since");
         let reminder = tick_reminder(9, &flow, "designer");
         assert!(reminder.contains("T-9") && reminder.contains("1. Spec the page") && reminder.contains("`check_steps`") && reminder.contains("`note`"), "{reminder}");
+    }
+
+    /// Team Aman's T-65 as it was on 2026-11-28 (its steps' own words).
+    fn t65() -> TicketFlow {
+        let item = |t: &str, who: Option<&str>| TicketStep { text: t.into(), who: who.map(str::to_owned), ..Default::default() };
+        TicketFlow {
+            steps: vec![
+                item("Rebuild the screens from the person's own design, wired to the real data", None),
+                item("Add a create-meeting form in the same style", None),
+                item("Add a light option, calm motion for people who ask for less, readable text", None),
+                item("Compare each screen with the design, side by side, on phone and computer", Some("designer")),
+                item("Put it live", None),
+                item("Turn the stars gold when a meeting is locked, as in the demo", None),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn what_a_run_showed_ticks_its_checklist_without_check_steps() {
+        // T-65 ran twice (89 and 103 tool calls), deployed its preview 4 times, passed QA 3 times, never called
+        // check_steps, and was handed in with 0 of 6 ticked.
+        let mut flow = t65();
+        let qa_pass = r#"{"ok":true,"checks":[{"id":"loads","ok":true}],"url":"https://review--asap.example.app"}"#;
+        let qa_fail = r#"{"ok":false,"checks":[{"id":"loads","ok":false}],"next":"Fix every failed check, deploy again and run qa_check again. The work is not done until it passes."}"#;
+        let preview = r#"{"app":"asap","url":"https://review--asap.example.app","preview":true}"#;
+        let live = r#"{"app":"asap","url":"https://asap.example.app","version":"v12"}"#;
+        assert_eq!(evidence_of("mcp__equipe-platform__qa_check", true, qa_pass), Some(Evidence::Passed));
+        assert_eq!(evidence_of("mcp__equipe-platform__qa_check", true, &format!("{{\"text\":{}}}", serde_json::to_string(qa_pass).unwrap())), Some(Evidence::Passed), "JSON inside a text");
+        assert_eq!(evidence_of("mcp__equipe-platform__qa_check", true, qa_fail), None, "a failed check shows nothing");
+        assert_eq!(evidence_of("mcp__equipe-platform__deploy_site", true, preview), Some(Evidence::Preview));
+        assert_eq!(evidence_of("mcp__equipe-platform__deploy_site", true, live), Some(Evidence::Live));
+        assert_eq!(evidence_of("mcp__equipe-platform__deploy_site", true, "refused: this build is still the starter screen"), None, "a refusal is no deploy");
+        assert_eq!(evidence_of("mcp__equipe-platform__deploy_site", false, live), None, "a failed call shows nothing");
+        assert_eq!(evidence_of("Bash", true, live), None, "only the platform's tools");
+        assert_eq!(evidence_of("mcp__equipe-platform__deploy_main", true, r#"{"deployed":[{"app":"asap"}],"skipped":[]}"#), Some(Evidence::Live));
+        assert_eq!(evidence_of("mcp__equipe-platform__deploy_main", true, r#"{"deployed":[],"skipped":[{"app":"asap","why":"no recorded commit"}]}"#), None, "nothing went live");
+
+        // A preview while the work goes on ticks nothing; the check passing ticks the holder's items short of going live.
+        assert!(ticked_by(&flow, "frontend", Evidence::Preview).is_empty());
+        let passed = ticked_by(&flow, "frontend", Evidence::Passed);
+        assert_eq!(passed, vec![1, 2, 3, 6], "not the designer's item, not going live");
+        tick(&mut flow, &passed, &[], Vec::new(), "frontend").unwrap();
+        assert_eq!(flow.progress(), (4, 6));
+        // Going live ticks the go-live item, whoever holds it.
+        assert_eq!(ticked_by(&flow, "equipe", Evidence::Live), vec![5]);
+    }
+
+    #[test]
+    fn a_hand_in_ticks_what_its_run_showed_and_marks_the_rest_as_on_its_word() {
+        let flow = t65();
+        // Built and checked: every item of the holder's is confirmed but going live, which waits for the deploy.
+        assert_eq!(hand_in_ticks(&flow, "frontend", &[Evidence::Preview, Evidence::Passed]), (vec![1, 2, 3, 6], vec![]));
+        assert_eq!(hand_in_ticks(&flow, "frontend", &[Evidence::Live]), (vec![1, 2, 3, 5, 6], vec![]), "it went live in the run");
+        // Nothing shown: ticked on its word, never going live.
+        assert_eq!(hand_in_ticks(&flow, "frontend", &[]), (vec![], vec![1, 2, 3, 6]));
+        // An explicit tick is the member's own and clears the mark.
+        let mut flow = flow;
+        flow.steps[0].done = true;
+        flow.steps[0].unconfirmed = true;
+        tick(&mut flow, &[1], &[], Vec::new(), "frontend").unwrap();
+        assert!(!flow.steps[0].unconfirmed);
+    }
+
+    #[test]
+    fn going_live_is_told_by_its_words_in_every_language() {
+        for live in ["Put it live", "Put asap live on its free address", "Publish the new menu", "Mettre en ligne la page", "실제 사이트에 올리기", "라이브로 내보내기", "本番に公開する", "上线新版本"] {
+            assert!(is_live_step(live), "{live}");
+        }
+        for not in ["Deliver the booking form", "Make the dashboard feel alive", "Add a light option", "Olive green buttons", "Tests and checks pass"] {
+            assert!(!is_live_step(not), "{not}");
+        }
     }
 
     #[test]

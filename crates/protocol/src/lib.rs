@@ -520,6 +520,11 @@ pub struct TicketStep {
     /// /book"): shown once, as the step is ticked.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Ticked when its holder handed the work in, on its word alone: no
+    /// check passed, no preview or live deploy in that run. Screens show it
+    /// as done but not confirmed, never as plainly done.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub unconfirmed: bool,
 }
 
 /// A ticket that drives a person's request to production: one member drives

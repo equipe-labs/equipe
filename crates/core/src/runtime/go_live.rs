@@ -195,6 +195,12 @@ each landing — else ask the person how it goes live. Until then its landed wor
                 let url = watch.site.clone();
                 watch.live = Some(sha.clone());
                 let live = Live { sha, at: now, url, environment: None, source: DeploySource::Command };
+                // What went live ticks its go-live items: the tickets of this run and of the merges it brought.
+                let mut went: Vec<TicketId> = tickets.clone();
+                went.extend(merges.iter().flat_map(|m| m.tickets.iter().copied()));
+                went.sort_unstable();
+                went.dedup();
+                self.went_live(squad, &went);
                 self.note_looks(squad, vec![(project, watch, Looked::Live { from, live, merges })]);
                 let line = if back {
                     format!("{name} is live again at {short}: `{command}` succeeded, run {after}.")

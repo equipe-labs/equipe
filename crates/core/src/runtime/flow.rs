@@ -222,6 +222,76 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
         }
     }
 
+    /// A finished tool call of member `id` showed its work: kept for its
+    /// hand-in, and its checklist ticked by it now ([`rules::ticked_by`]).
+    pub(super) fn evidence_shown(&mut self, id: SessionId, evidence: rules::Evidence) {
+        let Some(s) = self.sessions.get_mut(&id) else { return };
+        let (Some(squad), Some(holder)) = (s.squad.clone(), s.member.as_ref().map(|m| m.name.clone())) else { return };
+        let Some(work) = s.work.as_mut() else { return };
+        if !work.evidence.contains(&evidence) {
+            work.evidence.push(evidence);
+        }
+        let ticket = work.ticket;
+        let Some(flow) = self.find_ticket(&squad, ticket).and_then(|t| t.flow.as_deref().cloned()) else { return };
+        let ticks = rules::ticked_by(&flow, &holder, evidence);
+        if ticks.is_empty() {
+            return;
+        }
+        match self.change_steps(&squad, ticket, &ticks, &[], Vec::new(), &holder) {
+            Ok(_) => crate::daemon_log!("equipe: {squad}: T-{ticket}: {evidence:?} ticked item(s) {ticks:?} for {holder}"),
+            Err(err) => crate::daemon_log!("equipe: {squad}: T-{ticket}: {evidence:?} could not tick {ticks:?}: {err}"),
+        }
+    }
+
+    /// `holder` handed `ticket` in, its run having shown `shown`: its items
+    /// still open ticked by [`rules::hand_in_ticks`], those on its word alone
+    /// marked unconfirmed.
+    pub(super) fn hand_in_steps(&mut self, squad: &str, ticket: TicketId, holder: &str, shown: &[rules::Evidence]) {
+        let Some(found) = self.find_ticket(squad, ticket) else { return };
+        let mut flow = found.flow.as_deref().cloned().unwrap_or_default();
+        let (confirmed, unconfirmed) = rules::hand_in_ticks(&flow, holder, shown);
+        if confirmed.is_empty() && unconfirmed.is_empty() {
+            return;
+        }
+        let all: Vec<usize> = confirmed.iter().chain(&unconfirmed).copied().collect();
+        if rules::tick(&mut flow, &all, &[], Vec::new(), holder).is_err() {
+            return;
+        }
+        for n in &unconfirmed {
+            flow.steps[n - 1].unconfirmed = true;
+        }
+        if !unconfirmed.is_empty() {
+            crate::daemon_log!("equipe: {squad}: T-{ticket}: {holder} handed in with item(s) {unconfirmed:?} shown by no check or deploy: marked unconfirmed");
+        }
+        self.save_flow(squad, ticket, &flow);
+    }
+
+    /// `tickets` went live (equipe deployed main after they landed): their
+    /// go-live items are ticked, closed or not.
+    pub(super) fn went_live(&mut self, squad: &str, tickets: &[TicketId]) {
+        for &ticket in tickets {
+            let Some(found) = self.find_ticket(squad, ticket) else { continue };
+            let Some(mut flow) = found.flow.as_deref().cloned() else { continue };
+            let live = rules::ticked_by(&flow, "equipe", rules::Evidence::Live);
+            if live.is_empty() || rules::tick(&mut flow, &live, &[], Vec::new(), "equipe").is_err() {
+                continue;
+            }
+            crate::daemon_log!("equipe: {squad}: T-{ticket} is live: item(s) {live:?} ticked");
+            self.save_flow(squad, ticket, &flow);
+        }
+    }
+
+    /// `ticket`'s checklist kept as `flow`, and told to the screens.
+    fn save_flow(&mut self, squad: &str, ticket: TicketId, flow: &TicketFlow) {
+        let Some(journal) = self.journal(squad) else { return };
+        if journal.set_ticket_flow(ticket, Some(flow)).is_err() {
+            return;
+        }
+        if let Some(changed) = journal.ticket(ticket).ok().flatten() {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: changed });
+        }
+    }
+
     /// Tick `done`, take out the open items `replace` and add `added` (those
     /// it hasn't already) on `ticket`'s checklist, by `by`: what it says back.
     pub(super) fn change_steps(&mut self, squad: &str, ticket: TicketId, done: &[usize], replace: &[usize], added: Vec<TicketStep>, by: &str) -> Result<String, String> {

@@ -1113,6 +1113,9 @@ struct Work {
     /// How its turns end when they don't end the work: paused by equipe,
     /// reminded how to finish, handed back ([`turn_end`]).
     end: RunEnd,
+    /// What its tool calls showed of the work this run (a check passed, a
+    /// preview or live deploy): its checklist is ticked by it.
+    evidence: Vec<crate::flow::Evidence>,
 }
 
 /// One of the PM's conversations at its desk, while another is the current one.
@@ -1339,6 +1342,9 @@ type MergeResult = Result<(String, Option<Result<(), String>>), String>;
 
 enum Internal {
     Event(Box<Event>),
+    /// A member's finished tool call showed its work ([`crate::flow::evidence_of`]),
+    /// read from its whole answer before the screens' copy is cut.
+    Evidence { session: SessionId, evidence: crate::flow::Evidence },
     /// A kept key's removal from the secret store, done off the loop.
     SquadSecretDeleted { squad: String, name: String, gone: Result<(), String> },
     /// A member's desk turn's changes to the squad's folder, saved off the loop.
@@ -2043,6 +2049,7 @@ impl Wake {
             Wake::Request(Some(Request::DesktopAuto)) => Borrowed("desktop setup"),
             Wake::Internal(Internal::SquadSecretDeleted { .. }) => Borrowed("a key removed"),
             Wake::Internal(Internal::Event(_)) => Borrowed("an engine's event"),
+            Wake::Internal(Internal::Evidence { .. }) => Borrowed("a tool call that showed the work"),
             Wake::Internal(Internal::EngineStarted { .. }) => Borrowed("an engine's start"),
             Wake::Internal(Internal::TurnSettled { .. }) => Borrowed("a settled turn ended"),
             Wake::Internal(Internal::TurnSpent { .. }) => Borrowed("a turn's spend"),
@@ -2357,6 +2364,7 @@ impl Runtime {
                     }
                 }
                 Internal::DeskSaved { session, name, saved } => self.desk_saved(session, &name, saved),
+                Internal::Evidence { session, evidence } => self.evidence_shown(session, evidence),
                 Internal::EngineStarted { session, pid } => self.engine_started(session, pid),
                 Internal::TurnSettled { session, why } => self.turn_settled(session, &why),
                 Internal::TurnSpent { session, tokens } => self.turn_spent(session, tokens),
@@ -6801,6 +6809,7 @@ runbooks and reports live there, and work across the projects or on running them
                                 }
                             }
                             activity => {
+                                evidence_in(&internal, id, &activity);
                                 if let Some(event) = activity_event(id, activity) {
                                     emit(event);
                                 }
@@ -7083,6 +7092,7 @@ runbooks and reports live there, and work across the projects or on running them
                         if let Some(event) = plan.heard(&activity, std::time::Instant::now()).and_then(|again| activity_event(id, again)) {
                             emit(event);
                         }
+                        evidence_in(&internal, id, &activity);
                         if let Some(event) = activity_event(id, activity) {
                             emit(event);
                         }
@@ -8050,6 +8060,7 @@ runbooks and reports live there, and work across the projects or on running them
             refused: None,
             preparing,
             end: RunEnd::default(),
+            evidence: Vec::new(),
         };
         // The ticket runs in a session of its own, beside the member's
         // conversation and its other runs: from here `id` is the run.
@@ -11919,11 +11930,12 @@ or as its preview link. The person is told exactly what you write."
                 work.waive = board::arg_str(&args, "waive_findings").map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned);
                 let red_note = self.handed_in_failing_on_main(&squad, ticket, &member, &failing_on_main);
                 let on = ticket;
-                // Handed in: what was left of the checklist for its holder is done, and the person's summary kept.
+                // Handed in: what was left of the checklist for its holder is ticked — confirmed by what its run
+                // showed, else marked as on its word; going live only by going live. The person's summary kept.
+                let shown_work = self.sessions.get(&id).and_then(|s| s.work.as_ref()).map(|w| w.evidence.clone()).unwrap_or_default();
                 if let Some(found) = self.find_ticket(&squad, on) {
-                    let open = found.flow.as_deref().map(|f| crate::flow::open_for(f, &member)).unwrap_or_default();
-                    if !open.is_empty() {
-                        let _ = self.change_steps(&squad, on, &open, &[], Vec::new(), &member);
+                    if found.flow.is_some() {
+                        self.hand_in_steps(&squad, on, &member, &shown_work);
                     }
                     if let Some(text) = for_person
                         && let Some(journal) = self.journal(&squad)
@@ -13217,6 +13229,7 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         refused: None,
         preparing: false,
         end: RunEnd::default(),
+        evidence: Vec::new(),
     })
 }
 
@@ -14117,6 +14130,16 @@ fn plan_step(step: equipe_providers::turn::PlanStep) -> equipe_protocol::PlanSte
         StepState::Done => equipe_protocol::PlanState::Done,
     };
     equipe_protocol::PlanStep { text: step.text, state }
+}
+
+/// A finished tool call of session `id` that showed its work: told to the
+/// loop with the call's whole answer read, not the screens' cut copy.
+fn evidence_in(internal: &UnboundedSender<Internal>, id: SessionId, activity: &Activity) {
+    if let Activity::ToolDone(done) = activity
+        && let Some(evidence) = crate::flow::evidence_of(&done.name, done.ok, &done.output)
+    {
+        let _ = internal.send(Internal::Evidence { session: id, evidence });
+    }
 }
 
 /// What an engine's activity shows on the screens, as an event of session `id`.

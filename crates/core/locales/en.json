@@ -383,6 +383,7 @@
   "flow.step.precheck": "Built screens checked against the prototype",
   "flow.step.change": "Make the change",
   "flow.step.tests": "Tests and checks pass",
+  "flow.live_words": "live|production|publish|launch",
   "ticket.design_backlog_body": "Polish (S3/S4) found while following up T-{id}, kept for you: nothing starts it. Start it when you want it done.",
   "news.design_backlog": "{name} kept polish of T-{id} in the design backlog T-{backlog}: start it when you want it.",
   "news.helper_left": "{name} left, its work done: its role carries on",

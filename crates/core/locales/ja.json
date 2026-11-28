@@ -380,6 +380,7 @@
   "flow.step.precheck": "実装した画面をプロトタイプと照合",
   "flow.step.change": "変更する",
   "flow.step.tests": "テストとチェックが通る",
+  "flow.live_words": "公開|本番|リリース",
   "ticket.design_backlog_body": "T-{id} のフォローアップ中に見つかった仕上げ（S3/S4）をまとめています。自動では始まりません。進めたいときに開始してください。",
   "news.design_backlog": "{name} が T-{id} の仕上げをデザインバックログ T-{backlog} にまとめました。進めたいときに開始してください。",
   "news.helper_left": "{name} は仕事を終えて抜けました。役割はそのまま続きます",
