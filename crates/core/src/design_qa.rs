@@ -23,6 +23,7 @@ use serde_json::Value;
 use crate::design::precheck::{Report, Severity};
 
 pub mod follow_up;
+pub mod reference;
 mod risk;
 pub use risk::*;
 
@@ -44,6 +45,10 @@ pub struct Proof {
     pub blockers: Vec<String>,
     /// What keeps it from looking finished: noted, never blocking.
     pub polish: Vec<String>,
+    /// Built from the person's own design: a "same feel?" verdict per screen, side by side with it.
+    pub side_by_side: Vec<reference::Feel>,
+    /// The reference's signature items seen in the build (their ids).
+    pub signature: Vec<String>,
 }
 
 impl Proof {
@@ -58,11 +63,19 @@ impl Proof {
             checked: arg_labels(args, "checked"),
             blockers: arg_strs(args, "blockers"),
             polish: arg_strs(args, "polish"),
+            side_by_side: reference::read_feel(args),
+            signature: arg_labels(args, "signature"),
         }
     }
 
     /// Why a pass can't stand on this, if it can't — said to the designer.
     pub fn refuses_pass(&self) -> Option<String> {
+        self.refuses_pass_against(None)
+    }
+
+    /// [`Proof::refuses_pass`], and for a product built from the person's
+    /// own design, the side-by-side comparison with it and its signature items.
+    pub fn refuses_pass_against(&self, reference: Option<&reference::Reference>) -> Option<String> {
         let mut missing = Vec::new();
         if self.own_shots < OWN_SHOTS {
             missing.push(format!(
@@ -78,6 +91,9 @@ impl Proof {
         }
         if !self.blockers.is_empty() {
             missing.push("no blocker left — a blocker sends it back: verdict changes".to_owned());
+        }
+        if let Some(r) = reference {
+            missing.extend(reference::refuses(r, &self.side_by_side, &self.signature));
         }
         (!missing.is_empty()).then(|| format!("A pass needs {}. Look at it yourself, then finish again.", missing.join("; ")))
     }
@@ -97,6 +113,10 @@ impl Proof {
         }
         if !self.polish.is_empty() {
             out.push(numbered("Polish:", &self.polish));
+        }
+        if !self.side_by_side.is_empty() {
+            let rows = self.side_by_side.iter().map(|f| format!("- {}: {}{}", f.screen, if f.same { "same feel" } else { "not the same feel" }, if f.why.is_empty() { String::new() } else { format!(" ({})", f.why) })).collect::<Vec<_>>().join("\n");
+            out.push(format!("Side by side with the person's design:\n{rows}"));
         }
         if !self.checked.is_empty() {
             out.push(format!("Checked: {}.", self.checked.join(", ")));
@@ -185,10 +205,12 @@ pub enum Judgment {
     UnmappedLarge,
     /// Many screens changed at once.
     Broad,
+    /// Built from the person's own design: only a side-by-side look with it can pass it.
+    Reference,
 }
 
 impl Judgment {
-    pub const ALL: [Judgment; 7] = [Judgment::PrecheckFailed, Judgment::NotRendered, Judgment::Partial, Judgment::Capped, Judgment::Unmapped, Judgment::UnmappedLarge, Judgment::Broad];
+    pub const ALL: [Judgment; 8] = [Judgment::PrecheckFailed, Judgment::NotRendered, Judgment::Partial, Judgment::Capped, Judgment::Unmapped, Judgment::UnmappedLarge, Judgment::Broad, Judgment::Reference];
 
     pub fn code(self) -> &'static str {
         match self {
@@ -199,6 +221,7 @@ impl Judgment {
             Judgment::Unmapped => "unmapped",
             Judgment::UnmappedLarge => "unmapped_large",
             Judgment::Broad => "broad",
+            Judgment::Reference => "reference",
         }
     }
 
@@ -209,7 +232,7 @@ impl Judgment {
     /// Whether this takes the designer to the top tier: the report leaves
     /// too little seen (or too much changed) for a cheaper look.
     pub fn needs_top(self) -> bool {
-        matches!(self, Judgment::PrecheckFailed | Judgment::NotRendered | Judgment::UnmappedLarge | Judgment::Broad)
+        matches!(self, Judgment::PrecheckFailed | Judgment::NotRendered | Judgment::UnmappedLarge | Judgment::Broad | Judgment::Reference)
     }
 
     /// Whether a journal's `judgment` text (none, or one this version
@@ -323,6 +346,35 @@ pub fn gate(report: Option<&Report>) -> GateCall {
 /// expected here (the screen is new). Only a precheck that failed, saw too
 /// little, or found S1/S2 problems hands it to the designer, with the report.
 pub fn gate_prototype(report: Option<&Report>) -> GateCall {
+    gate_prototype_against(report, None)
+}
+
+/// [`gate_prototype`] for a build that has the person's own design to match
+/// ([`reference::Reference`]): render checks never pass it alone. A clean
+/// precheck still hands it to the designer, who puts it side by side with
+/// that design (a definite S1/S2 still goes back to its engineer first).
+pub fn gate_prototype_against(report: Option<&Report>, reference: Option<&reference::Reference>) -> GateCall {
+    let call = gate_prototype_only(report);
+    against(call, reference)
+}
+
+/// Any gate's call for a build with the person's own design to match: a
+/// pass becomes the designer's side-by-side look.
+pub fn against(call: GateCall, reference: Option<&reference::Reference>) -> GateCall {
+    match (call.decision, reference) {
+        (Decision::AutoPass, Some(r)) => GateCall {
+            decision: Decision::Designer,
+            judgment: Some(Judgment::Reference),
+            reasons: vec![format!(
+                "Built from the person's own design ({}): the precheck rendered it cleanly, but only a side-by-side look with that design can pass it.",
+                if r.source.is_empty() { "their prototype" } else { r.source.as_str() }
+            )],
+        },
+        _ => call,
+    }
+}
+
+fn gate_prototype_only(report: Option<&Report>) -> GateCall {
     let designer = |judgment: Option<Judgment>, reason: String| GateCall { decision: Decision::Designer, judgment, reasons: vec![reason] };
     let Some(r) = report else {
         return designer(Some(Judgment::PrecheckFailed), "The precheck gave no report.".into());
@@ -465,6 +517,27 @@ mod tests {
         let polish = Finding::bare("overlap", Severity::Polish, "auth/login/default", "390.light.normal", true);
         let call = gate(Some(&report(vec![shot("auth/login/default", true, false)], vec![polish])));
         assert_eq!((call.decision, call.judgment), (Decision::Designer, None));
+    }
+
+    #[test]
+    fn a_build_from_the_persons_own_design_never_passes_on_render_checks_alone() {
+        let built = report(vec![shot("auth/login/default", true, false)], vec![]);
+        let r = reference::Reference { source: "prototype/index.html".into(), ..Default::default() };
+        assert_eq!(gate_prototype(Some(&built)).decision, Decision::AutoPass);
+        let call = gate_prototype_against(Some(&built), Some(&r));
+        assert_eq!((call.decision, call.judgment), (Decision::Designer, Some(Judgment::Reference)));
+        assert!(call.reasons[0].contains("side-by-side") && Judgment::Reference.needs_top());
+        // A definite S1/S2 still goes back to its engineer first; the plain gate is held the same way.
+        let new = Finding::bare("reflow", Severity::Blocker, "auth/login/default", "390.light.normal", true);
+        assert_eq!(against(gate(Some(&report(vec![shot("auth/login/default", true, false)], vec![new]))), Some(&r)).decision, Decision::SendBack);
+        assert_eq!(against(gate(Some(&report(vec![shot("auth/login/default", false, false)], vec![]))), Some(&r)).decision, Decision::Designer);
+        // The designer's pass needs the side-by-side verdicts and the signature.
+        let r = reference::Reference { source: "prototype/index.html".into(), screens: vec!["lock".into()], items: vec![reference::Item { id: "orb".into(), name: "Orb".into() }] };
+        let base = json!({ "compared": true, "checked": ["390", "1280", "dark"] });
+        assert!(Proof::read(&base, 2).refuses_pass_against(Some(&r)).unwrap().contains("side by side"));
+        let full = json!({ "compared": true, "checked": ["390", "1280", "dark"], "side_by_side": [{"screen": "lock", "same_feel": true}], "signature": ["orb"] });
+        assert_eq!(Proof::read(&full, 2).refuses_pass_against(Some(&r)), None);
+        assert!(Proof::read(&full, 2).report("ok").contains("lock: same feel"));
     }
 
     #[test]
