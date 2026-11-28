@@ -1066,3 +1066,28 @@ async fn a_second_pass_saying_something_is_missing_goes_to_the_pm_not_to_another
     assert_eq!(handle.snapshot("acme").await.tickets.len(), 2);
     handle.shutdown().await;
 }
+
+#[tokio::test]
+async fn a_first_version_goes_out_public_and_only_a_live_products_change_waits_for_a_yes() {
+    // The owner, 2026-11-28: a new product's first version deploys public at once — no private preview first, no yes.
+    let repo = repo();
+    let home = scratch("home");
+    squads::create(&home, "acme", &repo).unwrap();
+    let (handle, mut events) = runtime::start(config(&claude(), &home));
+    add(&handle, &mut events, 1, member(&repo, "pm")).await;
+    let made = tool(&handle, "pm", "create_ticket", json!({ "title": "First version of the shop", "body": "Build it.", "owner": "frontend", "wait_for_person": true })).await;
+    assert!(!made.is_error, "{made:?}");
+    let first = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap().ticket(1).unwrap().unwrap();
+    assert!(!equipe_core::flow::held_for_person(&first.body), "a first version isn't held: {}", first.body);
+    let refused = tool(&handle, "pm", "update_ticket", json!({ "id": 1, "wait_for_person": true })).await;
+    assert!(refused.is_error && refused.text.contains("never been live"), "{refused:?}");
+
+    // Once the product went live, a change the PM promised to show first waits for the person's yes.
+    let deploy: equipe_core::protocol::deploys::Deploy = serde_json::from_value(json!({ "id": 1, "project": "repo", "path": repo, "to": "abc1234", "at": 1 })).unwrap();
+    equipe_core::journal::Journal::for_squad(&home, "acme").unwrap().set_deploys(&[deploy]).unwrap();
+    let held = tool(&handle, "pm", "create_ticket", json!({ "title": "New hero for the shop", "body": "Look A.", "owner": "frontend", "wait_for_person": true })).await;
+    assert!(!held.is_error, "{held:?}");
+    let second = equipe_core::journal::Journal::for_squad(&home, "acme").unwrap().ticket(2).unwrap().unwrap();
+    assert!(equipe_core::flow::held_for_person(&second.body), "{}", second.body);
+    handle.shutdown().await;
+}

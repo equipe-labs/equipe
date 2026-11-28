@@ -2641,6 +2641,7 @@ impl Runtime {
             Event::TicketChanged { squad, ticket } if ticket.status.is_closed() => Some((squad.clone(), ticket.id)),
             _ => None,
         };
+        let cancelled = matches!(&event, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Cancelled);
         let asked = match &event {
             Event::QuestionsAsked { squad, questions } => questions.ticket.map(|t| (squad.clone(), t)),
             _ => None,
@@ -2686,6 +2687,11 @@ impl Runtime {
         // Settled: what was asked about it no longer waits on the person.
         if let Some((squad, ticket)) = closed {
             self.withdraw_settled_questions(&squad, ticket);
+            // A design QA ticket cancelled, however it was (the PM's update_ticket, equipe's own close, the person):
+            // the change it held goes on. Team Aman's T-60 sat 35 minutes "waiting for its design QA" after the PM cancelled T-62.
+            if cancelled {
+                self.design_qa_closed(&squad, ticket);
+            }
         }
         if let Some((squad, ticket)) = asked {
             self.request_question_changed(&squad, ticket);
@@ -6386,6 +6392,17 @@ runbooks and reports live there, and work across the projects or on running them
                 };
                 // A design QA ticket's precheck report and pictures, kept beside the squad's journal.
                 read.extend(squad.as_deref().map(|s| design_qa::precheck_dir(&self.config.home, s, work.ticket)).filter(|d| d.is_dir() && *d != work.cwd));
+                // A designer on a design QA ticket reads the squad's whole design QA folder: the shots and crops it is
+                // shown may sit under the change's folder, or be written after the turn began (Team Aman's T-61 and
+                // T-62: "Read was denied on the shots and crops").
+                let checks_one = |s: &str| self.journals.get(s).is_some_and(|j| j.tickets().unwrap_or_default().iter().any(|t| t.design_qa == Some(work.ticket) && t.id != work.ticket));
+                if let Some(s) = squad.as_deref().filter(|s| checks_one(s)) {
+                    let all = crate::journal::squad_dir(&self.config.home, s).join("design-qa");
+                    if std::fs::create_dir_all(&all).is_ok() && !read.contains(&all) && all != work.cwd {
+                        read.retain(|d| !d.starts_with(&all));
+                        read.push(all);
+                    }
+                }
                 let writes = (edits_code || work.kind.in_home()) && work.sandbox.is_some();
                 (work.cwd.clone(), access_for(mode, writes), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
             }
@@ -11567,7 +11584,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let by = if is_pm { crate::telemetry::Maker::Pm } else { crate::telemetry::Maker::Member };
                 self.tell(&squad, crate::telemetry::Happened::TicketCreated { kind, by });
-                let made = Ticket { id: new_id, ..ticket };
+                let mut made = Ticket { id: new_id, ..ticket };
+                // A first version goes out public at once: a hold asked on a product never live is let go.
+                if crate::flow::held_for_person(&made.body) && !self.was_live(&squad, &made) {
+                    made.body = crate::flow::with_hold(&made.body, false);
+                    if let Some(journal) = self.journal(&squad) {
+                        let _ = journal.save_ticket(&made);
+                    }
+                }
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: made.clone() });
                 self.board_touched(id, new_id);
                 // The person's request it serves: theirs to follow without asking.
@@ -12654,12 +12678,26 @@ check what is already done in your worktree first."
         memos
     }
 
+    /// Whether `ticket`'s product went live before: a deploy of its project is on record. A product
+    /// that never did gets its first version out on its public address at once (the owner, 2026-11-28).
+    pub(super) fn was_live(&mut self, squad: &str, ticket: &Ticket) -> bool {
+        let Some(project) = ticket.project.as_ref() else { return false };
+        self.journal(squad).is_some_and(|j| j.deploys().iter().any(|d| d.path == *project))
+    }
+
     /// Hold `ticket` for the person's yes before it lands and goes live, or let it go (`flow::HOLD_LINE`).
     pub(super) fn hold_for_person(&mut self, squad: &str, by: &str, ticket: TicketId, hold: bool) -> Result<String, String> {
+        let live = self.find_ticket(squad, ticket).is_some_and(|t| self.was_live(squad, &t));
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
         let mut found = journal.ticket(ticket).ok().flatten().ok_or_else(|| format!("There is no T-{ticket}."))?;
         if found.status.is_closed() {
             return Err(format!("T-{ticket} is closed already."));
+        }
+        if hold && !live {
+            return Err(format!(
+                "T-{ticket} isn't held: its product has never been live, and a first version goes out on its public address as soon as it \
+works — no private preview first and no yes needed. Hold only a change to a product that is already live."
+            ));
         }
         if crate::flow::held_for_person(&found.body) == hold {
             return Ok(format!("T-{ticket} {} already.", if hold { "waits for the person's yes" } else { "isn't held" }));

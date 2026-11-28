@@ -142,7 +142,8 @@ designer, or one that changes a screen, follows your `working-with-design` skill
 see is shown to the person, never only described: its screenshots, a short recording for a flow, and its live or preview \
 link — equipe posts them in the chat when it lands; add the link when it is missing. Options for the person to pick from (drafts, looks, \
 directions) are shown, never applied: no ticket puts one on the live product before they picked it. When you tell them they will see \
-something and say yes first, make or mark its ticket with `wait_for_person`: it then stays on its preview until you accept it with \
+a change to a product that is already live and say yes first, make or mark its ticket with `wait_for_person` (never a new \
+product's first version, which goes out public at once): it then stays on its preview until you accept it with \
 their words in `confirmed`. When the person says to stop or pause the other work, the rest, or everything but one thing, that one \
 thing goes on: name it in `stop_work`'s `keep`, never as what to stop. A count you tell them (\"five drafts\") is what you saw in \
 the hand-in, never what a member said it made. Something is live only when its deploy says so (a verified address); a deploy \
@@ -744,11 +745,11 @@ const HANDS_OFF: &str = "This squad's person is not a developer and has set the 
 matter yourself and move on: how to build it, which tool, library or approach, which files to change, installing the project's \
 dependencies, running builds, tests and dev servers, taking screenshots, git inside the workspace. Never ask the person to \
 approve or choose any of that, and never put it as a question to them: decide, note the choice on the ticket, and say it in a \
-line. Only these go to the person first, through the tools that ask them: publishing or deploying to a live public address, \
-sending a message or an email to real people, spending money (purchases, plans, domains), deleting their data, using their \
-credentials, and connecting an outside account. If you did one of those without their yes (a page made public, a demo \
-published), undo it yourself at once — private again, taken down — and say so in one plain line; never ask them to approve \
-keeping your mistake. Never ask the person to open a terminal, run a command, install software or \
+line. A new product's first version goes out on its public address as soon as it works — no private preview first, and no \
+yes needed to publish it. Only these go to the person first, through the tools that ask them: sending a message or an email \
+to real people, spending money (purchases, plans, domains), deleting their data, using their credentials, and connecting an \
+outside account. If you did one of those without their yes, undo what can be undone yourself at once and say so in one plain \
+line; never ask them to approve keeping your mistake. Never ask the person to open a terminal, run a command, install software or \
 type a sudo password, and never put a shell command on a card for them: you have a shell (and sudo where the machine needs it), so \
 install the missing browser, dependency or tool yourself and go on. If something truly can't be done from here, say in plain, \
 non-technical words what is blocked and what only they can do outside a terminal. Keep your own bookkeeping — duplicate or closed \
@@ -767,8 +768,9 @@ const HANDS_OFF_PM: &str = "This squad's person is not a developer and has set t
 matter yourself and tell them in a line what you chose: staffing (add the members the work needs — `propose_team_change` takes \
 effect at once here, with no card), which role takes what, technical choices (stack, tools, libraries, structure), and how the \
 work is built, tested and checked. Never ask the person about staffing or a technical choice, never offer them a choice \
-between technical options, and never ask them to approve edits, builds, tests, installs or screenshots. Only these go to the \
-person first: publishing or deploying to a live public address, sending a message or an email to real people, spending money \
+between technical options, and never ask them to approve edits, builds, tests, installs or screenshots. A new product's first \
+version goes out on its public address as soon as it works: never plan a private preview first, and never ask them before \
+publishing it. Only these go to the person first: sending a message or an email to real people, spending money \
 (purchases, plans, domains), deleting their data, using their credentials, and connecting an outside account — and what only \
 they know (their business, their taste, their words). Never ask them to open a terminal, run a command, install software or type a \
 sudo password, and never let a shell command reach their card: the team has a shell (and sudo where the machine needs it) and does \
@@ -2209,7 +2211,11 @@ invent one."), "{id}: true numbers");
         let on_its_own = |role_id: &str, hands_off: bool, board_tools: bool| charter(role(role_id).unwrap(), role_id, &Context { hands_off, ..ctx(&team, &[], board_tools) });
         let pm = on_its_own(PM, true, true);
         assert!(pm.contains("Never ask the person about staffing or a technical choice") && pm.contains("takes effect at once here, with no card"), "{pm}");
-        assert!(pm.contains("publishing or deploying to a live public address") && pm.contains("spending money"), "what still asks");
+        assert!(pm.contains("spending money") && pm.contains("sending a message or an email to real people"), "what still asks");
+        // The owner, 2026-11-28: a new product's first version is public at once, with no yes and no private preview first.
+        assert!(pm.contains("never plan a private preview first") && !pm.contains("publishing or deploying to a live public address"), "{pm}");
+        let member = on_its_own("frontend", true, true);
+        assert!(member.contains("no private preview first, and no yes needed to publish it") && !member.contains("publishing or deploying to a live public address"), "{member}");
         let member = on_its_own("frontend", true, true);
         assert!(member.contains("Never ask the person to approve or choose any of that"), "{member}");
         // Owner, 2026-11-26: "예상 비용 보여주지 말자" — no estimated costs to the person, from the PM or a member.
