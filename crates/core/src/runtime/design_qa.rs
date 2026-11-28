@@ -745,7 +745,13 @@ screen_checks value; missing: {}. Once your screenshots cover them: {}.",
         let slice = checked_now.as_ref().is_some_and(|c| c.flow.as_ref().is_some_and(|f| f.slice));
         let picked = checked_now.as_ref().and_then(|c| self.approved_prototype(squad, c.id));
         let prototype = picked.clone().or_else(|| slice.then(String::new));
-        let call = if prototype.is_some() { crate::design_qa::gate_prototype(report.as_ref()) } else { crate::design_qa::gate(report.as_ref()) };
+        // Built from the person's own design (a prototype, a site they own): never passed on render checks alone.
+        let reference = checked_now.as_ref().and_then(|c| c.worktree.as_deref()).and_then(crate::design_qa::reference::Reference::find);
+        let call = if prototype.is_some() {
+            crate::design_qa::gate_prototype_against(report.as_ref(), reference.as_ref())
+        } else {
+            crate::design_qa::against(crate::design_qa::gate(report.as_ref()), reference.as_ref())
+        };
         let Some(journal) = self.journal(squad) else { return };
         let mut run = journal.design_qa_run(qa).unwrap_or(journal::DesignQaRun { qa, ..Default::default() });
         let mode = GateMode::parse(&run.gate).unwrap_or_default();
@@ -1158,7 +1164,8 @@ truncation with the whole text available), hand in again with `waive_findings` s
         // Its own look, not the engineer's screenshots handed on.
         let own = shown.iter().filter(|s| !checked.images.contains(s)).count();
         let proof = crate::design_qa::Proof::read(args, own);
-        if let Some(why) = if passed { proof.refuses_pass() } else { proof.refuses_changes() } {
+        let reference = checked.worktree.as_deref().and_then(crate::design_qa::reference::Reference::find);
+        if let Some(why) = if passed { proof.refuses_pass_against(reference.as_ref()) } else { proof.refuses_changes() } {
             return Err(why);
         }
         let findings = proof.report(&summary);
@@ -1288,6 +1295,10 @@ the person is told it is ready only once you pass it.",
         }
     }
     out.push_str(&format!("\n\nWhat T-{} asked for:\n{}\n", checked.id, checked.body.trim()));
+    if let Some(r) = checked.worktree.as_deref().and_then(crate::design_qa::reference::Reference::find) {
+        out.push_str(&r.brief());
+        out.push('\n');
+    }
     if let Some(note) = &checked.note {
         out.push_str(&format!("\n{engineer}'s hand-in:\n{}\n", note.trim()));
     }
