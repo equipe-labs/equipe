@@ -210,7 +210,8 @@ mod tests {
     #[test]
     fn the_details_name_the_model_and_the_first_work() {
         assert_eq!(model(&add()), "opus", "mobile is a top-tier role: Claude Code's opus");
-        assert_eq!(model(&TeamChange { role: "qa".into(), ..add() }), "sonnet");
+        assert_eq!(model(&TeamChange { role: "qa".into(), ..add() }), "opus", "QA judges the work: a top-tier role");
+        assert_eq!(model(&TeamChange { role: "data".into(), ..add() }), "sonnet");
         assert_eq!(model(&TeamChange { engine: Some(Engine::Codex), role: "qa".into(), ..add() }), "codex · 엔진 기본값");
         assert_eq!(model(&TeamChange { model: Some("claude-opus-5-5".into()), effort: Some("high".into()), ..add() }), "claude-opus-5-5 · 생각 강도 high");
         let ticket: Ticket = serde_json::from_value(serde_json::json!({ "id": 117, "title": "앱스토어 제출", "body": "", "status": "todo", "depends_on": [], "created_by": "pm" })).unwrap();
