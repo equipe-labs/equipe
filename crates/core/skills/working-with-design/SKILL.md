@@ -19,8 +19,11 @@ light setup, one ticket that only reads the brand, and never a ticket to apply a
 the person didn't ask to change. A ticket that changes an imported site's look quotes the person's request; equipe refuses
 a live deploy that restyles one without it. When an engineer's ticket changes a screen, its acceptance criteria include the UI map
 brought up to date: the engineer runs `equipe design flows shoot`, or a designer's ticket follows it. A screen
-change the person asked for is one slice, on one ticket: the designer prototypes or specs it on the ticket's branch and
-passes the baton (`pass_baton`) to the frontend, who builds it in the same worktree — never a second ticket for the build,
+change the person asked for is one slice, on one ticket: the designer drafts it on the ticket's branch — still pictures
+first, and once the person picks, the decision and its values in the spec — and passes the baton (`pass_baton`) to the
+frontend, who applies the picked design end to end in the same worktree: tokens in code, styles, markup and every
+screen size. The designer leaves the product's code and styles alone on that ticket — split between two members, the
+design decisions got lost on the way — and never a second ticket for the build,
 nor a design QA ticket after it: equipe's precheck checks the built screens against the prototype, and a designer looks
 only at what it fails. When the person
 brings you a screen from the map ("Onboarding › Sign in › Error") or asks to see a flow as a video, it is the

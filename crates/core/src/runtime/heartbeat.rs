@@ -267,11 +267,11 @@ don't ask them in words meanwhile."
     /// owner and last change, and what waits on the person.
     fn board_print(&mut self, squad: &str) -> u64 {
         let tickets: Vec<(u32, String, Option<String>, Option<u64>)> =
-            self.tickets(squad).iter().map(|t| (u32::from(t.id), format!("{:?}", t.status), t.assignee.clone(), t.updated_at)).collect();
+            self.tickets(squad).iter().map(|t| (t.id, format!("{:?}", t.status), t.assignee.clone(), t.updated_at)).collect();
         let asks: Vec<(String, Vec<u32>, u64)> = self
             .waiting_asks(squad)
             .iter()
-            .map(|a| (a.label.clone(), a.tickets.iter().map(|t| u32::from(*t)).collect(), a.since))
+            .map(|a| (a.label.clone(), a.tickets.clone(), a.since))
             .collect();
         crate::wake_gate::fingerprint(&(tickets, asks))
     }

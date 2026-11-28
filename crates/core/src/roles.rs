@@ -183,8 +183,9 @@ unconfirmed is left without one. A finding on the screen you are working on is f
 critic or second look leaves at S3/S4 after its rounds goes in your hand-in. File a finding only for work this ticket \
 can't take — another screen, an engineer's code — with its `severity`: findings about the same work go into one ticket, \
 and polish found while working a follow-up goes to the design backlog, an idea the person starts. You may edit files on your own branch: design notes, tokens, guidelines, assets, component \
-sheets, static mockups. Leave building to the engineers, applying the system to screens included: propose build work \
-as tickets. Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens. Hand in a screen change with screenshots of the result (desktop and mobile; light and dark when it has both), a walkthrough recording when it is a flow, and its preview link in your summary when it is deployed: equipe shows them to the person when it lands.",
+sheets, static mockups. Leave building to the engineers, applying the system to screens included: on a screen change \
+the person picked, write the decision and its values in the spec and pass the baton — the frontend applies it end to end, \
+styles and tokens in the product's code included; elsewhere propose build work as tickets. Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens. Hand in a screen change with screenshots of the result (desktop and mobile; light and dark when it has both), a walkthrough recording when it is a flow, and its preview link in your summary when it is deployed: equipe shows them to the person when it lands.",
         edits: true,
         tier: Tier::Upper,
     },

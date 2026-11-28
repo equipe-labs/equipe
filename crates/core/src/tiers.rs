@@ -228,7 +228,15 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
     // already, and a slip a cheaper model leaves is caught by the design precheck and the send-back
     // that runs the next lane a tier up. "Everywhere" in such a ticket means every place a string
     // appears, not a refactor; a refactor, a foundation or a first version keeps the table's tier.
-    let settled = code && !foundation(text) && !refactor(text) && (fix_of_screens(w.title) || applies_asset(w.title));
+    // A small edit of a screen that exists — spacing or alignment to given values, a layout slip,
+    // one component that misbehaves — is settled the same way (A/B of 2026-11-28: standard scored
+    // as well or better on all three, twice each). Polish, where the look itself is judged, isn't:
+    // there the strong tier did better.
+    let settled = code
+        && !foundation(text)
+        && !refactor(text)
+        && !polish(w.title)
+        && (fix_of_screens(w.title) || applies_asset(w.title) || small_screen_edit(w.title));
     if wide_scope(text) && !settled {
         return None;
     }
@@ -250,6 +258,23 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
 /// A fix to what is already there, as the title says: a bug, a slip, something broken or wrong.
 fn fix_of_screens(title: &str) -> bool {
     has_word(title, &["fix", "fixes", "bug", "bugs", "broken", "slip", "slips", "repair", "doesn't work", "does not work", "not working", "is wrong", "are wrong"])
+}
+
+/// A small edit of a screen that exists, as the title says: spacing, alignment, a layout slip
+/// (overflow, overlap, a bad wrap), or one control that misbehaves.
+fn small_screen_edit(title: &str) -> bool {
+    has_word(
+        title,
+        &[
+            "spacing", "padding", "margin", "margins", "alignment", "align", "aligned", "misaligned", "overflow", "overflows",
+            "overlap", "overlaps", "wraps", "line break", "cut off", "does nothing", "says nothing", "doesn't respond", "tweak", "nudge",
+        ],
+    )
+}
+
+/// Polish, where the look itself is judged: the strong tier did better on it (A/B of 2026-11-28).
+fn polish(title: &str) -> bool {
+    has_word(title, &["polish", "refine", "redesign", "restyle", "look and feel", "make it nicer", "make it look", "improve the design", "visual"])
 }
 
 /// A designer's finished asset put on the product, as the title says: a logo, icons, a favicon, images.
@@ -1279,6 +1304,31 @@ mod tests {
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Build the booking page and deploy it", "").0, ModelTier::Deep);
         // A few words stay light.
         assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix a typo in the hero", "").0, ModelTier::Light);
+    }
+
+    #[test]
+    fn a_hosted_small_edit_of_a_screen_runs_standard_and_polish_stays_strong() {
+        // The A/B of 2026-11-28's real tickets, by their titles' kind.
+        for title in [
+            "Apply the picked hero: spacing rhythm, two-line lead, CTA row",
+            "Composer controls misaligned and the send button wraps to a second line",
+            "The Copy button says nothing when the browser refuses the clipboard",
+            "Bottom button row overlaps the time pill on phones",
+            "Pricing table overflows at 320px",
+        ] {
+            assert_eq!(hosted_tier("frontend", TicketKind::Code, title, "").0, ModelTier::Standard, "{title}");
+        }
+        for title in ["Polish the description panel's 'more' fade", "Refine the hero spacing", "Redesign the pricing page", "Add a pricing section"] {
+            assert_eq!(hosted_tier("frontend", TicketKind::Code, title, "").0, ModelTier::Strong, "{title}");
+        }
+        // A fix that is polish too stays strong; a foundation or a risk keeps its tier.
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix and polish the gallery panel", "").0, ModelTier::Strong);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Fix the spacing in the sign-in form", "").0, ModelTier::Deep);
+        assert_eq!(hosted_tier("frontend", TicketKind::Code, "Tweak the design system spacing scale", "").0, tier("frontend", TicketKind::Code, "Tweak the design system spacing scale", "").0);
+        // Self-hosted squads keep the table.
+        assert_eq!(tier("frontend", TicketKind::Code, "Pricing table overflows at 320px", "").0, tier("frontend", TicketKind::Code, "Pricing table overflows", "").0);
+        // The designer never moves.
+        assert_eq!(hosted_tier("designer", TicketKind::Code, "Fix the hero spacing", "").0, tier("designer", TicketKind::Code, "Fix the hero spacing", "").0);
     }
 
     #[test]
