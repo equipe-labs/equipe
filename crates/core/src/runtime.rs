@@ -9177,6 +9177,12 @@ with what else waits.]"
             let message = say!(self, "error.in_folder", id = ticket);
             return self.squad_error(squad, message);
         }
+        // Accepted with no branch — no code changed (a deploy, an ops step): nothing to land, and no error.
+        // Team Aman's T-66 ("put it live on its free address") failed as "no branch to merge" and the PM's
+        // turn ended in the catch-up fallback.
+        if found.branch.is_none() {
+            return self.nothing_to_merge(squad, found, push);
+        }
         let (Some(branch), Some(repo)) =
             (found.branch.clone(), found.project.as_deref().and_then(|p| worktree::repo_root(p).ok()))
         else {
@@ -9447,6 +9453,25 @@ equipe tries the merge again on its own every few minutes; you hear if it still 
         }
         if std::mem::take(&mut self.settle_again) {
             self.settle_all_merged();
+        }
+    }
+
+    /// Done work that changed no code has nothing to merge: it counts as on
+    /// main, its record says so, and — asked to go live — its project goes
+    /// live as after a landing.
+    fn nothing_to_merge(&mut self, squad: &str, mut found: Ticket, push: bool) {
+        let ticket = found.id;
+        crate::daemon_log!("equipe: {squad}: T-{ticket} changed no code: nothing to merge");
+        found.merged = Some(true);
+        found.off_main = None;
+        if let Some(journal) = self.journal(squad) {
+            let _ = journal.save_ticket(&found);
+            let _ = journal.ticket_event(ticket, "equipe", "merged", "nothing to merge: it changed no code");
+        }
+        let project = found.project.clone();
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
+        if push && let Some(project) = project {
+            self.go_live_landed(squad, project, Some(ticket));
         }
     }
 

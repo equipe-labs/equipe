@@ -404,6 +404,50 @@ pub enum Outcome {
     Invalid(String),
     /// The project declares no command any more, and none is confirmed.
     Gone,
+    /// The platform's `deploy_main` ran on `sha` but put nothing live: each
+    /// app it skipped, and why (`never live`: a first version, which goes out
+    /// with its own first deploy), or a refused deploy (`not_published`).
+    NotLive { command: String, sha: String, skipped: Vec<(String, String)>, refused: Vec<(String, String)> },
+}
+
+/// What the platform's `deploy_main` answered (`equipe-cloud mcp/deploy-main.mjs`):
+/// the apps it put live and checked, those it skipped or that failed, each
+/// with why. `None`: no such answer in what it printed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CloudAnswer {
+    pub live: Vec<String>,
+    pub skipped: Vec<(String, String)>,
+    pub failed: Vec<(String, String)>,
+}
+
+/// The reason equipe gives an app `deploy_main` skipped because it was never
+/// live: a first version goes out with its own first deploy.
+pub const NEVER_LIVE: &str = "never live";
+
+/// [`CloudAnswer`] from what `deploy_main` printed: the last JSON object in
+/// it with a `deployed` list. A skip for want of a live version on record is
+/// said as [`NEVER_LIVE`].
+pub fn cloud_answer(printed: &str) -> Option<CloudAnswer> {
+    let value = printed
+        .match_indices('{')
+        .filter_map(|(at, _)| serde_json::Deserializer::from_str(&printed[at..]).into_iter::<serde_json::Value>().next()?.ok())
+        .filter(|v| v.get("deployed").is_some_and(serde_json::Value::is_array))
+        .last()?;
+    let list = |key: &str| value.get(key).and_then(serde_json::Value::as_array).cloned().unwrap_or_default();
+    let named = |e: &serde_json::Value| e.get("app").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+    let why = |e: &serde_json::Value| e.get("why").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
+    let live = list("deployed").iter().filter(|e| e.get("verified").and_then(serde_json::Value::as_bool) != Some(false)).map(named).collect();
+    let skipped = list("skipped")
+        .iter()
+        .map(|e| {
+            let why = why(e);
+            let never = why.contains("no recorded commit") || why.contains("no such live app") || why.contains("never");
+            (named(e), if never { NEVER_LIVE.to_owned() } else { why })
+        })
+        .collect();
+    let mut failed: Vec<(String, String)> = list("failed").iter().map(|e| (named(e), why(e))).collect();
+    failed.extend(list("deployed").iter().filter(|e| e.get("verified").and_then(serde_json::Value::as_bool) == Some(false)).map(|e| (named(e), why(e))));
+    Some(CloudAnswer { live, skipped, failed })
 }
 
 /// One go at deploying `project`: its command found ([`find`]), run on a
@@ -431,6 +475,14 @@ pub fn go(project: &Path, confirmed: Option<&str>, from: Option<&str>, log: &Pat
         let ran = run(&dir, &command, go.timeout, log);
         if !ran.ok {
             return Outcome::Failed { command, sha, ran, timeout: go.timeout };
+        }
+        // The platform's deploy said what it put live: nothing live is never "live" (Team Aman's T-60, 2026-11-28).
+        if command.trim() == CLOUD_COMMAND
+            && let Some(answer) = std::fs::read_to_string(log).ok().as_deref().and_then(cloud_answer)
+            && answer.live.is_empty()
+            && (!answer.skipped.is_empty() || !answer.failed.is_empty())
+        {
+            return Outcome::NotLive { command, sha, skipped: answer.skipped, refused: answer.failed };
         }
         let known = |c: &str| worktree::git(&repo, &["merge-base", "--is-ancestor", c, &sha]).is_ok();
         let from = from
@@ -579,6 +631,24 @@ impl Lane {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deploy_mains_answer_says_what_went_live_and_a_never_live_app_is_never_reported_live() {
+        // Team Aman's asap T-60, 2026-11-28: deploy_main skipped the never-live app, and equipe told the PM it was live.
+        let printed = "deploying...\n{\n  \"deployed\": [],\n  \"unchanged\": [],\n  \"skipped\": [{ \"app\": \"when2meet-evolved-spec\", \"why\": \"its live version has no recorded commit (deploy it once with deploy_site from main)\" }],\n  \"failed\": []\n}\n";
+        let answer = cloud_answer(printed).expect("an answer");
+        assert!(answer.live.is_empty());
+        assert_eq!(answer.skipped, vec![("when2meet-evolved-spec".to_owned(), NEVER_LIVE.to_owned())]);
+        // Live and checked: live. Deployed but not answering as that commit: not live.
+        let went = r#"{"deployed":[{"app":"shop","url":"https://shop.equipe.page","commit":"abc","verified":true}],"skipped":[],"failed":[]}"#;
+        assert_eq!(cloud_answer(went).unwrap().live, vec!["shop".to_owned()]);
+        let unverified = r#"{"deployed":[{"app":"shop","verified":false,"why":"the live address answered 500"}],"skipped":[],"failed":[],"live":"not_published"}"#;
+        let a = cloud_answer(unverified).unwrap();
+        assert!(a.live.is_empty() && a.failed == vec![("shop".to_owned(), "the live address answered 500".to_owned())]);
+        let refused = r#"{"deployed":[],"skipped":[],"failed":[{"app":"shop","why":"speed_budget"}],"live":"not_published"}"#;
+        assert_eq!(cloud_answer(refused).unwrap().failed.len(), 1);
+        assert_eq!(cloud_answer("Done in 3s."), None, "no answer: the command's own success stands");
+    }
 
     #[test]
     fn a_deploy_file_names_its_command_and_may_tune_it() {
