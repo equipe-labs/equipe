@@ -308,6 +308,7 @@
   "news.design_qa_precheck_passed": "equipe の事前チェックがデザイナーなしで T-{id} の画面確認を通しました。変わった画面も新しい問題もありません。レビューできます · {title}。",
   "news.ui_result": "T-{id} が完成しました。今の見た目です · {title}",
   "news.ui_result_link": "実際に見る: {url}",
+  "news.ui_result_preview_link": "プレビューで確認: {url}",
   "news.design_qa_precheck_changes": "equipe の事前チェックがデザイナーなしで T-{id} を {to} に差し戻しました。画面かアクセシビリティに明らかな問題があります · {title}。",
   "news.design_qa_refused": "equipe のセルフチェックが、デザイナーなしで T-{id} を {to} に差し戻しました。この変更で生じた明確な画面・アクセシビリティの不具合があります · {title}。",
   "news.design_qa_batched": "equipe の事前チェックで T-{id} の画面は低リスクと判断されました。今はデザイナーのターンなしで日次デザインレビューに回ります。レビューできます · {title}。",
