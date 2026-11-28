@@ -246,6 +246,30 @@ Find out why and get it fixed (a ticket, if it is the project's code); then {aga
                 lane.stuck = Some("deploy_invalid".into());
                 self.tell_invalid(squad, &name, &err);
             }
+            Outcome::NotLive { command, sha, skipped, refused } => {
+                let short = rules::short(&sha).to_owned();
+                let said = |list: &[(String, String)]| list.iter().map(|(app, why)| format!("{app} ({why})")).collect::<Vec<_>>().join(", ");
+                crate::daemon_log!("equipe: {squad}: `{command}` on {short} put nothing live: skipped {}; refused {}", said(&skipped), said(&refused));
+                let lane = self.lanes(squad).entry(key).or_default();
+                lane.finished(Err("nothing went live"), now);
+                let first: Vec<&str> = skipped.iter().filter(|(_, why)| why == rules::NEVER_LIVE).map(|(app, _)| app.as_str()).collect();
+                let line = if first.is_empty() {
+                    format!(
+                        "{name} is NOT live: equipe ran `{command}` on {short} {after}, and it put nothing live — skipped {}; refused {}. Tell \
+the person plainly it is not published yet and what is being fixed, never that it is live or going live.",
+                        if skipped.is_empty() { "none".to_owned() } else { said(&skipped) },
+                        if refused.is_empty() { "none".to_owned() } else { said(&refused) }
+                    )
+                } else {
+                    format!(
+                        "{name} is NOT live yet: `{command}` on {short} skipped {} — never live, so there is no live version to update. \
+A new product's first version goes out public at once: have its member deploy it now from main with the platform's deploy \
+(`deploy_site`, `go_live: true`) and give the person its address once that deploy says it is live.",
+                        first.join(", ")
+                    )
+                };
+                self.brief_pm(squad, line, None);
+            }
             Outcome::Gone => {
                 crate::daemon_log!("equipe: {squad}: {name} has no go-live command any more: nothing deployed");
                 if let Some(lane) = self.lanes(squad).get_mut(&key) {
