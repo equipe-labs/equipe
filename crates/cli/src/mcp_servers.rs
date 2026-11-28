@@ -502,12 +502,12 @@ mod tests {
         std::fs::create_dir_all(equipe_core::journal::squad_dir(&home, "acme")).unwrap();
         let socket = home.join("no-daemon.sock");
         let said = add(&home, &socket, "acme", "mobbin", None, &[], false, false).await.unwrap();
-        assert!(said[0].contains("Mobbin") && said[0].contains("designer, frontend"), "{said:?}");
+        assert!(said[0].contains("Mobbin") && said[0].contains("designer, engineer"), "{said:?}");
         assert!(said.iter().any(|l| l.contains("https://mobbin.com/pricing")) && said.iter().any(|l| l.contains("equipe mcp login mobbin")), "{said:?}");
         add(&home, &socket, "acme", "docs", Some("https://docs.example.com/mcp"), &["qa".to_owned()], false, false).await.unwrap();
         assert!(add(&home, &socket, "acme", "docs", Some("http://docs.example.com/mcp"), &[], false, false).await.is_err(), "https only");
         let listed = list(&home, &socket, "acme", false).await.unwrap();
-        assert_eq!(listed, ["mobbin  https://api.mobbin.com/mcp  (designer, frontend)", "docs  https://docs.example.com/mcp  (qa)"]);
+        assert_eq!(listed, ["mobbin  https://api.mobbin.com/mcp  (designer, engineer)", "docs  https://docs.example.com/mcp  (qa)"]);
         // Added again: the same one, kept once.
         add(&home, &socket, "acme", "mobbin", None, &[], false, false).await.unwrap();
         assert_eq!(journal(&home, "acme").unwrap().mcp_servers().len(), 2, "idempotent");

@@ -4483,7 +4483,7 @@ mod tests {
 
     #[test]
     fn every_member_has_a_mark_and_colour_of_its_own() {
-        let roles = ["pm", "designer", "frontend", "backend", "qa", "data"];
+        let roles = ["pm", "designer", "engineer", "qa", "data"];
         let looks: Vec<_> = roles.iter().map(|r| look(r, r)).collect();
         for (i, a) in looks.iter().enumerate() {
             for b in &looks[i + 1..] {

@@ -4350,7 +4350,7 @@ mod tests {
                 other => panic!("{other:?}"),
             })
             .collect();
-        assert_eq!(specs, [("designer".into(), Access::EditFiles), ("backend".into(), Access::EditFiles)]);
+        assert_eq!(specs, [("designer".into(), Access::EditFiles), ("engineer".into(), Access::EditFiles)], "a backend is the software engineer");
         assert_eq!(app.selected().unwrap().label(), "pm", "the conversation stays where it was");
         assert_eq!(app.agents.len(), 4);
     }

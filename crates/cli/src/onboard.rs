@@ -384,8 +384,8 @@ mod tests {
 
     #[test]
     fn the_pm_is_on_every_team_ticked_or_not() {
-        assert_eq!(team_from_picks(&[0, 2, 3]), ["pm", "frontend", "backend"]);
-        assert_eq!(team_from_picks(&[2]), ["pm", "frontend"], "unticking the PM doesn't leave it out");
+        assert_eq!(team_from_picks(&[0, 2, 3]), ["pm", "engineer", "qa"]);
+        assert_eq!(team_from_picks(&[2]), ["pm", "engineer"], "unticking the PM doesn't leave it out");
         assert_eq!(team_from_picks(&[]), ["pm"]);
     }
 

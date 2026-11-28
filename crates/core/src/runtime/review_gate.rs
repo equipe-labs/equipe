@@ -215,11 +215,33 @@ impl Runtime {
 
     /// Review `review` closed by the person or the PM rather than a verdict:
     /// it no longer holds the change.
-    pub(super) fn review_closed(&mut self, squad: &str, review: TicketId) {
-        if let Some(journal) = self.journal(squad)
-            && journal.independent_review(review).is_some_and(|r| r.verdict.is_none())
-        {
-            let _ = journal.set_independent_verdict(review, "cancelled", "", "you");
+    /// The change itself accepted or cancelled while its reviews run: they
+    /// aren't needed any more, and their tickets close.
+    pub(super) fn review_closed(&mut self, squad: &str, ticket: TicketId) {
+        let open: Vec<TicketId> = {
+            let Some(journal) = self.journal(squad) else { return };
+            if journal.independent_review(ticket).is_some_and(|r| r.verdict.is_none()) {
+                let _ = journal.set_independent_verdict(ticket, "cancelled", "", "you");
+                return;
+            }
+            let open: Vec<TicketId> = journal.independent_reviews(ticket).into_iter().filter(|r| r.verdict.is_none()).map(|r| r.review).collect();
+            for &review in &open {
+                let _ = journal.set_independent_verdict(review, "cancelled", "", "you");
+            }
+            open
+        };
+        for review in open {
+            match self.worker_on(squad, review) {
+                Some(id) => {
+                    self.stop_turn(id);
+                    self.end_work(id, WorkEnd::Cancelled);
+                }
+                None => {
+                    if let Some(found) = self.journal(squad).and_then(|j| j.ticket(review).ok().flatten()).filter(|t| !t.status.is_closed()) {
+                        self.close_ticket(squad, found, TicketStatus::Cancelled);
+                    }
+                }
+            }
         }
     }
 
