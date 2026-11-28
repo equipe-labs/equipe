@@ -40,9 +40,9 @@ pub const CHECK_STEPS: &str = "check_steps";
 /// member who picks it up: who passed it, then their note.
 pub const BATON_FROM: &str = "Baton from ";
 
-/// The roles of a UI slice: the designer prototypes, the frontend builds.
+/// The roles of a UI slice: the designer prototypes, the engineer builds.
 pub const DESIGNER: &str = "designer";
-pub const FRONTEND: &str = "frontend";
+pub const FRONTEND: &str = crate::roles::ENGINEER;
 
 /// A squad setting: members land their own work when its gates pass
 /// (`self_land`, on unless the squad turned it off).
@@ -778,7 +778,7 @@ mod tests {
         let steps = default_steps(true, TicketKind::Code, Some("designer"), words);
         assert_eq!(steps.iter().map(|s| s.who.as_deref()).collect::<Vec<_>>(), vec![Some(DESIGNER), Some(FRONTEND), None]);
         assert!(steps.iter().all(|s| !s.text.is_empty() && !s.text.starts_with("flow.")));
-        assert_eq!(default_steps(false, TicketKind::Code, Some("backend-2"), words)[0].who.as_deref(), Some("backend"));
+        assert_eq!(default_steps(false, TicketKind::Code, Some("backend-2"), words)[0].who.as_deref(), Some("engineer"));
         assert!(default_steps(false, TicketKind::Task, Some("pm"), words).is_empty());
     }
 
@@ -797,7 +797,7 @@ mod tests {
         assert!(text.contains("(by designer)"));
         assert!(text.contains("5. [ ] Check on a phone — qa"));
         let told = brief(&flow, "designer", 7);
-        assert!(told.contains("designer drives it") && told.contains("pass_baton") && told.contains("(to frontend)"), "{told}");
+        assert!(told.contains("designer drives it") && told.contains("pass_baton") && told.contains("(to engineer)"), "{told}");
         let picked = picked_up(&baton_note("designer", "Prototype in design/sessions/x/"), Some(&flow), "frontend-2");
         assert!(picked.starts_with("Baton from designer: Prototype in design/sessions/x/"));
         assert!(picked.contains("check_steps"));

@@ -241,7 +241,7 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
         return None;
     }
     // Work a cheaper tier does as well: copying what exists, or the server side of a known stack.
-    let standard = settled || (code && !foundation(text) && (faithful_copy(text) || (SERVER_ROLES.contains(&w.role) && !on_screen(text))));
+    let standard = settled || (code && !foundation(text) && (faithful_copy(text) || (server_side(&w.role, text) && !on_screen(text))));
     if release_only {
         // A new screen shipped live keeps the table's deep tier: on strong or standard the first versions came out plainer.
         return standard.then_some((ModelTier::Standard, TierReason::Risk));
@@ -288,7 +288,16 @@ fn refactor(text: &str) -> bool {
 }
 
 /// The roles whose code no person looks at directly.
-const SERVER_ROLES: [&str; 2] = ["backend", "data"];
+/// Server-side work a cheaper tier does as well: the data analyst's, and an
+/// engineer's that says it is about the server (the backend engineer's work
+/// before the two engineers became one) — never a screen's, polish included.
+fn server_side(role: &str, text: &str) -> bool {
+    match crate::roles::canonical(role) {
+        "data" => true,
+        crate::roles::ENGINEER => has_word(text, &["api", "endpoint", "endpoints", "database", "migration", "schema", "server", "webhook", "cron", "worker", "queue", "backend", "sql"]),
+        _ => false,
+    }
+}
 
 /// Something a person sees, as the ticket says: a page, a screen, a form.
 fn on_screen(text: &str) -> bool {

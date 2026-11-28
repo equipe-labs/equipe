@@ -2833,6 +2833,8 @@
   "welcome.role_pm_desc": "やりたいことを計画とチケットにします。常にチームにいる、最初の相談相手です。",
   "welcome.role_designer": "デザイナー",
   "welcome.role_designer_desc": "フロー、UI、デザインシステム、ブランド",
+  "welcome.role_engineer": "エンジニア",
+  "welcome.role_engineer_desc": "画面・サーバー・データを最初から最後まで作ります",
   "welcome.role_frontend": "フロントエンド",
   "welcome.role_frontend_desc": "ページ、コンポーネント、画面のロジックを作ります",
   "welcome.role_backend": "バックエンド",

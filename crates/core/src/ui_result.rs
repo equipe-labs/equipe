@@ -34,7 +34,7 @@ pub const VIDEO_MAX: u64 = equipe_protocol::ATTACHMENT_MAX_BYTES as u64;
 /// The longest a recording made smaller runs.
 const VIDEO_SECS: u32 = 30;
 /// The roles whose code tickets change what users see.
-pub const UI_ROLES: [&str; 3] = ["frontend", "designer", "mobile"];
+pub const UI_ROLES: [&str; 3] = ["engineer", "designer", "mobile"];
 /// Hosts whose links are code or a conversation, not the product.
 const NOT_THE_PRODUCT: [&str; 6] = ["github.com", "gitlab.com", "bitbucket.org", "linear.app", "figma.com", "localhost"];
 
@@ -395,9 +395,10 @@ mod tests {
         assert!(is_ui_change(&ticket("frontend-2"), 0));
         assert!(is_ui_change(&ticket("mobile"), 0));
         assert!(is_ui_change(&ticket("designer"), 0));
-        assert!(!is_ui_change(&ticket("backend"), 0));
-        // A backend change that went through design QA changed a screen.
-        assert!(is_ui_change(&ticket("backend"), 1));
+        assert!(is_ui_change(&ticket("backend"), 0), "a backend is the software engineer, who builds screens");
+        assert!(!is_ui_change(&ticket("data"), 0));
+        // A change that went through design QA changed a screen.
+        assert!(is_ui_change(&ticket("data"), 1));
         let mut task = ticket("frontend");
         task.kind = TicketKind::Task;
         assert!(!is_ui_change(&task, 3));

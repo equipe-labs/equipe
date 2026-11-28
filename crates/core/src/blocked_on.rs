@@ -216,7 +216,7 @@ pub fn relay_on_missing<'a>(note: &str, history: impl IntoIterator<Item = (&'a s
 /// The role a relay's notes most likely wait on, of those the squad has:
 /// the backend, for an API, an endpoint or a contract, when it has one.
 pub fn likely_role(roles: &[String]) -> Option<String> {
-    ["backend", "data"].into_iter().find(|r| roles.iter().any(|have| crate::board::role_of(have) == *r)).map(str::to_owned)
+    [crate::roles::ENGINEER, "data"].into_iter().find(|r| roles.iter().any(|have| crate::board::role_of(have) == *r)).map(str::to_owned)
 }
 
 /// What the PM is told of a relay caught by its notes: one card — make the
@@ -369,8 +369,8 @@ mod tests {
     #[test]
     fn the_pm_card_offers_the_missing_ticket_with_the_role_the_squad_has() {
         let blocked = ticket(10, "Admin-only MCP delete", "frontend", TicketStatus::Todo);
-        assert_eq!(likely_role(&["pm".into(), "frontend".into(), "backend-2".into()]), Some("backend".into()));
-        assert_eq!(likely_role(&["pm".into(), "frontend".into()]), None);
+        assert_eq!(likely_role(&["pm".into(), "frontend".into(), "backend-2".into()]), Some("engineer".into()), "the software engineer builds the API");
+        assert_eq!(likely_role(&["pm".into(), "designer".into()]), None);
         let card = pm_card(&blocked, 3, "The contract has no such endpoint.", Some("backend"));
         for wanted in ["T-10", "3 times", "Create the missing ticket?", "\"role\": \"backend\"", "`blocked_on`", "cancel it"] {
             assert!(card.contains(wanted), "{wanted} in: {card}");

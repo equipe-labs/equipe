@@ -51,14 +51,14 @@ macro_rules! file {
 }
 
 fn builder(role: &Role) -> bool {
-    matches!(role.id, "frontend" | "backend" | "mobile")
+    crate::roles::builds(role.id)
 }
 
 const SOURCES: &[Source] = &[
     Source { dir: "office-hours", files: &[file!("office-hours", "SKILL.md")], offered: |r, c| r.id == PM && c.board_tools },
     Source { dir: "planning", files: &[file!("planning", "SKILL.md")], offered: |r, _| r.id == PM },
     Source { dir: "working-with-design", files: &[file!("working-with-design", "SKILL.md")], offered: |r, _| r.id == PM },
-    Source { dir: "design-loop", files: &[file!("design-loop", "SKILL.md")], offered: |r, _| matches!(r.id, PM | "designer" | "frontend") },
+    Source { dir: "design-loop", files: &[file!("design-loop", "SKILL.md")], offered: |r, _| matches!(r.id, PM | "designer" | crate::roles::ENGINEER) },
     Source { dir: "routines-and-signals", files: &[file!("routines-and-signals", "SKILL.md")], offered: |r, _| r.id == PM },
     Source { dir: "product-ideas", files: &[file!("product-ideas", "SKILL.md")], offered: |r, c| r.id == PM && c.board_tools },
     Source {
@@ -74,12 +74,12 @@ const SOURCES: &[Source] = &[
     Source {
         dir: "design-system",
         files: &[file!("design-system", "SKILL.md"), file!("design-system", "references/registry.md")],
-        offered: |r, _| matches!(r.id, "designer" | "frontend"),
+        offered: |r, _| matches!(r.id, "designer" | crate::roles::ENGINEER),
     },
     Source {
         dir: "web-stack",
         files: &[file!("web-stack", "SKILL.md")],
-        offered: |r, _| matches!(r.id, "designer" | "frontend"),
+        offered: |r, _| matches!(r.id, "designer" | crate::roles::ENGINEER),
     },
     Source { dir: "brand-kit", files: &[file!("brand-kit", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source { dir: "design-process", files: &[file!("design-process", "SKILL.md")], offered: |r, _| r.id == "designer" },
@@ -96,7 +96,7 @@ const SOURCES: &[Source] = &[
     },
     Source { dir: "design-qa", files: &[file!("design-qa", "SKILL.md")], offered: |r, _| r.id == "designer" },
     Source { dir: "design-session", files: &[file!("design-session", "SKILL.md")], offered: |r, _| r.id == "designer" },
-    Source { dir: "ui-floor", files: &[file!("ui-floor", "SKILL.md")], offered: |r, _| r.id == "frontend" },
+    Source { dir: "ui-floor", files: &[file!("ui-floor", "SKILL.md")], offered: |r, _| r.id == crate::roles::ENGINEER },
     Source { dir: "design-remix", files: &[file!("design-remix", "SKILL.md")], offered: |r, c| r.id == "designer" && c.design },
     Source { dir: "security-review", files: &[file!("security-review", "SKILL.md")], offered: |r, _| r.id == crate::roles::SECURITY },
     Source { dir: "marketing-playbook", files: &[file!("marketing-playbook", "SKILL.md")], offered: |r, _| r.id == crate::roles::MARKETING },
@@ -104,7 +104,7 @@ const SOURCES: &[Source] = &[
 
 /// Who builds what people see, besides the designer who designs it.
 fn builds_ui(role: &Role) -> bool {
-    matches!(role.id, "designer" | "frontend" | "mobile")
+    matches!(role.id, "designer" | crate::roles::ENGINEER | "mobile")
 }
 
 /// The UI craft library: the rules, numbers and review checklists for each
@@ -190,7 +190,7 @@ fn render(template: &str, role: &Role, ctx: &Context<'_>) -> String {
         "phone" => ctx.phone,
         "design" => ctx.design,
         "builder" => builder(role),
-        flag => flag.strip_prefix("role:").is_some_and(|id| id == role.id),
+        flag => flag.strip_prefix("role:").is_some_and(|id| crate::roles::canonical(id) == role.id),
     };
     let mut out = String::with_capacity(template.len());
     let mut keep = true;
@@ -248,7 +248,7 @@ pub fn skill_md(dir: &Path, name: &str) -> PathBuf {
 /// The roles whose edits to UI files are checked as they are made: the floor
 /// of `equipe design lint`, handed back in the same turn.
 pub fn checks_edits(role: &str) -> bool {
-    matches!(role, "designer" | "frontend")
+    matches!(crate::roles::canonical(role), "designer" | crate::roles::ENGINEER)
 }
 
 /// The plugin's `hooks/hooks.json` for a member of `role` on Claude Code:
@@ -530,9 +530,8 @@ mod tests {
         assert!(!frontend.contains("setup in two tiers") && !frontend.contains("builds one from the brand"));
         let designer = text("designer", &base, "design-system");
         assert!(designer.contains("setup in two tiers") && designer.contains("builds one from the brand") && !designer.contains("You build the components the designer specifies"));
-        for id in ["backend", "qa"] {
-            assert_eq!(names(id, &base), if id == "backend" { vec!["plan-review", "research-report", "measure"] } else { vec!["plan-review", "research-report"] }, "{id}");
-        }
+        assert_eq!(names("backend", &base), names("frontend", &base), "a backend is the software engineer");
+        assert_eq!(names("qa", &base), ["plan-review", "research-report"]);
         assert_eq!(names("data", &base), ["research-report"]);
         assert_eq!(names(crate::roles::SECURITY, &base), ["research-report", "security-review"]);
         assert_eq!(names(crate::roles::MARKETING, &base), ["research-report", "marketing-playbook"]);
@@ -577,7 +576,7 @@ mod tests {
         assert_eq!(hook["hooks"][0]["command"], "'/Applications/equipe.app/Contents/MacOS/equipe' design lint --hook --ledger");
         let frontend: serde_json::Value = serde_json::from_str(&hooks("frontend", equipe).unwrap()).unwrap();
         assert!(frontend["hooks"]["PostToolUse"][0]["hooks"][0]["command"].as_str().unwrap().ends_with("design lint --hook"), "an engineer's edits aren't written down for a hand-in");
-        for role in [PM, "backend", "qa"] {
+        for role in [PM, "qa", "security"] {
             assert!(hooks(role, equipe).is_none(), "{role}");
         }
         let home = scratch("hooks");

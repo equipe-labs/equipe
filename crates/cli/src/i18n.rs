@@ -24,8 +24,7 @@ pub fn role_summary(role: &equipe_core::roles::Role) -> &'static str {
     match role.id {
         "pm" => equipe_core::t!("role.pm"),
         "designer" => equipe_core::t!("role.designer"),
-        "frontend" => equipe_core::t!("role.frontend"),
-        "backend" => equipe_core::t!("role.backend"),
+        "engineer" => equipe_core::t!("role.engineer"),
         "mobile" => equipe_core::t!("role.mobile"),
         "qa" => equipe_core::t!("role.qa"),
         "security" => equipe_core::t!("role.security"),

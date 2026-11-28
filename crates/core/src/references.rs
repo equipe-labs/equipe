@@ -60,7 +60,7 @@ pub const BYTES_MAX: u64 = 256 << 20;
 /// Whether a member of `role` is given the tool: the PM (for the person
 /// talking at its desk), the designer and frontend.
 pub fn offered(role: &str) -> bool {
-    matches!(role, crate::roles::PM | "designer" | "frontend")
+    matches!(crate::roles::canonical(role), crate::roles::PM | "designer" | crate::roles::ENGINEER)
 }
 
 /// The tool's definition, as `tools/list` gives it.
@@ -671,7 +671,8 @@ mod tests {
     #[test]
     fn the_tool_is_the_pm_designer_and_frontend_s_and_says_to_show_in_the_same_turn() {
         assert!(offered("pm") && offered("designer") && offered("frontend"));
-        assert!(!offered("backend") && !offered("qa"));
+        assert!(offered("engineer") && offered("backend"), "the software engineer builds screens too");
+        assert!(!offered("qa") && !offered("security"));
         let tool = tool();
         let doc = tool["description"].as_str().unwrap();
         for part in ["same turn", "Mobbin's pictures are private study material", "never shipped, committed", "never only opened in your own browser", "never by internal numbers"] {

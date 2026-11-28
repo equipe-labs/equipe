@@ -173,16 +173,17 @@ fn a_shift_moves_the_implementation_roles_in_order_and_a_drain_everyone_the_pm_l
     let d = run(&[claude(86, 30), codex(10, 10)], &team(Engine::Claude));
     let batch = d.batch.clone().expect("a batch");
     assert_eq!((batch.why, batch.engine, batch.window, batch.used), (Why::Shift, Engine::Claude, Some(Window::FiveHour), 86));
-    assert_eq!(moved(&d), ["backend", "mobile", "frontend"]);
+    // Frontend and backend are one software engineer: one rank, by name.
+    assert_eq!(moved(&d), ["backend", "frontend", "mobile"]);
     assert!(batch.moves.iter().all(|m| m.from == Engine::Claude && m.to == Engine::Codex && m.model.is_none()));
     let d = run(&[claude(96, 30), codex(10, 10)], &team(Engine::Claude));
     assert_eq!(d.batch.as_ref().map(|b| b.why), Some(Why::Drain));
-    assert_eq!(moved(&d), ["backend", "mobile", "frontend", "data", "qa", "designer", "pm"]);
+    assert_eq!(moved(&d), ["backend", "frontend", "mobile", "data", "qa", "designer", "pm"]);
     // Codex running low: data and qa first.
     let d = run(&[claude(10, 10), codex(87, 30)], &team(Engine::Codex));
     assert_eq!(moved(&d), ["data", "qa"]);
     let d = run(&[claude(10, 10), codex(10, 93)], &team(Engine::Codex));
-    assert_eq!(moved(&d), ["data", "qa", "backend", "mobile", "frontend", "designer", "pm"]);
+    assert_eq!(moved(&d), ["data", "qa", "backend", "frontend", "mobile", "designer", "pm"]);
 }
 
 #[test]
@@ -192,8 +193,8 @@ fn the_role_order_holds_for_both_directions_and_the_persons_own_roles() {
         roles.sort_by_key(|r| rank(to, r));
         roles
     };
-    assert_eq!(order(Engine::Codex), ["backend", "mobile", "frontend", "data", "qa", "writer", "designer", "pm"]);
-    assert_eq!(order(Engine::Claude), ["data", "qa", "backend", "mobile", "frontend", "writer", "designer", "pm"]);
+    assert_eq!(order(Engine::Codex), ["frontend", "backend", "mobile", "data", "qa", "writer", "designer", "pm"]);
+    assert_eq!(order(Engine::Claude), ["data", "qa", "frontend", "backend", "mobile", "writer", "designer", "pm"]);
     // Several of a role: by name.
     let mates = vec![mate("backend-2", Engine::Claude), mate("frontend", Engine::Claude), mate("backend", Engine::Claude)];
     assert_eq!(moved(&run(&[claude(88, 10), codex(0, 0)], &mates)), ["backend", "backend-2", "frontend"]);
@@ -396,7 +397,7 @@ fn batches_are_fifteen_minutes_apart() {
     let mut mates = team(Engine::Claude);
     let r = [claude(86, 30), codex(5, 5)];
     let first = decide_at(&r, &mates, &reach(), Switching::Auto, NOW, &mut memory);
-    assert_eq!(moved(&first), ["backend", "mobile", "frontend"]);
+    assert_eq!(moved(&first), ["backend", "frontend", "mobile"]);
     for m in mates.iter_mut().filter(|m| ["backend", "mobile", "frontend"].contains(&m.name.as_str())) {
         m.engine = Engine::Codex;
         m.switched.push(NOW);
@@ -530,7 +531,6 @@ fn the_setup_puts_writers_on_claude_and_reviewers_on_codex_once_both_are_signed_
     let mut on_models = team(Engine::Claude);
     for m in &mut on_models {
         m.model = Some(match m.role.as_str() {
-            "frontend" => "claude-sonnet-5-5".into(),
             _ => "claude-opus-5-5".into(),
         });
     }
@@ -614,7 +614,7 @@ fn a_shift_moves_the_heaviest_first_as_many_as_the_week_needs_and_light_ones_sta
     // A drain: everyone, the heaviest first, the PM last.
     let d = run(&[claude(96, 30), codex(5, 5)], &team);
     assert_eq!(moved(&d), ["backend", "frontend", "designer", "qa", "mobile", "pm"]);
-    assert_eq!(rank(Engine::Codex, "pm"), 16, "the PM's own place stays last");
+    assert_eq!(rank(Engine::Codex, "pm"), 14, "the PM's own place stays last");
 }
 
 #[test]

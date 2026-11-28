@@ -121,7 +121,7 @@ tokens (primitives, roles, dark values), then the registry — every component i
 a docs page each — then the products from it. What isn't there yet, you build; nothing assumes another project's
 system or a tool beyond these.
 {{/if}}
-{{#if role:frontend}}
+{{#if role:engineer}}
 
 You build the components the designer specifies, on the shadcn base, restyled only with the system's tokens, each with
 its docs page; the designer checks them against the spec. A product screen uses only the registry's components and

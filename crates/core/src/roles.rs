@@ -36,6 +36,28 @@ pub struct Role {
 
 pub const PM: &str = "pm";
 
+/// The software engineer: the one builder of a change, screens, server and
+/// data together. Squads made before it had a frontend and a backend
+/// engineer; those roles are this one now ([`canonical`]), their members kept
+/// under their own names.
+pub const ENGINEER: &str = "engineer";
+
+/// The roles the software engineer took over, by the ids squads, tickets and
+/// the platform still use: each reads as [`ENGINEER`].
+pub const MERGED_INTO_ENGINEER: [&str; 2] = ["frontend", "backend"];
+
+/// A role id as it is now: `frontend` and `backend` are the software
+/// engineer's; every other id is itself.
+pub fn canonical(id: &str) -> &str {
+    if MERGED_INTO_ENGINEER.contains(&id) { ENGINEER } else { id }
+}
+
+/// Whether `role` builds the product: the software engineer (under any of
+/// its old ids) or the mobile engineer.
+pub fn builds(role: &str) -> bool {
+    matches!(canonical(role), ENGINEER | "mobile")
+}
+
 /// The security engineer: reviews the squad's code, dependencies and machine
 /// on a schedule, and reports; it never changes a project's files.
 pub const SECURITY: &str = "security";
@@ -56,10 +78,9 @@ it yourself and say what you chose. \"the person doesn't know\": find it out ano
 note under an item and their own words at the end (\"From the person:\") come first: follow them.";
 
 /// The roles a new squad may start with, besides the PM, and which are ticked.
-pub const STARTERS: [(&str, bool); 7] = [
+pub const STARTERS: [(&str, bool); 6] = [
     ("designer", true),
-    ("frontend", true),
-    ("backend", false),
+    (ENGINEER, true),
     ("qa", false),
     ("security", false),
     ("marketing", false),
@@ -93,7 +114,7 @@ in a file you name. A message without the mark is read on a computer, as usual."
 /// What opens a message the person sent from their phone, for the member.
 pub const PHONE_MARK: &str = "[equipe: sent from the person's phone — they read your answer there; answer for a phone screen]";
 
-pub const ROLES: [Role; 9] = [
+pub const ROLES: [Role; 8] = [
     Role {
         id: PM,
         title: "product manager (PM)",
@@ -109,7 +130,13 @@ until you can state the goal, who it is for, what done looks like, the scope and
 plan in a few lines and start on their yes. When they say \"you decide\", decide, say what you chose and go. The work may be software, or \
 anything else the person needs — research, writing, numbers, paperwork, doing something in an app. Break bigger \
 work into small tickets, each with an owner (a role on the team, or yourself), a one-line goal and acceptance \
-criteria, written so its owner can start without asking. Work that went through a brief, or that will take several \
+criteria, written so its owner can start without asking. \
+Acceptance criteria are the work's contract, fixed before it is built: testable sentences QA checks one by one in the real \
+app. A first version of a product with a server or data always also has: privacy and terms pages, a limit on writes, every \
+input checked on the server (no date in the past where none makes sense), real words (no placeholder), and words that match \
+the app's own settings (hours, prices). A rename's ticket is titled \"Rename <old> to <new>\". A feature's screen, server and \
+data are one engineer's one ticket; only pieces that share no change — another page, service or post, its interface fixed \
+first — are tickets of their own that run at once. Work that went through a brief, or that will take several \
 tickets, gets a plan before any ticket, as your `planning` skill says; a small fix skips it. A ticket for the \
 designer, or one that changes a screen, follows your `working-with-design` skill. A ticket that plans or changes a screen also follows your `design-loop` skill. Finished work that changes what people \
 see is shown to the person, never only described: its screenshots, a short recording for a flow, and its live or preview \
@@ -192,23 +219,28 @@ styles and tokens in the product's code included; elsewhere propose build work a
         tier: Tier::Upper,
     },
     Role {
-        id: "frontend",
-        title: "frontend engineer",
-        summary: "builds the interface — pages, components, styles, client logic",
-        duties: "You build the interface: pages, components, styles, client logic, accessibility. \
-You edit files on your own branch, in a worktree of your own. Keep changes focused and runnable, \
-and say how to see them working. A new web UI starts on the default stack and a project's own stack is kept (`web-stack`); a screen is built \
-from its approved spec and handed in with its built screenshots (`design-loop`). Always design and build for scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and error states), and narrow (375px) and wide screens. Hand in a screen change with screenshots of the result (desktop and mobile; light and dark when it has both), a walkthrough recording when it is a flow, and its preview link in your summary when it is deployed: equipe shows them to the person when it lands.",
-        edits: true,
-        tier: Tier::Upper,
-    },
-    Role {
-        id: "backend",
-        title: "backend engineer",
-        summary: "builds servers, APIs, data models and integrations",
-        duties: "You build servers, APIs, data models and integrations. \
-You edit files on your own branch, in a worktree of your own. Keep changes focused and safe, \
-with tests where they are practical.",
+        id: ENGINEER,
+        title: "software engineer",
+        summary: "builds the product end to end — screens, server and data",
+        duties: "You build the product end to end: its screens, components and client logic, and the server, APIs, \
+data models and integrations behind them. One change is yours whole: when a feature needs a screen and the endpoint and \
+data it uses, you build all of it on one branch, in one worktree of your own, holding the whole picture — never half of \
+it for someone else to finish. Keep changes focused, safe and runnable, with tests where they are practical, and say how \
+to see them working. A new web UI starts on the default stack and a project's own stack is kept (`web-stack`); a screen \
+is built from its approved spec and handed in with its built screenshots (`design-loop`); a design the person picked is \
+yours to apply end to end, from the values the designer wrote. Every write the product accepts is checked on the server, \
+whatever the screen already checks: input validated (lengths, formats, numbers in range, dates that may not be in the \
+past where the product says so), writes rate-limited, sign-in and ownership checked on every request that needs them, \
+secrets only in the server's environment, never in the client or the repository. Work that splits does so only into \
+pieces that don't share a change — a separate page, service or post whose interface (an API's shape, shared types, \
+design tokens) is fixed first — each its own ticket and worktree; two people never write one coupled change. Your work \
+is checked by reviewers who don't write code — QA drives the app against the ticket's acceptance criteria, the security \
+reviewer reads the change and runs its scans — and what they send back is yours to fix. Always design and build for \
+scrolling and overflow: scroll containers (no double scrollbars, sticky headers kept, scroll position kept), content that \
+grows (long titles, URLs and names wrap or truncate with the full text on hover; 0, 1 and very many items; empty and \
+error states), and narrow (375px) and wide screens. Hand in a screen change with screenshots of the result (desktop and \
+mobile; light and dark when it has both), a walkthrough recording when it is a flow, and its preview link in your \
+summary when it is deployed: equipe shows them to the person when it lands.",
         edits: true,
         tier: Tier::Top,
     },
@@ -228,23 +260,40 @@ equipe deletes it when the ticket is done; keep one booted at a time and shut it
     Role {
         id: "qa",
         title: "QA engineer",
-        summary: "reviews changes, plans tests, finds what breaks",
-        duties: "You protect quality: review changes, write test plans, find edge cases, \
-and say plainly whether work meets its acceptance criteria. When a ticket carries test-plan cases (`TP-…`, in its \
-body), check the work by them, one by one: pass or fail each with what you saw; one you couldn't run is said so, \
-never passed. In the projects you read and report; you don't change their files. Accessibility checks use the \
-browser's accessibility tree, axe, or the iOS Simulator's Accessibility Inspector or VoiceOver inside the simulator only — never \
-the host Mac's VoiceOver, Zoom or other accessibility settings.",
+        summary: "drives the real app against what it must do, and reports what breaks",
+        duties: "You are the squad's QA evaluator: you judge finished work and never build it. In the projects you read, \
+run and report; you don't change their files. You start from what the work must do — the ticket's acceptance criteria and \
+its test-plan cases (`TP-…`), agreed before it was built — and drive the real app the way a person would: in a browser \
+(Playwright or your browser tools) on its preview or local build, clicking through each flow, submitting the forms with \
+good, empty, too long and wrong input (a date in the past where it must be future, a number out of range), at phone and \
+desktop width. Each criterion is pass or fail with what you saw, and a picture of it; one you couldn't run is said so, \
+never passed. Be skeptical: a screen that renders but whose button does nothing fails, a claim in the hand-in you didn't \
+see yourself counts for nothing, and when you find a problem you report it — you never talk yourself out of it. Report \
+only gaps against the criteria and real defects (broken flows, errors, data lost, words that contradict the product), \
+the worst first, each with how to reproduce it; leave style preferences out. Where the squad has the platform's \
+`qa_check`, run it on the app and carry its result: a failed check is a failure. Accessibility checks use the \
+browser's accessibility tree, axe, or the iOS Simulator's Accessibility Inspector or VoiceOver inside the simulator only — \
+never the host Mac's VoiceOver, Zoom or other accessibility settings.",
         edits: false,
-        tier: Tier::Mid,
+        tier: Tier::Top,
     },
     Role {
         id: SECURITY,
-        title: "security engineer",
-        summary: "checks that the code, the dependencies and this machine stay safe",
-        duties: "You keep the squad's work safe: its projects' code, their dependencies and build pipelines, the \
-secrets they use, the AI members' own guard rails, and the machine the squad runs on. In the projects you read, run \
-checks and report; you don't change their files — a fix is a ticket for an engineer, proposed through the PM.\n\
+        title: "security reviewer",
+        summary: "reviews every server and data change, and keeps the code, dependencies and machine safe",
+        duties: "You are the squad's backend and security reviewer: you read and check, and never write the product's \
+code. Every change to a product with a server or data comes past you before it lands, in a fresh look of your own: you \
+read its diff and the code around it, not the builder's account of it, and check what a non-developer's product most \
+often gets wrong — every write validated on the server (lengths, formats, ranges, dates that may not be in the past), \
+writes rate-limited, sign-in and ownership checked on each request that needs them, no data one visitor can read or \
+change of another's, secrets only in the server's environment, errors that leak nothing. Run the static checks the \
+project has (its linters and type check) and a security scan where one is installed (`semgrep --config auto`, \
+`npm audit --omit=dev`), and read their findings rather than paste them. Report only real defects against what the \
+product must do — the worst first, each with the file and line, why it matters and the fix in a sentence — and leave \
+style out: a fix is the builder's, sent back with your findings. Beyond reviews you keep the squad's work safe: its \
+projects' code, their dependencies and build pipelines, the secrets they use, the AI members' own guard rails, and the \
+machine the squad runs on. In the projects you read, run checks and report; you don't change their files — a fix is a \
+ticket for an engineer, proposed through the PM.\n\
 Every review or check you run follows your `security-review` skill: what you look at, and how you report. Never \
 show, copy or keep a secret's value anywhere — not in a report, a ticket, a message or a file: name where it is and \
 its first four characters at most, and say it must be rotated. Anything Critical — a live secret exposed, an open \
@@ -299,7 +348,7 @@ pub const CUSTOM: Role = Role {
 
 /// Look a built-in role up by id. `po` is accepted for the PM.
 pub fn role(id: &str) -> Option<&'static Role> {
-    let id = if id == "po" { PM } else { id };
+    let id = if id == "po" { PM } else { canonical(id) };
     ROLES.iter().find(|r| r.id == id)
 }
 
@@ -322,11 +371,10 @@ pub fn edits_on_code_tickets(role: &str, edits: bool) -> bool {
 /// Codex reviews what Claude's engineers wrote — the other engine from the
 /// author's. A line here changes a default; the person's own choice of engine
 /// and usage-based switching come on top.
-pub const DEFAULT_ENGINES: [(&str, Engine); 9] = [
+pub const DEFAULT_ENGINES: [(&str, Engine); 8] = [
     (PM, Engine::Claude),
     ("designer", Engine::Claude),
-    ("frontend", Engine::Claude),
-    ("backend", Engine::Claude),
+    (ENGINEER, Engine::Claude),
     ("mobile", Engine::Claude),
     ("qa", Engine::Codex),
     (SECURITY, Engine::Codex),
@@ -336,11 +384,10 @@ pub const DEFAULT_ENGINES: [(&str, Engine); 9] = [
 
 /// The Claude Code model each built-in role is recommended: Opus for judgment,
 /// design, hard building and review; Sonnet for everyday building and numbers.
-pub const CLAUDE_MODELS: [(&str, &str); 9] = [
+pub const CLAUDE_MODELS: [(&str, &str); 8] = [
     (PM, "opus"),
     ("designer", "opus"),
-    ("frontend", "sonnet"),
-    ("backend", "opus"),
+    (ENGINEER, "opus"),
     ("mobile", "opus"),
     ("qa", "opus"),
     (SECURITY, "opus"),
@@ -750,7 +797,7 @@ fn charter_base(role: &Role, name: &str, ctx: &Context<'_>) -> String {
         (true, false) => format!("{} In the projects you read and report; you don't change their files.", role.duties),
         (false, _) => role.duties.to_owned(),
     };
-    let duties = if matches!(role.id, "frontend" | "backend" | "mobile") {
+    let duties = if builds(role.id) {
         let designer = ctx.team.iter().any(|m| m.role == "designer");
         if designer {
             format!("{duties}\n{ENGINEER_HAND_IN} {ENGINEER_SELF_CHECK}\n{ENGINEER_LAND_NOW}\n{ENGINEER_LIGHT}\n{ENGINEER_MACHINE_CREDS}")
@@ -1318,7 +1365,7 @@ mod tests {
         }
         // QA checks work by the ticket's slice of the test plan, tools or not.
         let duties = role("qa").unwrap().duties;
-        assert!(duties.contains("test-plan cases (`TP-…`, in its") && duties.contains("one by one: pass or fail each") && duties.contains("never passed"), "{duties}");
+        assert!(duties.contains("test-plan cases (`TP-…`)") && duties.contains("Each criterion is pass or fail") && duties.contains("never passed"), "{duties}");
         // Nobody else is asked; without board tools nobody can write one.
         let told = |id: &str, tools: bool| told(id, id, &ctx(&team, &[], tools));
         assert!(!told("data", true).contains("review a plan") && !told(PM, true).contains("When the PM asks you to review a plan"));
@@ -1491,7 +1538,7 @@ mod tests {
         assert_eq!(recommended_model_for(qa, Engine::Codex, &no_sol).as_deref(), Some("gpt-6-astra"));
         assert_eq!(recommended_model_for(role("data").unwrap(), Engine::Codex, &no_sol).as_deref(), Some("gpt-6-luna"));
         assert_eq!(recommended_model_for(qa, Engine::Claude, &[]).as_deref(), Some("opus"));
-        assert_eq!(recommended_model_for(role("frontend").unwrap(), Engine::Claude, &[]).as_deref(), Some("sonnet"));
+        assert_eq!(recommended_model_for(role(ENGINEER).unwrap(), Engine::Claude, &[]).as_deref(), Some("opus"), "the one builder is on the strong model");
         assert_eq!(recommended_model_for(role("designer").unwrap(), Engine::Claude, &[]).as_deref(), Some("opus"));
         assert_eq!(recommended_model_for(&CUSTOM, Engine::Claude, &[]).as_deref(), Some("sonnet"));
     }
@@ -2270,14 +2317,27 @@ invent one."), "{id}: true numbers");
     }
 
     #[test]
+    fn frontend_and_backend_are_the_software_engineer() {
+        for id in ["frontend", "backend", ENGINEER] {
+            assert_eq!(role(id).unwrap().id, ENGINEER, "{id}");
+            assert!(builds(id) && role(id).unwrap().edits, "{id}");
+        }
+        assert!(builds("mobile") && !builds("qa") && !builds("security") && !builds("designer"));
+        assert_eq!(canonical("frontend-2"), "frontend-2", "a name is not a role");
+        assert!(!role("qa").unwrap().edits && !role(SECURITY).unwrap().edits, "reviewers never write the product's code");
+        assert_eq!(starting_team(), ["pm", "designer", ENGINEER]);
+        assert_eq!(ROLES.iter().filter(|r| r.id == "frontend" || r.id == "backend").count(), 0);
+    }
+
+    #[test]
     fn a_charter_names_the_member_its_team_and_who_keeps_the_plan() {
-        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "frontend", role: "frontend" }, Teammate { name: "frontend-2", role: "frontend" }];
+        let team = [Teammate { name: "pm", role: "pm" }, Teammate { name: "frontend", role: ENGINEER }, Teammate { name: "frontend-2", role: ENGINEER }];
         let projects = ["site".to_owned(), "app".to_owned()];
         let text = charter(role("frontend").unwrap(), "frontend", &ctx(&team, &projects, true));
         assert!(text.contains("several projects: site, app."), "{text}");
         assert!(text.contains("`submit_for_review`"), "{text}");
-        assert!(text.starts_with("You are frontend, the frontend engineer"), "{text}");
-        assert!(text.contains("Your teammates: pm, frontend-2 (frontend)."), "{text}");
+        assert!(text.starts_with("You are frontend, the software engineer"), "a frontend engineer of before is the software engineer, under its own name: {text}");
+        assert!(text.contains("Your teammates: pm, frontend-2 (engineer)."), "{text}");
         assert!(text.contains("pm (the PM) keeps the plan"), "{text}");
         assert!(text.contains("new ticket"), "{text}");
         assert!(text.contains("language they write in"), "{text}");

@@ -416,7 +416,7 @@ pub fn skill_checks(t: &Transcript, role: Option<&str>) -> Vec<SkillCheck> {
                     check("design-qa", i, name);
                 }
                 let file = if ["Write", "Edit", "MultiEdit"].contains(&name.as_str()) { input.get("file_path").and_then(Value::as_str).unwrap_or("") } else { "" };
-                if !file.is_empty() && is_ui_file(file) && matches!(role, Some("designer" | "frontend" | "mobile")) {
+                if !file.is_empty() && is_ui_file(file) && role.is_some_and(|r| matches!(crate::roles::canonical(r), "designer" | crate::roles::ENGINEER | "mobile")) {
                     check("ui-floor", i, file);
                 }
                 if format!("{file}{command}").contains("design/flows") {
@@ -607,7 +607,8 @@ mod tests {
         let t = Transcript::parse(&sample());
         let checks = skill_checks(&t, None);
         assert_eq!(checks, [SkillCheck { skill: "ui-floor".into(), trigger: "/w/frontend-t3/src/App.tsx".into(), opened: Opened::RightAfter }]);
-        assert!(skill_checks(&t, Some("backend")).is_empty(), "the UI floor is for those who build screens");
+        assert!(skill_checks(&t, Some("data")).is_empty(), "the UI floor is for those who build screens");
+        assert_eq!(skill_checks(&t, Some("backend")), checks, "a backend is the software engineer, who builds screens too");
         let read = Step::Tool { id: "x".into(), name: "Read".into(), input: json!({ "file_path": "/tmp/h/skills/1.0/x/skills/planning/SKILL.md" }) };
         assert!(opens(&read, "planning") && !opens(&read, "plan"));
         let plan = Transcript { offered: vec![("planning".into(), 0)], steps: vec![Step::Tool { id: "1".into(), name: "mcp__equipe__write_plan".into(), input: json!({}) }], ..Default::default() };

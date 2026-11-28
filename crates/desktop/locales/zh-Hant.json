@@ -2833,6 +2833,8 @@
   "welcome.role_pm_desc": "把你的想法變成計畫和工單。一直在團隊中，是你的主要聯絡人。",
   "welcome.role_designer": "設計師",
   "welcome.role_designer_desc": "流程、介面、設計系統與品牌",
+  "welcome.role_engineer": "工程師",
+  "welcome.role_engineer_desc": "從介面到伺服器和資料，完整打造",
   "welcome.role_frontend": "前端",
   "welcome.role_frontend_desc": "建置頁面、元件和介面邏輯",
   "welcome.role_backend": "後端",

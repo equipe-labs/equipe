@@ -2833,6 +2833,8 @@
   "welcome.role_pm_desc": "원하는 것을 계획과 티켓으로 바꿔요. 항상 팀에 있고, 가장 먼저 이야기하는 상대예요.",
   "welcome.role_designer": "디자이너",
   "welcome.role_designer_desc": "흐름, UI, 디자인 시스템과 브랜드",
+  "welcome.role_engineer": "엔지니어",
+  "welcome.role_engineer_desc": "화면, 서버, 데이터를 처음부터 끝까지 만들어요",
   "welcome.role_frontend": "프론트엔드",
   "welcome.role_frontend_desc": "페이지, 컴포넌트, 화면 로직을 만들어요",
   "welcome.role_backend": "백엔드",

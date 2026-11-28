@@ -131,12 +131,12 @@ impl Runtime {
                 (id, true)
             }
             None => {
-                let frontend = self.sessions.values().any(|s| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| m.role == "frontend"));
+                let frontend = self.sessions.values().any(|s| s.squad.as_deref() == Some(squad) && s.is_member_itself() && s.member.as_ref().is_some_and(|m| crate::roles::canonical(&m.role) == crate::roles::ENGINEER));
                 let draft = TicketDraft {
                     title,
                     body,
                     project: picked.project.clone().map(PathBuf::from),
-                    assignee: frontend.then(|| "frontend".to_owned()),
+                    assignee: frontend.then(|| crate::roles::ENGINEER.to_owned()),
                     kind: Some(TicketKind::Code),
                     ..TicketDraft::default()
                 };

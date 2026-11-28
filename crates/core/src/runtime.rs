@@ -145,6 +145,7 @@ mod told;
 mod withdraw;
 mod turn_budget;
 mod reply_guard;
+mod review_gate;
 pub use turn_end::turn_ending;
 use turn_end::{RunEnd, TurnEnds, TurnWatch};
 
@@ -1090,8 +1091,13 @@ struct Work {
     /// Set by `submit_for_review` on a code ticket that changes what users
     /// see, in a squad with a designer: it goes to design QA first.
     screens: bool,
-    /// Set by `design_qa` on a design QA ticket: the designer's word.
+    /// Set by `design_qa` on a design QA ticket, or `review_verdict` on an
+    /// independent review: the checker's word.
     verdict: Option<design_qa::Verdict>,
+    /// The platform's last `qa_check` in this work (`crate::review_gate`).
+    qa: Option<crate::review_gate::QaSeen>,
+    /// It put the app on the platform (`deploy_site`) in this work.
+    deployed: bool,
     /// Set by `submit_for_review`'s `waive_findings`: why the engineer's
     /// self-check findings aren't real problems; a designer judges it.
     waive: Option<String>,
@@ -2333,7 +2339,11 @@ impl Runtime {
                             // A page a member showed the person: served for their screen, before
                             // the screen reads it; the member hears at once if nobody can see it.
                             let shown = match &event {
-                                Event::ToolResult { session, outcome, .. } => self.member_showed(*session, outcome).map(|note| (*session, note)),
+                                Event::ToolResult { session, outcome, tool, .. } => {
+                                    // The platform's checklist and deploys, kept as evidence of done (`review_gate`).
+                                    self.platform_tool_seen(*session, tool, outcome);
+                                    self.member_showed(*session, outcome).map(|note| (*session, note))
+                                }
                                 _ => None,
                             };
                             self.publish(event);
@@ -5136,9 +5146,12 @@ runbooks and reports live there, and work across the projects or on running them
         let opened_in = project_of(&spec.cwd);
         let member = match (&squad, spec.role.as_deref()) {
             (Some(squad), Some(role)) => {
-                let role = if role == "po" { roles::PM } else { role };
+                // `frontend` and `backend` from an older screen or the platform join as the software engineer,
+                // named as they were asked for (`frontend`), like the members of before.
+                let asked = if role == "po" { roles::PM } else { role };
+                let role = roles::canonical(asked);
                 // A member moving engines keeps its name.
-                let name = self.engines.name_for(id).filter(|n| self.member_id(squad, n).is_none()).unwrap_or_else(|| self.free_name(squad, role));
+                let name = self.engines.name_for(id).filter(|n| self.member_id(squad, n).is_none()).unwrap_or_else(|| self.free_name(squad, asked));
                 Some(Member { role: role.to_owned(), name })
             }
             _ => None,
@@ -8013,6 +8026,8 @@ runbooks and reports live there, and work across the projects or on running them
             waiting: None,
             screens: false,
             verdict: None,
+            qa: None,
+            deployed: false,
             waive: None,
             lite: lite.is_some(),
             refused: None,
@@ -8584,6 +8599,26 @@ todo); or drop it if it's no longer wanted.]"
                     None => (name.as_str(), "handed in", format!("{name} handed in T-{} for your review", ticket.id), "news.handed_in"),
                 }
             }
+            WorkEnd::Checked if self.journal(&squad).is_some_and(|j| j.independent_review(ticket.id).is_some()) => {
+                let verdict = work.verdict.clone().unwrap_or(design_qa::Verdict { passed: true, findings: String::new() });
+                ticket.note = summary.clone();
+                ticket.status = if matches!(landed, Some(Err(_))) { TicketStatus::Review } else { TicketStatus::Done };
+                if ticket.status == TicketStatus::Done {
+                    ticket.merged = merged_state(&ticket);
+                }
+                ticket.images = work.shown.clone();
+                let checked = self.review_checked(&squad, &ticket, &name, &verdict);
+                let (id, engineer) = checked.as_ref().map_or((ticket.id, String::new()), |(t, e)| (t.id, e.clone()));
+                if let Some((checked, engineer)) = checked {
+                    about = Some((checked.id, checked.title));
+                    to = Some(engineer);
+                }
+                if verdict.passed {
+                    (name.as_str(), "review passed", format!("{name} passed its review of T-{id}"), "news.review_passed")
+                } else {
+                    (name.as_str(), "review: changes", format!("{name}'s review sent T-{id} back to {engineer} with what to fix"), "news.review_changes")
+                }
+            }
             WorkEnd::Checked => {
                 let verdict = work.verdict.clone().unwrap_or(design_qa::Verdict { passed: true, findings: String::new() });
                 ticket.note = summary.clone();
@@ -9090,6 +9125,7 @@ with what else waits.]"
             None => self.close_ticket(squad, found, TicketStatus::Done),
         }
         self.design_qa_closed(squad, ticket);
+        self.review_closed(squad, ticket);
         // Work already in main stops asking to be merged as soon as the sweep says so.
         self.settle_all_merged();
         self.dispatch(squad).await;
@@ -9583,6 +9619,7 @@ It starts when {owner} is free."
         }
         self.clear_finished_builds(squad, &found);
         self.design_qa_closed(squad, ticket);
+        self.review_closed(squad, ticket);
         self.drop_questions(squad, |set| set.ticket == Some(ticket));
         self.dispatch(squad).await;
     }
@@ -11767,6 +11804,15 @@ or as its preview link. The person is told exactly what you write."
                         ));
                     }
                 }
+                // Done needs evidence: work its builder deployed goes in only once the platform's checklist passed on it.
+                let builder = self.sessions.get(&id).and_then(|s| s.member.as_ref()).is_some_and(|m| roles::builds(&m.role));
+                if builder && self.on_platform(&squad)
+                    && let Some(work) = self.sessions.get(&id).and_then(|s| s.work.as_ref())
+                    && work.kind == TicketKind::Code
+                    && let Some(why) = crate::review_gate::hand_in_refused(work.deployed, work.qa.as_ref())
+                {
+                    return Err(why);
+                }
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
                 // A designer's screen change says what changed and why it is better, under its summary.
                 let summary = match self.designer_change_note(id, &args)? {
@@ -11924,6 +11970,7 @@ it back there once they have done it.{again}{chore_told} End your turn now with 
             crate::squad_secrets::USE => self.secret_use(&squad, &member, id, &args),
             crate::squad_secrets::WRITE => self.secret_write(&squad, &member, id, &args),
             board::DESIGN_QA => self.finish_design_qa(&squad, id, &args),
+            crate::review_gate::REVIEW_VERDICT => self.finish_review(&squad, id, &args),
             board::DESIGN_REVIEW => self.finish_design_review(&squad, id, &args),
             board::QA_PICTURES => self.qa_pictures(&squad, id, &args),
             // Asked by a designer's or frontend engineer's board server, which runs `system_tools` itself, in this folder.
@@ -13072,6 +13119,8 @@ fn restore_work(journal: &Journal, ticket: &Ticket, projects: &[PathBuf], home: 
         waiting: None,
         screens: false,
         verdict: None,
+        qa: None,
+        deployed: false,
         waive: None,
         lite: false,
         refused: None,

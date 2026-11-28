@@ -96,6 +96,7 @@ pub mod prototype;
 pub mod quality;
 pub mod references;
 pub mod requests;
+pub mod review_gate;
 pub mod mock;
 pub mod image_repeat;
 pub mod models;

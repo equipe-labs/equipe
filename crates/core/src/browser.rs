@@ -1278,7 +1278,7 @@ pub fn member_color(name: &str) -> &'static str {
     let hue = match role {
         "pm" => 0,
         "designer" => 1,
-        "frontend" => 2,
+        "frontend" | "engineer" => 2,
         "backend" => 3,
         "qa" => 4,
         "data" => 5,

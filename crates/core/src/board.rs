@@ -119,10 +119,12 @@ pub fn assignments_prioritizing(
         let free = |m: &&Candidate<'_>| !busy.contains(&m.name);
         // A member that has left, or takes nothing new (`frontend-3`), hands its
         // tickets to its role.
-        let owner = if members.iter().any(|m| m.role == owner || m.name == owner) { owner } else { role_of(owner) };
-        let pick = if members.iter().any(|m| m.role == owner) {
+        let named_after = owner;
+        // `frontend` or `backend` is the software engineer's role, whoever holds it — the member of that name first.
+        let owner = if crate::roles::MERGED_INTO_ENGINEER.contains(&owner) { crate::roles::ENGINEER } else if members.iter().any(|m| crate::roles::canonical(m.role) == owner || m.name == owner) { owner } else { role_of(owner) };
+        let pick = if members.iter().any(|m| crate::roles::canonical(m.role) == owner) {
             // A role: whoever holds it and is free, the member named after it first.
-            members.iter().filter(|m| m.role == owner).filter(free).min_by_key(|m| m.name != owner)
+            members.iter().filter(|m| crate::roles::canonical(m.role) == owner).filter(free).min_by_key(|m| m.name != owner && m.name != named_after)
         } else {
             // A member's name (`frontend-2`): that member, when it is free.
             members.iter().filter(|m| m.name == owner).find(free)
@@ -145,10 +147,17 @@ fn came_back(ticket: &Ticket) -> bool {
         || ticket.branch.is_some() && ticket.note.as_deref().is_some_and(|n| n.starts_with("Reopened") || n.starts_with("Resumed") || n.starts_with("Design QA by "))
 }
 
-/// The role a numbered member's name stands for: `frontend-3` → `frontend`.
+/// The role a numbered member's name stands for: `engineer-3` → `engineer`;
+/// the roles the software engineer took over read as it: `frontend-3` →
+/// `engineer` ([`crate::roles::canonical`]).
 pub(crate) fn role_of(name: &str) -> &str {
+    crate::roles::canonical(numbered_base(name))
+}
+
+/// A numbered name without its number: `frontend-3` → `frontend`.
+pub(crate) fn numbered_base(name: &str) -> &str {
     match name.rsplit_once('-') {
-        Some((role, n)) if !role.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => role,
+        Some((base, n)) if !base.is_empty() && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => base,
         _ => name,
     }
 }
@@ -672,7 +681,7 @@ pub const SYSTEM_TOOL_COMMANDS: [&str; 3] = ["system", "matrix", "registry"];
 
 /// The roles that build a design system and products from it.
 pub fn builds_from_system(role: &str) -> bool {
-    matches!(role, "designer" | "frontend")
+    matches!(crate::roles::canonical(role), "designer" | crate::roles::ENGINEER)
 }
 
 /// The `kind` argument of `create_ticket` and `update_ticket`.
@@ -769,6 +778,10 @@ pub fn tools_for(role: &str) -> Vec<Value> {
     // Ad-hoc queries of the product's analytics: the PM's and the data-minded roles'.
     if crate::metrics::tool::may_query(role) {
         tools.push(crate::metrics::tool::query_tool());
+    }
+    // The reviewers finish a review with their verdict and its evidence.
+    if matches!(crate::roles::canonical(role), "qa" | crate::roles::SECURITY) {
+        tools.push(crate::review_gate::verdict_tool());
     }
     // The data analyst sets a hypothesis' metric and rule before it ships.
     if role == "data" {
@@ -2276,7 +2289,8 @@ mod tests {
         let tickets = [old, backend, preferred, waiting];
         assert_eq!(
             assignments_prioritizing(&tickets, &members, true, &[4, 2, 3]),
-            [(3, "frontend-2".into()), (1, "frontend-3".into())],
+            [(2, "frontend-2".into()), (3, "frontend-3".into())],
+            "a backend ticket is the software engineer's, whoever holds the role",
         );
     }
 
@@ -2311,6 +2325,14 @@ mod tests {
 
     #[test]
     fn a_ticket_of_a_member_who_left_goes_to_its_role() {
+        // A frontend's or backend's ticket is the software engineer's, whoever holds the role.
+        let engineers = [free("engineer", "engineer"), free("engineer-2", "engineer")];
+        assert_eq!(assignments(&[ticket(7, "backend"), ticket(8, "frontend")], &engineers, true), [(7, "engineer".into()), (8, "engineer-2".into())]);
+        // Members migrated under their old names: the one named after it first, else any engineer free.
+        let migrated = [free("backend", "engineer"), free("frontend", "engineer")];
+        assert_eq!(assignments(&[ticket(9, "frontend")], &migrated, true), [(9, "frontend".into())]);
+        let busy = [Candidate { name: "frontend", role: "engineer", free: false }, free("backend", "engineer")];
+        assert_eq!(assignments(&[ticket(9, "frontend")], &busy, true), [(9, "backend".into())]);
         let tickets = [ticket(1, "backend-3"), ticket(2, "frontend-2")];
         let members = [free("backend", "backend"), free("frontend-2", "frontend")];
         assert_eq!(assignments(&tickets, &members, true), [(1, "backend".into()), (2, "frontend-2".into())]);
@@ -2474,7 +2496,7 @@ mod tests {
         assert!(severity("frontend").is_none() && severity("pm").is_none());
         assert_eq!(design_tools_tool()["name"], DESIGN_TOOLS);
         assert!(names(tools_for("designer")).contains(&SYSTEM_TOOLS.to_owned()) && names(tools_for("frontend")).contains(&SYSTEM_TOOLS.to_owned()), "who builds the system and from it");
-        assert!(!names(tools_for("backend")).contains(&SYSTEM_TOOLS.to_owned()) && !names(tools(true)).contains(&SYSTEM_TOOLS.to_owned()));
+        assert!(!names(tools_for("qa")).contains(&SYSTEM_TOOLS.to_owned()) && !names(tools(true)).contains(&SYSTEM_TOOLS.to_owned()));
         assert!(!names(tools(false)).contains(&WORKDIR.to_owned()), "asked by the server, never offered");
         assert!(names(tools_for("pm")).contains(&crate::controls::CHANGE_SETTING.to_owned()), "the PM changes what the person asks it to");
         // A plan: written by the PM, reviewed by members — who write only their notes.

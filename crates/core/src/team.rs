@@ -161,7 +161,7 @@ pub fn check(args: &Value, team: &[Mate<'_>], tickets: &[Ticket], waiting: &[Tea
                 (Some(role), _) => role.to_owned(),
                 (None, _) => return Err(format!("Which role? {}.", roles_list())),
             };
-            let role = if role == "po" { roles::PM.to_owned() } else { role };
+            let role = if role == "po" { roles::PM.to_owned() } else { roles::canonical(&role).to_owned() };
             if role == roles::PM {
                 return Err("A squad has one PM: you. Propose another role.".into());
             }
@@ -393,7 +393,7 @@ mod tests {
         let err = |args: Value| check_args(args).unwrap_err();
         assert!(err(json!({ "role": "mobile", "reason": "r" })).contains("`add` or `remove`"));
         assert!(err(json!({ "change": "add", "role": "mobile" })).contains("reason"));
-        assert!(err(json!({ "change": "add", "role": "astronaut", "reason": "r" })).contains("No role called astronaut. Roles: designer, frontend, backend, mobile, qa, security, marketing, data"));
+        assert!(err(json!({ "change": "add", "role": "astronaut", "reason": "r" })).contains("No role called astronaut. Roles: designer, engineer, mobile, qa, security, marketing, data"));
         assert!(err(json!({ "change": "add", "role": "pm", "reason": "r" })).contains("one PM"));
         assert!(err(json!({ "change": "add", "role": "po", "reason": "r" })).contains("one PM"));
         assert!(err(json!({ "change": "add", "role": "custom", "reason": "r" })).contains("needs its name"));

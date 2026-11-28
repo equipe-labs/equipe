@@ -977,15 +977,14 @@ fn team(shell: &Shell, cx: &mut Context<Shell>) -> Vec<Section> {
 
 /// The roles a squad's new members are given models for, in the order a
 /// squad is put together.
-const ROLE_ORDER: [&str; 9] = [equipe_core::roles::PM, "designer", "frontend", "backend", "mobile", "qa", "security", "marketing", "data"];
+const ROLE_ORDER: [&str; 8] = [equipe_core::roles::PM, "designer", "engineer", "mobile", "qa", "security", "marketing", "data"];
 
 /// A role as the page names it.
 fn role_name(id: &str) -> &'static str {
     match id {
         "pm" => t!("welcome.role_pm"),
         "designer" => t!("welcome.role_designer"),
-        "frontend" => t!("welcome.role_frontend"),
-        "backend" => t!("welcome.role_backend"),
+        "engineer" | "frontend" | "backend" => t!("welcome.role_engineer"),
         "mobile" => t!("settings.role_mobile"),
         "qa" => t!("welcome.role_qa"),
         "security" => t!("welcome.role_security"),

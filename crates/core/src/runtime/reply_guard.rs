@@ -384,8 +384,11 @@ impl Runtime {
         let mut waiting: Vec<String> = self.waiting_now(squad).iter().map(|w| w.title.chars().take(80).collect()).collect();
         let cloud = crate::sprint::platform::Platform::discover().and_then(|p| crate::sprint::platform::cloud_facts_cached(&p));
         let paused = cloud.as_ref().and_then(|c| c.paused);
+        // A product never published has nothing live: "the live site already shows it" is false of it (Team Aman, 2026-11-28).
+        let never_live: Vec<(String, String)> =
+            cloud.as_ref().map(|c| c.never_live.iter().map(|app| (app.clone(), "it was never published — only its private preview address exists, so say \"on the preview\"".to_owned())).collect()).unwrap_or_default();
         waiting.extend(cloud.map(|c| c.waiting).unwrap_or_default());
-        let not_live = self
+        let mut not_live: Vec<(String, String)> = self
             .lanes(squad)
             .iter()
             .filter(|(_, l)| l.declared && (l.running || l.pending.is_some() || l.stuck.is_some()))
@@ -394,6 +397,7 @@ impl Runtime {
                 (board::project_name(Path::new(key)), how.to_owned())
             })
             .collect();
+        not_live.extend(never_live);
         Facts { language, waiting, paused, not_live }
     }
 
@@ -598,6 +602,13 @@ mod tests {
 
     #[test]
     fn a_claim_the_state_contradicts_holds_the_reply_with_the_facts() {
+        // A product never published: "the live site already shows it" is false (Team Aman's asap, 2026-11-28).
+        let mut never = facts();
+        never.not_live = vec![("asap".into(), "it was never published — only its private preview address exists".into())];
+        let c = check("The live site already does that: it shows asap everywhere.", &[], &never);
+        assert!(c.failed.iter().any(|f| f.contains("never published")), "{c:?}");
+        assert!(check("It's renamed to asap now.", &[], &never).failed.iter().any(|f| f.contains("never published")), "a rename claim is checked too");
+        assert!(check("미리보기에서 asap으로 보여요. 공개는 말씀하시면 할게요.", &[], &never).failed.is_empty(), "the preview, said so, is true");
         let mut f = facts();
         f.waiting = vec!["confirming the goal for o1path (Goal page)".into(), "this week's plan for o1path: 3 idea(s) to say go to (Goal page)".into()];
         let c = check("이번 주 원패스 계획을 보냈어요. 지금 기다리는 건 없어요.", &[], &f);

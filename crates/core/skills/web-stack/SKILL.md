@@ -23,7 +23,7 @@ and Pages included; and one icon family has one stroke weight and one grid, whic
 are never emoji and never one-off drawings unless the brand's own set says so; an icon-only button has an
 accessible name.
 
-{{#if role:frontend}}
+{{#if role:engineer}}
 If your platform tools include `scaffold_app`, start there: it writes this stack, themed and building, with the
 tokens script, a first set of components and the `design/` folder. Add components with `npx shadcn@latest add`, not by
 writing look-alikes.

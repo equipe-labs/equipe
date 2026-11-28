@@ -164,8 +164,10 @@ pub fn assign_fitted(tickets: &[Ticket], members: &[Member<'_>], single_project:
             continue;
         }
         // A member that has left hands its tickets to its role.
-        let owner = if members.iter().any(|m| m.role == owner || m.name == owner) { owner } else { board::role_of(owner) };
-        let by_role = members.iter().any(|m| m.role == owner);
+        // `frontend` or `backend` is the software engineer's role, whoever holds it — the member of that name first.
+        let named_after = owner;
+        let owner = if crate::roles::MERGED_INTO_ENGINEER.contains(&owner) { crate::roles::ENGINEER } else if members.iter().any(|m| crate::roles::canonical(m.role) == owner || m.name == owner) { owner } else { board::role_of(owner) };
+        let by_role = members.iter().any(|m| crate::roles::canonical(m.role) == owner);
         let places = crate::flow::paths(&format!("{} {}", ticket.title, ticket.body));
         let free = |at: &usize| {
             let m = &members[*at];
@@ -177,9 +179,9 @@ pub fn assign_fitted(tickets: &[Ticket], members: &[Member<'_>], single_project:
             m.takes_new && runs[*at] < m.limit && room.get(&m.engine).copied().unwrap_or(0) > 0 && admitted && apart && !finishing
         };
         let pick = (0..members.len())
-            .filter(|at| if by_role { members[*at].role == owner } else { members[*at].name == owner })
+            .filter(|at| if by_role { crate::roles::canonical(members[*at].role) == owner } else { members[*at].name == owner })
             .filter(free)
-            .min_by_key(|at| (held[*at], members[*at].joined));
+            .min_by_key(|at| (held[*at], members[*at].name != named_after, members[*at].joined));
         if let Some(at) = pick {
             held[at] += 1;
             runs[at] += 1;

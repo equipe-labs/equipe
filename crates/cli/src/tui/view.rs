@@ -1266,10 +1266,10 @@ fn header(app: &App, theme: Theme, narrow: bool, width: usize) -> (Vec<Span<'sta
 /// Each member's own mark and colour, so the squad tells apart at a glance.
 /// The built-in roles have theirs; anyone else gets one from their name.
 fn look(role: &str, name: &str) -> (&'static str, usize) {
-    match role {
+    match equipe_core::roles::canonical(role) {
         "pm" => ("◆", 0),
         "designer" => ("✦", 1),
-        "frontend" => ("●", 2),
+        "engineer" => ("●", 2),
         "backend" => ("■", 3),
         "qa" => ("◎", 4),
         "data" => ("▲", 5),

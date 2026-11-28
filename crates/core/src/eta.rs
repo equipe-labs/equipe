@@ -8,10 +8,7 @@ const MIN_SAMPLES: usize = 3;
 
 /// The role a member's name is of: `frontend` for `frontend-2`.
 pub fn role_of(name: &str) -> &str {
-    match name.rsplit_once('-') {
-        Some((role, n)) if !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) => role,
-        _ => name,
-    }
+    crate::board::role_of(name)
 }
 
 /// What `samples` (seconds) typically took: their median, once there are
@@ -53,8 +50,8 @@ mod tests {
             h("designer", TicketKind::Task, 6),
             h("pm-2", TicketKind::Task, 8),
         ];
-        // The median: one long wait doesn't sway it.
-        assert_eq!(ticket_time(&history, "frontend-3", TicketKind::Code), Some(30 * 60));
+        // The median: one long wait doesn't sway it. Frontend and backend are one engineer now: one history.
+        assert_eq!(ticket_time(&history, "frontend-3", TicketKind::Code), Some(20 * 60));
         // Backend has one ticket of its own: everyone's code tickets.
         assert_eq!(ticket_time(&history, "backend", TicketKind::Code), Some(20 * 60));
         assert_eq!(ticket_time(&history, "qa", TicketKind::Task), Some(6 * 60));

@@ -129,7 +129,7 @@ pub const CATALOG: [Service; 10] = [
         kind: SecretKind::Other,
         mcp: Some(McpService {
             url: "https://api.mobbin.com/mcp",
-            roles: &["designer", "frontend"],
+            roles: &["designer", "engineer"],
             sign_up_url: "https://mobbin.com/pricing",
             docs_url: "https://docs.mobbin.com/mcp/introduction.md",
             key_header: None,
@@ -145,7 +145,7 @@ pub const CATALOG: [Service; 10] = [
         kind: SecretKind::ApiKey,
         mcp: Some(McpService {
             url: "https://21st.dev/api/mcp",
-            roles: &["designer", "frontend"],
+            roles: &["designer", "engineer"],
             sign_up_url: "https://21st.dev/mcp",
             docs_url: "https://21st.dev/llms.txt",
             key_header: Some("x-api-key"),
@@ -477,7 +477,7 @@ mod tests {
     fn mobbin_is_an_mcp_service_for_designers_and_frontend_engineers() {
         let mobbin = Service::by_id("mobbin").unwrap();
         let mcp = mobbin.mcp.unwrap();
-        assert_eq!((mcp.url, mcp.roles), ("https://api.mobbin.com/mcp", &["designer", "frontend"][..]));
+        assert_eq!((mcp.url, mcp.roles), ("https://api.mobbin.com/mcp", &["designer", "engineer"][..]));
         assert_eq!((mcp.sign_up_url, mcp.docs_url), ("https://mobbin.com/pricing", "https://docs.mobbin.com/mcp/introduction.md"));
         assert!(mobbin.is_mcp() && !mobbin.takes_key() && mobbin.sign_in_target().is_none(), "no key, no browser sign-in: its server's own");
         assert_eq!(Service::of("api.mobbin.com").map(|s| s.id), Some("mobbin"));
@@ -486,7 +486,7 @@ mod tests {
         let ui = Service::by_id("21st").unwrap();
         let m = ui.mcp.unwrap();
         assert_eq!((m.url, m.key_header, ui.key_url, ui.key_name), ("https://21st.dev/api/mcp", Some("x-api-key"), Some("https://21st.dev/mcp"), Some("21st-api-key")));
-        assert_eq!(m.roles, &["designer", "frontend"][..]);
+        assert_eq!(m.roles, &["designer", "engineer"][..]);
     }
 
     #[test]

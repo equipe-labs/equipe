@@ -328,7 +328,7 @@ fn percent(part: u64, whole: u64) -> f64 {
 
 /// The member a lane's name stands for: `frontend-12` → `frontend`.
 fn base_member(name: &str) -> &str {
-    crate::board::role_of(name)
+    crate::board::numbered_base(name)
 }
 
 fn kind_of(t: &TurnRow) -> &'static str {

@@ -187,10 +187,10 @@ impl Palette {
 /// terminal console's colours; its marks are its own, in text).
 pub fn look(role: &str, name: &str) -> (crate::icons::Icon, usize) {
     use crate::icons::Icon;
-    match role {
+    match equipe_core::roles::canonical(role) {
         "pm" => (Icon::Compass, 0),
         "designer" => (Icon::PenTool, 1),
-        "frontend" => (Icon::AppWindow, 2),
+        "engineer" => (Icon::AppWindow, 2),
         "backend" => (Icon::Server, 3),
         "qa" => (Icon::Bug, 4),
         "data" => (Icon::Chart, 5),

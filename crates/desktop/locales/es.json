@@ -2906,6 +2906,8 @@
   "welcome.role_pm_desc": "Convierte lo que quieres en un plan y tickets. Siempre está en el equipo: es tu contacto principal.",
   "welcome.role_designer": "Diseño",
   "welcome.role_designer_desc": "Flujos, interfaz, sistema de diseño y marca",
+  "welcome.role_engineer": "Ingeniero",
+  "welcome.role_engineer_desc": "Construye pantallas, servidor y datos de principio a fin",
   "welcome.role_frontend": "Frontend",
   "welcome.role_frontend_desc": "Crea páginas, componentes y lógica de cliente",
   "welcome.role_backend": "Backend",

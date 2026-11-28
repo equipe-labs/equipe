@@ -548,7 +548,7 @@ pub fn ticket_block(path: &str, cases: &[Case], lang: Lang) -> String {
 /// breaks, the designer's the screens, QA's whether it can be tested.
 pub fn angle(role: &str) -> &'static str {
     match role {
-        "frontend" | "backend" | "mobile" => "engineer",
+        "frontend" | "backend" | "engineer" | "mobile" => "engineer",
         "designer" => "designer",
         "qa" => "qa",
         _ => "general",

@@ -311,6 +311,21 @@ pub struct CloudFacts {
     pub waiting: Vec<String>,
     /// Whether the team's credits pause its work (`/v1/credits`); `None`: not known.
     pub paused: Option<bool>,
+    /// The apps never published: only their private preview exists
+    /// (`app_preview` in `/v1/resources`). Nothing of them is live.
+    pub never_live: Vec<String>,
+}
+
+/// The apps in a `/v1/resources` answer that were never published: shown
+/// only on their private preview address (kind `app_preview`).
+pub fn never_live_from(v: &Value) -> Vec<String> {
+    v.get("resources")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|x| x.get("kind").and_then(Value::as_str) == Some("app_preview") && x.get("app_archived").and_then(Value::as_bool) != Some(true))
+        .filter_map(|x| x.get("name").and_then(Value::as_str).map(str::to_owned))
+        .collect()
 }
 
 /// The apps in a `/v1/resources` answer, by name (archived ones left out).
@@ -347,7 +362,9 @@ pub fn waiting_from(app: &str, v: &Value) -> Vec<String> {
 impl Platform {
     /// [`CloudFacts`], read now: `/v1/resources`, each app's `/v1/oploop`, `/v1/credits`.
     pub async fn cloud_facts(&self) -> Result<CloudFacts, String> {
-        let apps = apps_from(&self.get("/v1/resources").await?);
+        let resources = self.get("/v1/resources").await?;
+        let apps = apps_from(&resources);
+        let never_live = never_live_from(&resources);
         let mut waiting = Vec::new();
         for app in apps.iter().take(8) {
             if let Ok(v) = self.get(&format!("/v1/oploop?app={app}")).await {
@@ -355,7 +372,7 @@ impl Platform {
             }
         }
         let paused = self.get("/v1/credits").await.ok().and_then(|v| v.get("paused").and_then(Value::as_bool));
-        Ok(CloudFacts { waiting, paused })
+        Ok(CloudFacts { waiting, paused, never_live })
     }
 }
 

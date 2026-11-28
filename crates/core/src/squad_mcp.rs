@@ -764,7 +764,7 @@ mod tests {
     #[test]
     fn a_catalog_name_alone_is_its_official_server_for_its_roles() {
         let m = mobbin();
-        assert_eq!((m.url.as_str(), m.roles.clone(), m.catalog.as_deref(), m.transport, m.enabled), ("https://api.mobbin.com/mcp", vec!["designer".to_owned(), "frontend".to_owned()], Some("mobbin"), McpTransport::Http, true));
+        assert_eq!((m.url.as_str(), m.roles.clone(), m.catalog.as_deref(), m.transport, m.enabled), ("https://api.mobbin.com/mcp", vec!["designer".to_owned(), "engineer".to_owned()], Some("mobbin"), McpTransport::Http, true));
         assert_eq!(label(&m), "Mobbin");
         // At another address it is someone's own server, named the same.
         let own = server("mobbin", Some("https://mcp.example.com/mobbin"), Some(&["qa".to_owned()]), None).unwrap();
@@ -815,7 +815,8 @@ mod tests {
         servers[1].auth = McpAuth::Engine;
         assert_eq!(names("designer", Engine::Codex, &servers), ["mobbin"], "signed in by the engine: Codex speaks streamable HTTP only");
         servers[1].auth = McpAuth::Oauth;
-        assert_eq!(names("backend", Engine::Claude, &servers), ["docs"], "no roles named: everyone");
+        assert_eq!(names("qa", Engine::Claude, &servers), ["docs"], "no roles named: everyone");
+        assert_eq!(names("backend", Engine::Claude, &servers), ["mobbin", "docs"], "a backend is the software engineer, whom mobbin serves");
         servers[0].enabled = false;
         assert_eq!(names("frontend", Engine::Claude, &servers), ["docs"], "off: no one");
         // Replaced in place by name; at most MOST_SERVERS.
@@ -878,7 +879,7 @@ mod tests {
     fn a_keyed_server_is_the_catalogs_at_its_own_address_only() {
         let ui = server("21st", None, None, None).unwrap();
         assert_eq!(ui.auth, McpAuth::Key { secret: "21st-api-key".into(), header: "x-api-key".into() });
-        assert_eq!((ui.url.as_str(), ui.roles.clone()), ("https://21st.dev/api/mcp", vec!["designer".to_owned(), "frontend".to_owned()]));
+        assert_eq!((ui.url.as_str(), ui.roles.clone()), ("https://21st.dev/api/mcp", vec!["designer".to_owned(), "engineer".to_owned()]));
         // At another address, someone's own server: no key of the catalog's goes to it.
         assert_eq!(server("21st", Some("https://mcp.example.com/x"), None, None).unwrap().auth, McpAuth::Oauth);
         assert_eq!(key_state(false), McpState::NeedsKey, "never needs sign-in");
@@ -938,7 +939,7 @@ mod tests {
         let names = |role: &str| for_member(&servers, role, Engine::Claude).iter().map(|s| s.name.clone()).collect::<Vec<_>>();
         assert_eq!(names(crate::roles::PM), ["mobbin", "21st"], "the libraries, not the squad's own server for designers");
         assert!(for_references(&m, crate::roles::PM) && !for_references(&m, "designer") && !for_references(&m, "backend"));
-        assert!(names("backend").is_empty());
+        assert!(names("qa").is_empty());
         // Connected for the PM by the person: all of it, as for anyone it serves.
         let mine = McpServer { roles: vec![crate::roles::PM.to_owned()], ..m.clone() };
         assert!(!for_references(&mine, crate::roles::PM));

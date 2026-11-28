@@ -116,7 +116,9 @@ end your turn now with a short line."
             crate::daemon_log!("equipe: {squad}: T-{on}'s baton stopped after {passes} hand-overs since its last hand-in: its holder hands it in");
             return Err(why);
         }
-        let staffed = self.member_id(squad, &to).is_some() || self.team(squad).iter().any(|(_, _, role)| *role == to);
+        // To `frontend` or `backend`: the software engineer, whoever holds it.
+        let to = if self.member_id(squad, &to).is_none() { roles::canonical(&to).to_owned() } else { to };
+        let staffed = self.member_id(squad, &to).is_some() || self.team(squad).iter().any(|(_, _, role)| roles::canonical(role) == to);
         if !staffed {
             return Err(format!("Nobody on the squad is {to}. Pass it to a role the squad has, or hand it in."));
         }
@@ -269,6 +271,10 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
     }
 
     pub(super) fn work_ready(&mut self, squad: &str, ticket: TicketId, prompt: String) {
+        // Its independent reviews first (`runtime::review_gate`): it comes back here on their verdicts.
+        if self.hold_for_review(squad, ticket) {
+            return;
+        }
         let Some(found) = self.find_ticket(squad, ticket) else { return };
         let Some((landing, pm_accepts, pms_own)) = self.landing_of(squad, &found) else { return };
         match landing {

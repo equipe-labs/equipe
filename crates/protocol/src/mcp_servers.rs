@@ -130,7 +130,9 @@ fn on() -> bool {
 impl McpServer {
     /// Whether a member of `role` gets it (when it is on).
     pub fn serves(&self, role: &str) -> bool {
-        self.roles.is_empty() || self.roles.iter().any(|r| r.eq_ignore_ascii_case(role))
+        // The frontend and backend engineers became one software engineer: a server for either serves it.
+        let canonical = |r: &str| if ["frontend", "backend"].iter().any(|old| r.eq_ignore_ascii_case(old)) { "engineer".to_owned() } else { r.to_ascii_lowercase() };
+        self.roles.is_empty() || self.roles.iter().any(|r| canonical(r) == canonical(role))
     }
 
     /// Whether a member on `engine` can be given it: through equipe's proxy

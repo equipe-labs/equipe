@@ -129,8 +129,7 @@ fn role_words(id: &str) -> (&'static str, &'static str) {
     match id {
         "pm" => (t!("welcome.role_pm"), t!("welcome.role_pm_desc")),
         "designer" => (t!("welcome.role_designer"), t!("welcome.role_designer_desc")),
-        "frontend" => (t!("welcome.role_frontend"), t!("welcome.role_frontend_desc")),
-        "backend" => (t!("welcome.role_backend"), t!("welcome.role_backend_desc")),
+        "engineer" | "frontend" | "backend" => (t!("welcome.role_engineer"), t!("welcome.role_engineer_desc")),
         "qa" => (t!("welcome.role_qa"), t!("welcome.role_qa_desc")),
         "security" => (t!("welcome.role_security"), t!("welcome.role_security_desc")),
         "marketing" => (t!("welcome.role_marketing"), t!("welcome.role_marketing_desc")),

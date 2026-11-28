@@ -265,6 +265,10 @@ If its landing stopped (you were told so), `accept_work` lands it.",
         if !named.is_empty() && !self.journal(squad).is_some_and(|j| j.pm_accepts()) {
             return Err("In this squad the person accepts work themselves: put it to them with propose_accept.".into());
         }
+        // Done needs evidence: not while its review runs, nor after its platform checklist failed.
+        if let Some(why) = self.not_yet_acceptable(squad, &named) {
+            return Err(why);
+        }
         let checked = board::arg_str(args, "checked").map(str::trim).unwrap_or_default().to_owned();
         if !named.is_empty() && checked.is_empty() {
             return Err("Say in `checked` what you checked and found — it is kept on the ticket for the person.".into());

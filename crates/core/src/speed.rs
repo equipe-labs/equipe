@@ -144,10 +144,11 @@ pub fn analyze(input: &Input<'_>) -> Analysis {
             continue;
         };
         // A member that has left hands its tickets to its role.
-        let owner = if crew.iter().any(|m| m.role == owner || m.name == owner) { owner } else { board::role_of(owner) };
+        // `frontend` or `backend` is the software engineer's role, whoever holds it.
+        let owner = if crate::roles::MERGED_INTO_ENGINEER.contains(&owner) { crate::roles::ENGINEER } else if crew.iter().any(|m| crate::roles::canonical(&m.role) == owner || m.name == owner) { owner } else { board::role_of(owner) };
         // An owner that is a role goes to the members of that role; else to the member of that name.
-        let by_role = crew.iter().any(|m| m.role == owner);
-        let takers: Vec<usize> = (0..crew.len()).filter(|&i| if by_role { crew[i].role == owner } else { crew[i].name == owner }).collect();
+        let by_role = crew.iter().any(|m| crate::roles::canonical(&m.role) == owner);
+        let takers: Vec<usize> = (0..crew.len()).filter(|&i| if by_role { crate::roles::canonical(&crew[i].role) == owner } else { crew[i].name == owner }).collect();
         if takers.is_empty() {
             flow.no_member += 1;
             continue;

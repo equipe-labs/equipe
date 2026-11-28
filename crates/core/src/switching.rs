@@ -429,9 +429,10 @@ impl Reach {
 /// engine. Off Claude: backend, then mobile and frontend…; off Codex: data and
 /// qa first. The PM always last. A role of the person's own sits before the designer.
 pub fn rank(to: Engine, role: &str) -> usize {
-    const TO_CODEX: [&str; 9] = ["backend", "mobile", "frontend", "data", "qa", "security", "marketing", "designer", "pm"];
-    const TO_CLAUDE: [&str; 9] = ["data", "qa", "security", "backend", "mobile", "frontend", "marketing", "designer", "pm"];
+    const TO_CODEX: [&str; 8] = ["engineer", "mobile", "data", "qa", "security", "marketing", "designer", "pm"];
+    const TO_CLAUDE: [&str; 8] = ["data", "qa", "security", "engineer", "mobile", "marketing", "designer", "pm"];
     let order = if to == Engine::Codex { TO_CODEX } else { TO_CLAUDE };
+    let role = crate::roles::canonical(role);
     let designer = order.iter().position(|r| *r == "designer").unwrap_or(0);
     order.iter().position(|r| *r == role).map_or(designer * 2 - 1, |at| at * 2)
 }
@@ -439,7 +440,7 @@ pub fn rank(to: Engine, role: &str) -> usize {
 /// The roles a Shift moves: the implementation roles off Claude, the reviewers and data off Codex.
 fn shifts(to: Engine, role: &str) -> bool {
     match to {
-        Engine::Codex => matches!(role, "backend" | "mobile" | "frontend"),
+        Engine::Codex => crate::roles::builds(role),
         Engine::Claude => matches!(role, "data" | "qa" | "security"),
     }
 }
@@ -730,9 +731,8 @@ pub struct Seat {
 /// on Sonnet, the reviewer and data on Codex's Sol. `None`: the person's own role.
 pub fn seat(role: &str) -> Option<Seat> {
     let s = |engine, model| Some(Seat { engine, model, effort: "medium" });
-    match role {
-        "pm" | "designer" | "backend" | "mobile" | "marketing" => s(Engine::Claude, "opus"),
-        "frontend" => s(Engine::Claude, "sonnet"),
+    match crate::roles::canonical(role) {
+        "pm" | "designer" | "engineer" | "mobile" | "marketing" => s(Engine::Claude, "opus"),
         "qa" | "security" | "data" => s(Engine::Codex, "gpt-6.1-sol"),
         _ => None,
     }

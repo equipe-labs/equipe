@@ -725,11 +725,35 @@ impl Journal {
                ticket INTEGER NOT NULL,
                generation INTEGER NOT NULL,
                at INTEGER NOT NULL
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS independent_reviews (
+               review INTEGER PRIMARY KEY,
+               ticket INTEGER NOT NULL,
+               reviewer TEXT NOT NULL,
+               round INTEGER NOT NULL,
+               verdict TEXT,
+               findings TEXT,
+               by TEXT,
+               created_at INTEGER NOT NULL,
+               finished_at INTEGER
+             );
+             CREATE INDEX IF NOT EXISTS independent_reviews_ticket ON independent_reviews(ticket);
+             CREATE TABLE IF NOT EXISTS qa_checks (
+               ticket INTEGER NOT NULL,
+               at INTEGER NOT NULL,
+               ok INTEGER NOT NULL,
+               detail TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS qa_checks_ticket ON qa_checks(ticket, at);",
         )?;
         for column in ["role TEXT", "name TEXT", "joined INTEGER", "mode TEXT"] {
             let _ = conn.execute(&format!("ALTER TABLE sessions ADD COLUMN {column}"), []);
         }
+        // The frontend and backend engineers became one software engineer
+        // (`roles::ENGINEER`): each member keeps its name — and so the
+        // person's name and picture for it — its history and its work.
+        let _ = conn.execute("UPDATE sessions SET role = 'engineer' WHERE role IN ('frontend', 'backend')", []);
+        let _ = conn.execute("UPDATE turn_times SET role = 'engineer' WHERE role IN ('frontend', 'backend')", []);
         // Why an active run is paused, while it is (JSON, `RunPause`); what a
         // run stalled waiting on the person waited for.
         for column in ["head TEXT", "dirty INTEGER", "pause TEXT", "waited_for TEXT"] {
@@ -1362,12 +1386,14 @@ impl Journal {
     /// What new members of a role start with on an engine, where the person
     /// set it; every other role takes equipe's recommendation.
     pub fn role_models(&self) -> Vec<equipe_protocol::RoleModel> {
-        self.meta("role_models").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+        let kept: Vec<equipe_protocol::RoleModel> = self.meta("role_models").and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default();
+        merged_role_models(kept)
     }
 
     /// Keep `default` for its role and engine: one with neither a model nor
     /// an effort goes back to the recommendation.
-    pub fn set_role_model(&self, default: equipe_protocol::RoleModel) -> Result<Vec<equipe_protocol::RoleModel>> {
+    pub fn set_role_model(&self, mut default: equipe_protocol::RoleModel) -> Result<Vec<equipe_protocol::RoleModel>> {
+        default.role = crate::roles::canonical(&default.role).to_owned();
         let mut all = self.role_models();
         all.retain(|d| (d.role.as_str(), d.engine) != (default.role.as_str(), default.engine));
         if default.model.is_some() || default.effort.is_some() {
@@ -2713,6 +2739,68 @@ impl Journal {
 
     /// Keep how `qa` ended: `pass`, `changes` or `cancelled`, and by whom.
     /// The first verdict stays.
+    /// Review ticket `review` checks `ticket` as `reviewer`, in `round` (`crate::review_gate`).
+    pub fn start_independent_review(&self, review: TicketId, ticket: TicketId, reviewer: &str, round: u32) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO independent_reviews (review, ticket, reviewer, round, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![review, ticket, reviewer, round, now()],
+        )?;
+        Ok(())
+    }
+
+    /// `ticket`'s independent reviews, oldest first.
+    pub fn independent_reviews(&self, ticket: TicketId) -> Vec<IndependentReview> {
+        let Ok(mut stmt) = self.conn.prepare(
+            "SELECT review, ticket, reviewer, round, verdict, findings, by, created_at, finished_at FROM independent_reviews WHERE ticket = ?1 ORDER BY round, review",
+        ) else {
+            return Vec::new();
+        };
+        stmt.query_map([ticket], independent_review_row).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// The independent review review ticket `review` is, if it is one.
+    pub fn independent_review(&self, review: TicketId) -> Option<IndependentReview> {
+        self.conn
+            .query_row(
+                "SELECT review, ticket, reviewer, round, verdict, findings, by, created_at, finished_at FROM independent_reviews WHERE review = ?1",
+                [review],
+                independent_review_row,
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Its reviewer's word on review `review` (`pass`, `changes`, or `cancelled`), once.
+    pub fn set_independent_verdict(&self, review: TicketId, verdict: &str, findings: &str, by: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE independent_reviews SET verdict = ?2, findings = ?3, by = ?4, finished_at = ?5 WHERE review = ?1 AND verdict IS NULL",
+            params![review, verdict, findings, by, now()],
+        )?;
+        Ok(())
+    }
+
+    /// How a squad's independent reviews went since `since`: `(reviewer, verdict, round)` each.
+    pub fn independent_reviews_since(&self, since: u64) -> Vec<(String, Option<String>, u32)> {
+        let Ok(mut stmt) = self.conn.prepare("SELECT reviewer, verdict, round FROM independent_reviews WHERE created_at >= ?1") else { return Vec::new() };
+        stmt.query_map([since as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// The platform's `qa_check` answered on `ticket`'s app: kept, the last one decides.
+    pub fn record_qa_check(&self, ticket: TicketId, ok: bool, detail: &str) -> Result<()> {
+        self.conn.execute("INSERT INTO qa_checks (ticket, at, ok, detail) VALUES (?1, ?2, ?3, ?4)", params![ticket, now(), ok, detail])?;
+        Ok(())
+    }
+
+    /// The last `qa_check` on `ticket`: whether it passed, and what failed.
+    pub fn last_qa_check(&self, ticket: TicketId) -> Option<(bool, String)> {
+        self.conn
+            .query_row("SELECT ok, detail FROM qa_checks WHERE ticket = ?1 ORDER BY at DESC, rowid DESC LIMIT 1", [ticket], |r| Ok((r.get::<_, bool>(0)?, r.get(1)?)))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
     pub fn set_design_qa_verdict(&self, qa: TicketId, verdict: &str, by: &str) -> Result<()> {
         self.conn.execute(
             "UPDATE design_qa_runs SET verdict = ?2, verdict_by = ?3, finished_at = ?4 WHERE qa = ?1 AND verdict IS NULL",
@@ -3695,6 +3783,60 @@ impl Journal {
     }
 }
 
+/// One independent review of a builder's change (`crate::review_gate`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndependentReview {
+    /// The review's own ticket.
+    pub review: TicketId,
+    /// The change it checks.
+    pub ticket: TicketId,
+    pub reviewer: String,
+    pub round: u32,
+    /// `pass`, `changes` or `cancelled`; `None` while it runs.
+    pub verdict: Option<String>,
+    pub findings: Option<String>,
+    pub by: Option<String>,
+    pub created_at: u64,
+    pub finished_at: Option<u64>,
+}
+
+fn independent_review_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<IndependentReview> {
+    Ok(IndependentReview {
+        review: r.get(0)?,
+        ticket: r.get(1)?,
+        reviewer: r.get(2)?,
+        round: r.get(3)?,
+        verdict: r.get(4)?,
+        findings: r.get(5)?,
+        by: r.get(6)?,
+        created_at: r.get::<_, i64>(7)?.max(0) as u64,
+        finished_at: r.get::<_, Option<i64>>(8)?.map(|t| t.max(0) as u64),
+    })
+}
+
+/// Role defaults as they read now: a frontend's or backend's is the
+/// software engineer's (`roles::canonical`). Where several say something
+/// for the engineer on one engine, its own wins, then the backend's, then
+/// the frontend's.
+fn merged_role_models(kept: Vec<equipe_protocol::RoleModel>) -> Vec<equipe_protocol::RoleModel> {
+    let rank = |role: &str| match role {
+        crate::roles::ENGINEER => 0,
+        "backend" => 1,
+        _ => 2,
+    };
+    let mut ordered = kept;
+    ordered.sort_by_key(|d| rank(&d.role));
+    let mut out: Vec<equipe_protocol::RoleModel> = Vec::new();
+    for mut d in ordered {
+        d.role = crate::roles::canonical(&d.role).to_owned();
+        if !out.iter().any(|o| o.role == d.role && o.engine == d.engine) {
+            out.push(d);
+        }
+    }
+    out.sort_by(|a, b| (a.role.as_str(), a.engine as u8).cmp(&(b.role.as_str(), b.engine as u8)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4031,6 +4173,48 @@ mod tests {
         let j = Journal::open(&path).unwrap();
         let open = j.open_sessions().unwrap();
         assert_eq!((open[0].id, open[0].member.clone()), (5, None));
+    }
+
+    #[test]
+    fn frontend_and_backend_members_become_software_engineers_under_their_own_names() {
+        let home = temp_home();
+        let path = home.join("squad.db");
+        {
+            let j = Journal::open(&path).unwrap();
+            j.conn
+                .execute_batch(
+                    "INSERT INTO sessions (id, engine, access, cwd, created_at, updated_at, role, name, joined) VALUES
+                       (1, 'claude', 'edit_files', '/r', 1, 1, 'frontend', 'frontend', 1),
+                       (2, 'claude', 'edit_files', '/r', 1, 1, 'backend', 'backend', 2),
+                       (3, 'claude', 'read_only', '/r', 1, 1, 'qa', 'qa', 3);
+                     INSERT INTO turn_times (role, seconds, at) VALUES ('backend', 60, 1);",
+                )
+                .unwrap();
+        }
+        let j = Journal::open(&path).unwrap();
+        let members: Vec<(Option<String>, Option<String>)> = j.open_sessions().unwrap().into_iter().map(|s| (s.member.as_ref().map(|m| m.name.clone()), s.member.map(|m| m.role))).collect();
+        assert_eq!(
+            members,
+            [(Some("frontend".into()), Some("engineer".into())), (Some("backend".into()), Some("engineer".into())), (Some("qa".into()), Some("qa".into()))],
+            "names (and so the person's names and pictures for them) kept, roles merged"
+        );
+        assert_eq!(j.turn_times("engineer").unwrap().len(), 1, "how long its work took stays its history");
+    }
+
+    #[test]
+    fn independent_reviews_and_qa_checks_are_kept_per_change() {
+        let j = Journal::for_squad(&temp_home(), "acme").unwrap();
+        j.start_independent_review(11, 10, "security", 1).unwrap();
+        j.start_independent_review(12, 10, "qa", 1).unwrap();
+        assert_eq!(j.independent_reviews(10).iter().map(|r| (r.review, r.verdict.clone())).collect::<Vec<_>>(), [(11, None), (12, None)]);
+        j.set_independent_verdict(11, "changes", "POST /api/meetings takes past dates", "security").unwrap();
+        j.set_independent_verdict(11, "pass", "", "security").unwrap();
+        assert_eq!(j.independent_review(11).unwrap().verdict.as_deref(), Some("changes"), "the first word stays");
+        assert_eq!(j.independent_review(12).unwrap().ticket, 10);
+        assert!(j.last_qa_check(10).is_none());
+        j.record_qa_check(10, false, "legal_pages: no /privacy").unwrap();
+        j.record_qa_check(10, true, "").unwrap();
+        assert_eq!(j.last_qa_check(10), Some((true, String::new())), "the last one decides");
     }
 
     #[test]
@@ -4649,7 +4833,8 @@ mod tests {
         let j = Journal::for_squad(&home, "acme").unwrap();
         assert_eq!(
             j.role_models(),
-            [set("designer", Engine::Claude, Some("fable"), Some("max")), set("frontend", Engine::Codex, None, Some("high")), set("frontend", Engine::Claude, Some("sonnet"), None)]
+            [set("designer", Engine::Claude, Some("fable"), Some("max")), set("engineer", Engine::Codex, None, Some("high")), set("engineer", Engine::Claude, Some("sonnet"), None)],
+            "a frontend's default is the software engineer's"
         );
         let left = j.set_role_model(set("frontend", Engine::Codex, None, None)).unwrap();
         assert_eq!(left.len(), 2, "nothing set is the recommendation again");
