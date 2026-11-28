@@ -57,7 +57,7 @@ instead: the PM can propose adding one.",
         let projects = self.projects(squad);
         let project = missing.project.as_deref().and_then(|p| board::resolve_project(p, &projects)).or_else(|| blocked.project.clone());
         let title = rules::title(&missing.what);
-        let made = Ticket {
+        let made = Ticket { summary: None,
             id: 0,
             title: title.clone(),
             body: rules::body(missing, blocked, by, note),

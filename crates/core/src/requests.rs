@@ -1116,7 +1116,7 @@ mod tests {
     use crate::i18n::{Lang, core};
 
     fn ticket(id: TicketId, title: &str, status: TicketStatus) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: title.into(),
             body: String::new(),

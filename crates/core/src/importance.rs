@@ -477,7 +477,7 @@ mod tests {
     use super::*;
 
     fn ticket(id: TicketId, title: &str, status: TicketStatus, priority: Priority, depends_on: &[TicketId]) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: title.into(),
             body: String::new(),

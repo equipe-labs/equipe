@@ -683,7 +683,7 @@ async fn an_approved_recovery_waiting_across_a_restart_starts_exactly_once() {
 /// A ticket as an older equipe, or the board before now, left it: written
 /// straight into the squad's journal, its kind a task unless changed.
 fn plain(title: &str, status: TicketStatus, owner: &str, assignee: Option<&str>, depends_on: &[u32]) -> Ticket {
-    Ticket {
+    Ticket { summary: None,
         id: 0,
         title: title.into(),
         body: "-".into(),

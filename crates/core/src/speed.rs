@@ -248,7 +248,7 @@ mod tests {
     use equipe_protocol::{Priority, TicketKind};
 
     fn ticket(id: TicketId, status: TicketStatus, deps: &[TicketId]) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: format!("T{id}"),
             body: String::new(),

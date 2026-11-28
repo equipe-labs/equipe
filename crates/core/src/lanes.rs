@@ -252,7 +252,7 @@ mod tests {
     use equipe_protocol::{PlanWindow, TicketKind};
 
     fn ticket(id: TicketId, owner: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: format!("T{id}"),
             body: String::new(),

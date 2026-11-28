@@ -105,6 +105,12 @@ impl Runtime {
                 continue;
             }
             let record = journal.ticket_entries(id).unwrap_or_default();
+            // Put back to todo by the PM after it went over: that is its go-on, a fresh budget from here.
+            if spend::went_on(&record) {
+                let _ = journal.ticket_event(id, crate::lead_time::EQUIPE, spend::STOP, &spend::go_on_line(tokens));
+                crate::daemon_log!("equipe: {squad}: T-{id} goes on: the PM put it back to todo at {tokens} tokens");
+                continue;
+            }
             let Some(limit) = spend::limit(&settings, &record).filter(|limit| tokens >= *limit) else { continue };
             cards.push((ticket.clone(), Card::new(ticket, &record, tokens, turns, Trip::Budget { spent: tokens, limit }, &settings)));
         }

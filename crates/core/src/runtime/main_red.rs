@@ -71,7 +71,7 @@ Work that fails only this keeps landing, recorded as pre-existing on main; this 
 Reproduce it on main, fix the cause (or the check, if the check itself is wrong), run the same command until it passes, \
 and hand it in. Nothing else waits on this ticket — don't make other tickets depend on it."
         );
-        let made = Ticket {
+        let made = Ticket { summary: None,
             id: 0,
             title: title.clone(),
             body,

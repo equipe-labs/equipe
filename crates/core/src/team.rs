@@ -312,7 +312,7 @@ mod tests {
     use equipe_protocol::{TicketKind, TicketStatus};
 
     fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: format!("ticket {id}"),
             body: String::new(),

@@ -30,9 +30,9 @@ pub(crate) fn light_copy(ticket: &Ticket) -> Ticket {
     }
     let Ticket {
         id, title, body: _, status, kind, label, owner, assignee, project, depends_on, branch, worktree, execution, merged, off_main, created_by, note: _, asks: _,
-        remaining: _, images: _, priority, rank, updated_at, started_at, app, design_qa, plan, model, landing, flow: _,
+        remaining: _, images: _, priority, rank, updated_at, started_at, app, design_qa, plan, model, landing, flow: _, summary,
     } = ticket;
-    Ticket {
+    Ticket { summary: summary.clone(),
         id: *id,
         title: title.clone(),
         body: String::new(),
@@ -870,7 +870,7 @@ It waits on the board as a proposal until the PM or the person accepts it."
         }),
         json!({
             "name": crate::flow::CHECK_STEPS,
-            "description": "The checklist of the ticket you hold: tick off items as each is done (`done`, by number) and add the items its work needs (`add`) — a spec, the build, a check, a fix of what you found — instead of tickets of their own. Re-planning? Name in `replace` the open items your new ones take the place of: never list an item the checklist already has (equipe leaves out repeats), so the person never sees the same step twice. \
+            "description": "The checklist of the ticket you hold — the person follows your work by it: tick off each item the moment it is done (`done`, by number), with `note` when they can see or try it, and add the items its work needs (`add`) — a spec, the build, a check, a fix of what you found — instead of tickets of their own. Re-planning? Name in `replace` the open items your new ones take the place of: never list an item the checklist already has (equipe leaves out repeats), so the person never sees the same step twice. \
 Give at least one of `done`, `add`, `replace`. Examples: tick items 1 and 2 off — {\"done\": [1, 2]}; add an item — {\"add\": [\"Write the tests\"]}; \
 tick 3 and add one for the designer — {\"done\": [3], \"add\": [{\"text\": \"Check it at 390px\", \"who\": \"designer\"}]}; \
 re-plan open items 4 and 5 as one — {\"replace\": [4, 5], \"add\": [\"Build and test the form\"]}.",
@@ -880,6 +880,7 @@ re-plan open items 4 and 5 as one — {\"replace\": [4, 5], \"add\": [\"Build an
                     "done": { "type": "array", "items": { "type": "integer" }, "description": "Items done, by their number in the checklist, from 1: [1, 2]." },
                     "add": STEPS_SCHEMA.clone(),
                     "replace": { "type": "array", "items": { "type": "integer" }, "description": "Open items, by number, that the items in `add` replace: they leave the checklist. Done items stay. [4, 5]" },
+                    "note": { "type": "string", "description": "With `done`, when what you finished is something the person can see or try: one plain line for them, in their language, with where — \"The booking page is ready — try it at /book\". No ticket words. Shown to them once, as the item is ticked; leave it out otherwise." },
                 },
             },
         }),
@@ -970,6 +971,7 @@ your browser's screenshots are taken where they land; never a web address.",
                 "type": "object",
                 "properties": {
                     "summary": { "type": "string", "description": "What you did and how to check it, in a few lines — in the person's language." },
+                    "for_person": { "type": "string", "description": "What the work did for the person, in one to three plain sentences in their language: what changed for them and what it means (\"Your booking page is ready on a private preview; the next step connects payments.\"). No paths, code, branches, measurements or the team's process. Shown to them first." },
                     "images": IMAGES_SCHEMA.clone(),
                     "changes_screens": { "type": "boolean", "description": "Always give it. true when users see a change — a screen, page, layout, style, visible copy, an icon; then give fresh screenshots of each changed screen in `images` and all four `screen_checks`. false for changes nobody sees, and for work that isn't code." },
                     "screen_checks": {
@@ -1175,7 +1177,8 @@ keep its server running until they are done. Never run `equipe browser` yourself
 easily: creating an account or signing up, accepting terms, starting a trial or a paid plan, inviting someone, \
 deleting or transferring something, changing security or billing settings, writing to a live system's data. Lead \
 with `summary`, three short lines in the person's language — what will change, who sees it, how it is undone — that \
-anyone can judge at a glance; the exact technical detail goes in `action`, folded under it. Say its `kind`. You don't \
+anyone can judge at a glance, each true as things stand now (never \"stays unpublished\" about what is already public), and \
+naming whose name or brand a thing is (\"the when2meet name\", never \"your name\" for anyone but the person); the exact technical detail goes in `action`, folded under it. Say its `kind`. You don't \
 wait on the card: the call returns at once, you carry on with other work that doesn't depend on it, and the answer \
 comes to you as a message — do only what they said yes to, once they have. The squad's autonomy policy may let it \
 through at once (a standing allowance the person granted, or the policy for live data): then the call says so, and you \
@@ -2183,7 +2186,7 @@ mod tests {
     }
 
     fn ticket(id: TicketId, owner: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: format!("ticket {id}"),
             body: String::new(),

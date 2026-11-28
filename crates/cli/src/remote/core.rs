@@ -1180,7 +1180,7 @@ pub(crate) mod tests {
     }
 
     fn big_ticket(id: TicketId, status: TicketStatus, note: String) -> equipe_core::protocol::Ticket {
-        equipe_core::protocol::Ticket { id, title: format!("t{id}"), body: "b".repeat(100), status, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: Some(note), asks: vec![], label: None, remaining: vec![], images: vec![], updated_at: None, started_at: None, app: None, priority: Default::default(), rank: 0 }
+        equipe_core::protocol::Ticket { summary: None, id, title: format!("t{id}"), body: "b".repeat(100), status, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: Some(note), asks: vec![], label: None, remaining: vec![], images: vec![], updated_at: None, started_at: None, app: None, priority: Default::default(), rank: 0 }
     }
 
     #[test]
@@ -1511,7 +1511,7 @@ pub(crate) mod tests {
         let opened = phone.open(&c, &out[0]);
         assert_eq!((opened["seq"].as_u64(), opened["rpc"]["params"]["approval"]["action"].as_str()), (Some(0), Some("rm -rf build")));
         // A ticket handed in pushes once.
-        let mut t = Ticket { id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: None, asks: vec![], label: None, remaining: vec![], images: vec![], updated_at: None, started_at: None, app: None, priority: Default::default(), rank: 0 };
+        let mut t = Ticket { summary: None, id: 4, title: "x".into(), body: String::new(), status: TicketStatus::Review, owner: Some("backend".into()), assignee: None, kind: equipe_core::protocol::TicketKind::Task, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: None, asks: vec![], label: None, remaining: vec![], images: vec![], updated_at: None, started_at: None, app: None, priority: Default::default(), rank: 0 };
         assert_eq!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).len(), 1);
         assert!(core.on_squad_event("acme", &Event::TicketChanged { squad: "acme".into(), ticket: t.clone() }).is_empty());
         t.status = TicketStatus::Done;

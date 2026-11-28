@@ -183,6 +183,28 @@ pub fn limit(settings: &Settings, record: &[TicketEntry]) -> Option<u64> {
     Some(from.saturating_add(settings.ticket_budget))
 }
 
+/// Whether the PM put the ticket back to todo after the last budget stop —
+/// its go-on, which the card says gives the ticket another budget. Read from
+/// the record: an `updated` with status todo, by anyone but equipe, after
+/// the last [`STOP`]. On Team Aman's T-49 (2026-11-28) the member handed the
+/// ticket back over budget without a stop on record, the PM put it back to
+/// todo, and equipe stopped it again at the next dispatch: the PM's go-on
+/// was undone and nothing ran.
+pub fn went_on(record: &[TicketEntry]) -> bool {
+    let after = record.iter().rposition(|e| e.kind == STOP).map_or(0, |i| i + 1);
+    record[after..].iter().any(|e| {
+        e.by != crate::lead_time::EQUIPE
+            && e.kind == "updated"
+            && serde_json::from_str::<serde_json::Value>(&e.text).ok().and_then(|v| v.get("status").and_then(|s| s.as_str()).map(str::to_owned)).as_deref() == Some("todo")
+    })
+}
+
+/// The record line equipe keeps when it takes the PM's go-on at `spent`
+/// tokens: the next stop comes a whole budget later.
+pub fn go_on_line(spent: u64) -> String {
+    format!("{spent} tokens — the PM put it back to todo: it goes on with another budget")
+}
+
 /// How many turns in a row, at the end of `turns` (oldest first, each the
 /// member that took it and the commit its branch was at after), one member
 /// took on a ticket without its branch moving.
@@ -424,6 +446,21 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn the_pms_put_back_to_todo_is_a_go_on_with_a_fresh_budget() {
+        // Team Aman's T-49, 2026-11-28: handed back over budget, the PM said go on, and equipe stopped it again.
+        let e = |by: &str, kind: &str, text: &str| TicketEntry { at: 0, by: by.into(), kind: kind.into(), text: text.into() };
+        let back = vec![e("Kai", "handed back", "Budget used up before the screenshot pass"), e("Marco", "updated", r#"{"id":49,"status":"todo"}"#)];
+        assert!(went_on(&back));
+        let mut stopped = back.clone();
+        stopped.push(e(crate::lead_time::EQUIPE, STOP, &go_on_line(8_940_000)));
+        assert!(!went_on(&stopped), "taken once: the next stop is a whole budget later");
+        let settings = Settings { ticket_budget: 8_000_000, ..Settings::default() };
+        assert_eq!(limit(&settings, &stopped), Some(16_940_000));
+        assert!(!went_on(&[e("Marco", "updated", r#"{"id":49,"title":"x"}"#)]), "a retitle is no go-on");
+        assert!(!went_on(&[e(crate::lead_time::EQUIPE, "updated", r#"{"status":"todo"}"#)]), "equipe's own is no go-on");
+    }
     use equipe_protocol::{PlanWindow, TicketKind, TicketStatus};
 
     #[test]
@@ -438,7 +475,7 @@ mod tests {
     }
 
     fn ticket() -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id: 7,
             title: "Verify the checkout flow".into(),
             body: String::new(),

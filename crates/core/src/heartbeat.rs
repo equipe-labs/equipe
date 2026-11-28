@@ -304,7 +304,7 @@ mod tests {
     const NOW: u64 = 1_800_000_000;
 
     fn ticket_with(status: TicketStatus) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id: 1,
             title: String::new(),
             body: String::new(),
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn only_work_to_do_under_way_or_waiting_keeps_the_board_from_being_empty() {
-        let ticket = |status, at| Ticket {
+        let ticket = |status, at| Ticket { summary: None,
             id: 1,
             title: String::new(),
             body: String::new(),

@@ -105,7 +105,7 @@ impl Demo {
 }
 
 fn ticket(id: TicketId, title: &str, status: TicketStatus, who: Option<&str>, note: Option<&str>) -> Ticket {
-    Ticket {
+    Ticket { summary: None,
         id,
         title: title.into(),
         body: String::new(),

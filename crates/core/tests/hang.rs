@@ -87,7 +87,7 @@ fn branch(repo: &Path, id: u32, work: bool) -> String {
 fn ticket(home: &Path, repo: &Path, status: TicketStatus, branch: &str) {
     let journal = Journal::for_squad(home, "acme").unwrap();
     let made = journal
-        .create_ticket(&Ticket {
+        .create_ticket(&Ticket { summary: None,
             id: 0,
             title: format!("On {branch}"),
             body: "-".into(),

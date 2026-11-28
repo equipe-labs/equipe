@@ -165,7 +165,7 @@ impl Runtime {
         } else {
             0
         };
-        let ticket = Ticket {
+        let ticket = Ticket { summary: None,
             id: 0,
             title: title.clone(),
             body: draft.body.trim().to_owned(),

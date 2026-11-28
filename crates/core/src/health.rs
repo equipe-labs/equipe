@@ -551,7 +551,7 @@ mod tests {
     }
 
     fn ticket(title: &str, status: TicketStatus, owner: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id: 0,
             title: title.into(),
             body: "Do it.".into(),

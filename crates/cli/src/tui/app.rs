@@ -4067,7 +4067,7 @@ mod tests {
     }
 
     pub(super) fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: format!("ticket {id}"),
             body: String::new(),

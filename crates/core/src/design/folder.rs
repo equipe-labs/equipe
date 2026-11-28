@@ -853,7 +853,7 @@ mod tests {
         let changed = worktree(144, r##"{ "color": { "$type": "color", "bg": { "$value": "#0A0A0C" } } }"##);
         let copy = worktree(150, TOKENS_JSON);
         for (n, w) in [(144, changed), (150, copy)] {
-            let ticket = equipe_protocol::Ticket {
+            let ticket = equipe_protocol::Ticket { summary: None,
                 id: 0, title: format!("T{n}"), body: String::new(), status: TicketStatus::Review, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
                 project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: None,
                 asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None, started_at: None, app: None,
@@ -906,7 +906,7 @@ mod tests {
             w
         };
         let ticket = |status: TicketStatus, title: &str, w: PathBuf| {
-            let t = equipe_protocol::Ticket {
+            let t = equipe_protocol::Ticket { summary: None,
                 id: 0, title: title.into(), body: String::new(), status, kind: TicketKind::Task, owner: Some("designer".into()), assignee: None,
                 project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: None, off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: None,
                 asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None, started_at: None, app: None,

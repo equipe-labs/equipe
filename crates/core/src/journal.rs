@@ -778,6 +778,7 @@ impl Journal {
         // When work on it first began (`Ticket::started_at`), and the product it is for (`Ticket::app`).
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN started_at INTEGER", []);
         let _ = conn.execute("ALTER TABLE tickets ADD COLUMN app TEXT", []);
+        let _ = conn.execute("ALTER TABLE tickets ADD COLUMN summary TEXT", []);
         // The effort a member's turn ran at; `NULL`: the engine's own, or a turn from before.
         let _ = conn.execute("ALTER TABLE turns ADD COLUMN effort TEXT", []);
         // How turns on tickets ended when they didn't end as they should: no
@@ -2104,7 +2105,7 @@ impl Journal {
             "UPDATE tickets SET title = ?1, body = ?2, status = ?3, owner = ?4, assignee = ?5, project = ?6,
                                 depends_on = ?7, branch = ?8, note = ?9, updated_at = ?10, merged = ?12, kind = ?13,
                                 off_main = ?14, priority = ?15, rank = ?16, remaining = ?17, images = ?18, design_qa = ?19, plan = ?20, label = ?21,
-                                app = COALESCE(?22, app),
+                                app = COALESCE(?22, app), summary = ?23,
                                 started_at = CASE WHEN started_at IS NULL AND ?3 = 'in_progress' THEN ?10 ELSE started_at END
              WHERE id = ?11",
             params![
@@ -2130,6 +2131,7 @@ impl Journal {
                 t.plan,
                 t.label.map(|l| l.key()),
                 t.app,
+                t.summary,
             ],
         )?;
         Ok(())
@@ -2865,11 +2867,11 @@ impl Journal {
             "SELECT t.id, t.title, t.body, t.status, t.owner, t.assignee, t.project, t.depends_on, t.branch, t.created_by, t.note, t.worktree, t.merged, t.kind, t.off_main, t.updated_at,
                     t.priority, t.rank, t.remaining, t.images, t.design_qa, t.plan, t.model,
                     e.state, e.session, e.operation, e.generation, e.heartbeat_at, e.lease_expires_at, e.reason, e.head, e.dirty, e.pause, t.label,
-                    e.waited_for, t.flow, t.started_at, t.app
+                    e.waited_for, t.flow, t.started_at, t.app, t.summary
              FROM tickets t LEFT JOIN ticket_executions e ON e.ticket = t.id {filter} ORDER BY t.id"
         ))?;
         let rows = stmt.query_map(args, |r| {
-            let mut t = Ticket {
+            let mut t = Ticket { summary: r.get(38)?,
                 id: r.get(0)?,
                 title: r.get(1)?,
                 body: r.get(2)?,
@@ -4123,7 +4125,7 @@ mod tests {
     }
 
     fn ticket(title: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id: 0,
             title: title.into(),
             body: "do it".into(),

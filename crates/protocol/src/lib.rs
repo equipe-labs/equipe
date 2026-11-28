@@ -490,6 +490,13 @@ pub struct Ticket {
     /// with none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow: Option<Box<TicketFlow>>,
+    /// What the work did for the person, in one to three plain sentences in
+    /// their language — no paths, code, measurements or the team's process —
+    /// written by its member as it hands in; the builders' record stays in
+    /// `note`. Screens show it first. Left out when none was written, and
+    /// from an older daemon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
 }
 
 /// One item of a ticket's checklist: a spec, the build, a check — done on
@@ -505,6 +512,14 @@ pub struct TicketStep {
     /// Who ticked it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub by: Option<String>,
+    /// When it was ticked off (unix seconds), for "what is new" on screens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub done_at: Option<u64>,
+    /// One plain line for the person when this step gave them something to
+    /// see or try, with where ("The booking page is ready — try it at
+    /// /book"): shown once, as the step is ticked.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 /// A ticket that drives a person's request to production: one member drives
@@ -4598,7 +4613,7 @@ mod tests {
     }
 
     fn ticket(id: TicketId) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: "Landing hero".into(),
             body: "Headline, subline, one button.".into(),

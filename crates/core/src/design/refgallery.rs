@@ -846,7 +846,7 @@ mod tests {
     fn ticket_in(home: &Path, title: &str, worktree: &Path, review: bool) -> u64 {
         use crate::protocol::{Ticket, TicketKind, TicketStatus};
         let journal = crate::journal::Journal::for_squad(home, "acme").unwrap();
-        let ticket = Ticket {
+        let ticket = Ticket { summary: None,
             id: 0,
             title: title.into(),
             body: "".into(),

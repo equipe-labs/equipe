@@ -680,7 +680,7 @@ mod tests {
     const MON: u64 = FRI_5 - 4 * DAY - 8 * HOUR; // Monday 09:00
 
     fn ticket(id: TicketId, title: &str, status: TicketStatus, who: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: title.into(),
             body: String::new(),

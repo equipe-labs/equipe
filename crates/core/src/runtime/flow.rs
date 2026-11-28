@@ -120,7 +120,11 @@ end your turn now with a short line."
         if !staffed {
             return Err(format!("Nobody on the squad is {to}. Pass it to a role the squad has, or hand it in."));
         }
-        let done = rules::item_numbers(&flow, on, rules::PASS_BATON, "done", args.get("done"))?;
+        let mut done = rules::item_numbers(&flow, on, rules::PASS_BATON, "done", args.get("done"))?;
+        // Passed with nothing named done: its holder's part is over — its items are ticked for it.
+        if done.is_empty() && args.get("done").is_none() {
+            done = rules::open_for(&flow, &holder);
+        }
         if !done.is_empty() {
             rules::tick(&mut flow, &done, &[], Vec::new(), &holder)?;
         }
@@ -159,7 +163,61 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
         if done.is_empty() && added.is_empty() && replace.is_empty() {
             return Err(rules::check_steps_help(on, &flow, board::unknown_args(rules::CHECK_STEPS, args)));
         }
-        self.change_steps(squad, on, &done, &replace, added, &holder)
+        // What the person can now see or try: one line for them, in their language, once per item.
+        let note = board::arg_str(args, "note").map(str::trim).filter(|n| !n.is_empty()).map(|n| n.chars().take(240).collect::<String>());
+        if let (Some(note), Some(want)) = (&note, self.squad_language(squad))
+            && super::reply_guard::wrong_language(note, want)
+        {
+            return Err(format!("Nothing ticked: `note` is read by the person, in {lang}. Write it in {lang} and call again.", lang = want.english_name()));
+        }
+        let said = self.change_steps(squad, on, &done, &replace, added, &holder)?;
+        if let Some(note) = note
+            && let Some(first) = done.first().copied()
+        {
+            self.step_note(squad, id, on, first, &note);
+        }
+        Ok(said)
+    }
+
+    /// A member's line to the person on what item `n` of `ticket` gave them
+    /// to see or try: kept on the item and shown once, as a note of the work.
+    fn step_note(&mut self, squad: &str, id: SessionId, ticket: TicketId, n: usize, note: &str) {
+        let Some(found) = self.find_ticket(squad, ticket) else { return };
+        let mut flow = found.flow.as_deref().cloned().unwrap_or_default();
+        let Some(step) = flow.steps.get_mut(n - 1).filter(|s| s.note.is_none()) else { return };
+        step.note = Some(note.to_owned());
+        let Some(journal) = self.journal(squad) else { return };
+        if journal.set_ticket_flow(ticket, Some(&flow)).is_err() {
+            return;
+        }
+        if let Some(changed) = journal.ticket(ticket).ok().flatten() {
+            self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: changed });
+        }
+        let (Some(from), Some(pm)) = (self.sessions.get(&id).and_then(|s| s.member.clone()), self.pm_of(squad)) else { return };
+        crate::daemon_log!("equipe: {squad}: T-{ticket} item {n} is ready for the person to see");
+        self.publish(Event::MemberNote { session: pm, from, text: note.to_owned(), choices: Vec::new(), ticket: Some(ticket), at: now_secs(), source: id });
+    }
+
+    /// A run on a ticket whose turn just ended without ticking anything while
+    /// items are still open for it: its next turn opens with a reminder.
+    pub(super) fn remind_ticks(&mut self, id: SessionId) {
+        let Some(s) = self.sessions.get(&id) else { return };
+        let (Some(squad), Some(work), Some(began)) = (s.squad.clone(), s.work.as_ref(), s.turn_began) else { return };
+        if work.handed_in.is_some() || work.end.handed_back.is_some() || work.waiting.is_some() {
+            return;
+        }
+        let (ticket, holder) = (work.ticket, s.name().unwrap_or_default().to_owned());
+        let Some(flow) = self.find_ticket(&squad, ticket).and_then(|t| t.flow.as_deref().cloned()) else { return };
+        if !rules::ticked_nothing(&flow, &holder, began) {
+            return;
+        }
+        let line = rules::tick_reminder(ticket, &flow, &holder);
+        if let Some(session) = self.sessions.get_mut(&id)
+            && !session.briefing.iter().any(|b| b.starts_with(&format!("[equipe] T-{ticket}: you ticked nothing")))
+        {
+            session.briefing.push(line);
+            self.save_waiting(id);
+        }
     }
 
     /// Tick `done`, take out the open items `replace` and add `added` (those
@@ -310,7 +368,7 @@ the project's checks on that merge where it declares them, the design precheck w
 run the tests, and hand it in. Then, if the change is still wanted, fix it on a new branch.",
             say!(self, "ticket.revert_body", id = ticket, name = member)
         );
-        let revert = Ticket {
+        let revert = Ticket { summary: None,
             id: 0,
             title: title.clone(),
             body,

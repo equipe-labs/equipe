@@ -1038,7 +1038,7 @@ mod tests {
     }
 
     fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: "Sign-in page".into(),
             body: String::new(),

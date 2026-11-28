@@ -526,7 +526,7 @@ fn the_loop_is_kept_and_read_back() {
 }
 
 fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
-    Ticket {
+    Ticket { summary: None,
         id,
         title: format!("t{id}"),
         body: String::new(),

@@ -1860,7 +1860,7 @@ mod tests {
     }
 
     fn ticket(body: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id: 42,
             title: "Rate limit the login".into(),
             body: body.into(),

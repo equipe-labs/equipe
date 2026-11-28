@@ -242,7 +242,7 @@ mod tests {
     use serde_json::json;
 
     fn ticket(id: TicketId, title: &str, owner: &str, status: TicketStatus) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: title.into(),
             body: String::new(),

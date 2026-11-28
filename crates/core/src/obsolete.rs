@@ -84,7 +84,7 @@ mod tests {
     use equipe_protocol::TicketKind;
 
     fn ticket(id: TicketId, title: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: title.into(),
             body: String::new(),

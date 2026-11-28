@@ -3192,7 +3192,7 @@ mod tests {
     }
 
     fn ticket(id: TicketId, status: TicketStatus, title: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: title.into(),
             body: String::new(),

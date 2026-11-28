@@ -63,7 +63,7 @@ pub fn is_slice(kind: TicketKind, label: Option<TicketLabel>, maker_role: &str, 
 
 /// A checklist item.
 fn step(text: &str, who: Option<&str>) -> TicketStep {
-    TicketStep { text: text.to_owned(), who: who.map(str::to_owned), done: false, by: None }
+    TicketStep { text: text.to_owned(), who: who.map(str::to_owned), done: false, by: None, ..Default::default() }
 }
 
 /// The checklist a request's main ticket starts with, in the person's
@@ -108,7 +108,7 @@ pub fn steps_arg(args: &Value, key: &str) -> Result<Vec<TicketStep>, String> {
             _ => return Err(format!("Each item of `{key}` is a line, or {{\"text\", \"who\"}} — like {{\"{key}\": [\"Write the tests\"]}}; {item} is neither.")),
         };
         if !text.is_empty() {
-            out.push(TicketStep { text, who, done: false, by: None });
+            out.push(TicketStep { text, who, done: false, by: None, ..Default::default() });
         }
     }
     Ok(out)
@@ -216,8 +216,12 @@ pub fn tick(flow: &mut TicketFlow, done: &[usize], replace: &[usize], added: Vec
     if let Some(kept) = replace.iter().find(|n| flow.steps[**n - 1].done) {
         return Err(format!("Item {kept} is done — it stays. Only open items are replaced."));
     }
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     for n in done {
         let item = &mut flow.steps[n - 1];
+        if !item.done {
+            item.done_at = Some(at);
+        }
         item.done = true;
         item.by = Some(by.to_owned());
     }
@@ -237,8 +241,12 @@ pub fn tick(flow: &mut TicketFlow, done: &[usize], replace: &[usize], added: Vec
         flow.steps.push(item);
         added_n += 1;
     }
+    let merged = merge_repeats(flow);
     let (ticked, all) = flow.progress();
     let mut said = format!("{ticked} of {all} done.");
+    if merged > 0 {
+        said.push_str(&format!(" {merged} said twice, kept once."));
+    }
     if added_n > 0 {
         said.push_str(&format!(" {added_n} added."));
     }
@@ -249,6 +257,56 @@ pub fn tick(flow: &mut TicketFlow, done: &[usize], replace: &[usize], added: Vec
         said.push_str(&format!(" {repeated} already on it, not added again."));
     }
     Ok(said)
+}
+
+/// The checklist with each item said once: a later item that says what an
+/// earlier one does is folded into it (done if either was), so a plan
+/// revised by appending never shows the same step twice. How many went.
+pub fn merge_repeats(flow: &mut TicketFlow) -> usize {
+    let mut kept: Vec<TicketStep> = Vec::new();
+    let mut gone = 0;
+    for step in std::mem::take(&mut flow.steps) {
+        let key = same_item(&step.text);
+        match kept.iter_mut().find(|k| same_item(&k.text) == key) {
+            Some(first) => {
+                gone += 1;
+                if step.done && !first.done {
+                    first.done = true;
+                    first.by = step.by;
+                    first.done_at = step.done_at;
+                }
+                if first.note.is_none() {
+                    first.note = step.note;
+                }
+            }
+            None => kept.push(step),
+        }
+    }
+    flow.steps = kept;
+    gone
+}
+
+/// The numbers (from 1) of the items still open for `holder`: what its
+/// hand-in, or its baton passed with no `done`, ticks off.
+pub fn open_for(flow: &TicketFlow, holder: &str) -> Vec<usize> {
+    flow.steps.iter().enumerate().filter(|(_, s)| !s.done && s.who.as_deref().is_none_or(|w| w == holder || w == role_of(holder))).map(|(i, _)| i + 1).collect()
+}
+
+/// Whether a turn that began at `began` ticked nothing while `holder` still
+/// has open items: its next turn is reminded to.
+pub fn ticked_nothing(flow: &TicketFlow, holder: &str, began: u64) -> bool {
+    !open_for(flow, holder).is_empty() && !flow.steps.iter().any(|s| s.done_at.is_some_and(|at| at >= began))
+}
+
+/// The reminder a run that ticked nothing gets with its next turn.
+pub fn tick_reminder(ticket: TicketId, flow: &TicketFlow, holder: &str) -> String {
+    let open: Vec<String> = open_for(flow, holder).iter().map(|n| format!("{n}. {}", flow.steps[n - 1].text)).collect();
+    format!(
+        "[equipe] T-{ticket}: you ticked nothing on its checklist last turn, and the person follows the work by it. First thing now, \
+tick each item you finished with `check_steps` (`done`), and for one they can see or try give `note`: one plain line for them with \
+where (\"The booking page is ready — try it at /book\"). Still open for you:\n{}",
+        open.join("\n")
+    )
 }
 
 /// The items left for `holder` (its role) — or for whoever holds it.
@@ -629,7 +687,7 @@ mod tests {
     fn checklist_items_are_named_by_number_or_by_their_words_and_a_wrong_one_is_shown_the_call() {
         use equipe_protocol::{TicketFlow, TicketStep};
         use serde_json::json;
-        let item = |t: &str| TicketStep { text: t.into(), who: None, done: false, by: None };
+        let item = |t: &str| TicketStep { text: t.into(), who: None, done: false, by: None, ..Default::default() };
         let flow = TicketFlow { steps: vec![item("Build the form"), item("Write the tests.")], ..Default::default() };
         let named = |v: serde_json::Value| super::item_numbers(&flow, 4, super::CHECK_STEPS, "done", Some(&v));
         assert_eq!(named(json!([2, 1])), Ok(vec![2, 1]));
@@ -675,7 +733,7 @@ mod tests {
     use serde_json::json;
 
     fn ticket(id: TicketId, title: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: title.into(),
             body: String::new(),
@@ -833,6 +891,35 @@ mod tests {
         assert_eq!(landing(true, true, &t, &many, false), Landing::Pm(Held::Gated(crate::person_gate::Why::Visible)));
         let said = digest(&[(4, "Tidy the toolbar".into(), "frontend".into(), "The toolbar fits on phones.".into())]);
         assert!(said.contains("T-4 Tidy the toolbar — frontend: The toolbar fits on phones.") && said.contains(REVERT_LANDED));
+    }
+
+    #[test]
+    fn a_hand_in_or_a_baton_ticks_its_holders_items_and_a_turn_that_ticked_nothing_is_reminded() {
+        // Team Aman, 2026-11-28: Kai built 4 of the 8 steps and ticked none; the person saw "Steps 0 of 8".
+        let item = |t: &str, who: Option<&str>| TicketStep { text: t.into(), who: who.map(str::to_owned), ..Default::default() };
+        let mut flow = TicketFlow {
+            steps: vec![item("Spec the page", Some("designer")), item("Build the page", None), item("Wire the booking", None), item("Check on phones", Some("qa"))],
+            ..Default::default()
+        };
+        assert_eq!(open_for(&flow, "frontend"), vec![2, 3], "its own and anyone's, not the designer's or QA's");
+        assert!(ticked_nothing(&flow, "frontend", 0));
+        let open = open_for(&flow, "frontend");
+        let said = tick(&mut flow, &open, &[], Vec::new(), "frontend").unwrap();
+        assert!(said.starts_with("2 of 4 done"), "{said}");
+        assert!(flow.steps[1].done_at.is_some() && flow.steps[0].done_at.is_none());
+        assert!(!ticked_nothing(&flow, "frontend", 0), "nothing left for it");
+        assert!(ticked_nothing(&flow, "designer", u64::MAX), "the designer's item is open and nothing was ticked since");
+        let reminder = tick_reminder(9, &flow, "designer");
+        assert!(reminder.contains("T-9") && reminder.contains("1. Spec the page") && reminder.contains("`check_steps`") && reminder.contains("`note`"), "{reminder}");
+    }
+
+    #[test]
+    fn a_revised_plan_says_each_step_once() {
+        let item = |t: &str, done: bool| TicketStep { text: t.into(), done, ..Default::default() };
+        let mut flow = TicketFlow { steps: vec![item("Build the form", false), item("Write the tests", true), item("build the form.", true), item("Write the tests", false)], ..Default::default() };
+        assert_eq!(merge_repeats(&mut flow), 2);
+        let steps: Vec<(&str, bool)> = flow.steps.iter().map(|s| (s.text.as_str(), s.done)).collect();
+        assert_eq!(steps, [("Build the form", true), ("Write the tests", true)], "done if either was");
     }
 
     #[test]

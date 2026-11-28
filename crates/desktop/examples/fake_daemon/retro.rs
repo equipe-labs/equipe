@@ -39,7 +39,7 @@ pub fn set(now: u64) -> QuestionSet {
 }
 
 fn ticket(id: u32, title: &str, status: TicketStatus, who: &str, project: &str) -> Ticket {
-    Ticket {
+    Ticket { summary: None,
         id,
         title: title.into(),
         body: String::new(),

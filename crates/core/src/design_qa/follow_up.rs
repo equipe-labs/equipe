@@ -299,7 +299,7 @@ mod tests {
 
     #[test]
     fn only_an_unstarted_follow_up_takes_more_findings() {
-        let mut t = Ticket {
+        let mut t = Ticket { summary: None,
             id: 9,
             title: "Polish".into(),
             body: String::new(),

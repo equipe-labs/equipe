@@ -851,7 +851,7 @@ fn plan(engine: Engine, five_hour: u8, week: u8) -> EnginePlan {
 }
 
 fn ticket(status: TicketStatus) -> Ticket {
-    Ticket {
+    Ticket { summary: None,
         id: 38,
         title: "로그인 API".into(),
         body: "이메일 로그인, 토큰 발급.".into(),

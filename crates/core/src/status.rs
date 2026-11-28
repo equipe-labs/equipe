@@ -519,7 +519,7 @@ mod tests {
     const NOW: u64 = 1_794_000_000;
 
     fn ticket(id: TicketId, status: TicketStatus) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id,
             title: format!("Ticket {id}"),
             body: String::new(),

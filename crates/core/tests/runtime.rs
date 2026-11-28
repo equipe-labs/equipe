@@ -1422,7 +1422,7 @@ async fn work_not_on_main_says_why_can_be_kept_on_its_branch_and_settles_when_no
         let journal = Journal::for_squad(&home, "acme").unwrap();
         for id in [1, 2, 3] {
             let made = journal
-                .create_ticket(&Ticket {
+                .create_ticket(&Ticket { summary: None,
                     id: 0,
                     title: format!("Piece {id}"),
                     body: "-".into(),
@@ -1513,7 +1513,7 @@ async fn dependencies_that_conflict_hold_the_ticket_and_say_why() {
         let journal = Journal::for_squad(&home, "acme").unwrap();
         for id in [1, 2] {
             let made = journal
-                .create_ticket(&Ticket {
+                .create_ticket(&Ticket { summary: None,
                     id: 0,
                     title: format!("Piece {id}"),
                     body: "-".into(),
@@ -6666,7 +6666,7 @@ async fn a_design_qa_whose_precheck_a_restart_cut_short_waits_for_it_and_never_s
     {
         // As a restart leaves it: T-1 waits on design QA T-2, whose precheck the journal says runs.
         let journal = Journal::for_squad(&home, "acme").unwrap();
-        let ticket = |title: &str, status, kind, owner: &str| Ticket {
+        let ticket = |title: &str, status, kind, owner: &str| Ticket { summary: None,
             id: 0,
             title: title.into(),
             body: "-".into(),
@@ -6724,7 +6724,7 @@ async fn a_design_qa_whose_precheck_a_restart_cut_short_waits_for_it_and_never_s
 /// design QA ticket T-2 made under risk-based routing for `risk`.
 fn held_by_an_open_design_qa(home: &Path, site: &Path, risk: &str) {
     let journal = Journal::for_squad(home, "acme").unwrap();
-    let ticket = |title: &str, status, kind, owner: &str| Ticket {
+    let ticket = |title: &str, status, kind, owner: &str| Ticket { summary: None,
         id: 0,
         title: title.into(),
         body: "-".into(),
@@ -6888,7 +6888,7 @@ async fn a_project_taken_off_the_squad_leaves_its_list_and_its_folder_stays() {
 fn ticket_in(home: &Path, squad: &str, project: &Path, worktree: &Path) {
     let journal = Journal::for_squad(home, squad).unwrap();
     let id = journal
-        .create_ticket(&Ticket {
+        .create_ticket(&Ticket { summary: None,
             id: 0,
             title: "Piece".into(),
             body: "-".into(),
@@ -8016,7 +8016,7 @@ async fn the_pm_retitles_open_tickets_that_break_the_rule_and_equipe_applies_onl
 
 /// A ticket as the board had it before the title rule: written straight into the journal.
 fn old_ticket(title: &str) -> Ticket {
-    Ticket {
+    Ticket { summary: None,
         id: 0,
         title: title.into(),
         body: "-".into(),

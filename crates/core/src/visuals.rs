@@ -1464,7 +1464,7 @@ mod tests {
         let outputs = worktree.join("outputs/T-194 배포");
         std::fs::create_dir_all(&outputs).unwrap();
         png(&outputs.join("live-en.png"), 40, 30, false);
-        let ticket = Ticket {
+        let ticket = Ticket { summary: None,
             id: 0,
             title: "배포".into(),
             body: "".into(),
@@ -1606,7 +1606,7 @@ mod tests {
 
     fn save_ticket(home: &Path, project: &Path, images: &[String], merged: Option<bool>, branch: Option<&str>) {
         let journal = crate::journal::Journal::for_squad(home, "acme").unwrap();
-        let mut ticket = Ticket {
+        let mut ticket = Ticket { summary: None,
             id: 0,
             title: "Globe".into(),
             body: "".into(),
@@ -1763,7 +1763,7 @@ mod tests {
         {
             let j = &journal;
             for n in 0..2000 {
-                let ticket = Ticket { id: 0, title: format!("T {n}"), body: "x".repeat(2000), status: crate::protocol::TicketStatus::Done, kind: crate::protocol::TicketKind::Code, owner: None, assignee: None, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: Some(true), off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: Some("y".repeat(4000)), asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None, started_at: None, app: None };
+                let ticket = Ticket { summary: None, id: 0, title: format!("T {n}"), body: "x".repeat(2000), status: crate::protocol::TicketStatus::Done, kind: crate::protocol::TicketKind::Code, owner: None, assignee: None, project: None, depends_on: vec![], branch: None, worktree: None, execution: None, merged: Some(true), off_main: None, design_qa: None, landing: false, plan: None, model: None, flow: None, created_by: "pm".into(), note: Some("y".repeat(4000)), asks: vec![], label: None, remaining: vec![], images: vec![], priority: Default::default(), rank: 0, updated_at: None, started_at: None, app: None };
                 let id = j.create_ticket(&ticket).unwrap();
                 let images = if n == 1999 { vec![crop.clone()] } else { vec![format!("/gone/{n}/shot.png")] };
                 j.save_ticket(&Ticket { id, images, ..ticket }).unwrap();

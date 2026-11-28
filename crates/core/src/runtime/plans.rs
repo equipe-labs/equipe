@@ -180,7 +180,7 @@ take in what they found, put the scope to the person on one `ask_decision` card,
     fn ask_plan_review(&mut self, squad: &str, pm: &str, wrote: &Wrote, owner: &str) -> Result<TicketId, String> {
         let role = self.team(squad).into_iter().find(|(_, name, role)| name == owner || role == owner).map_or_else(|| owner.to_owned(), |(_, _, role)| role);
         let (title, body) = plan::review_ticket(&wrote.title, &wrote.plan, &role, self.config.lang);
-        let ticket = Ticket {
+        let ticket = Ticket { summary: None,
             id: 0,
             title,
             body,

@@ -653,7 +653,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("equipe-qa-stats-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let j = crate::journal::Journal::for_squad(&home, "acme").unwrap();
-        let ticket = |title: &str| equipe_protocol::Ticket {
+        let ticket = |title: &str| equipe_protocol::Ticket { summary: None,
             id: 0,
             title: title.into(),
             body: String::new(),

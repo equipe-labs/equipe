@@ -45,7 +45,7 @@ pub(super) fn batch_dir(home: &Path, squad: &str, ticket: TicketId) -> PathBuf {
 /// A task equipe puts on the board for `owner`.
 #[allow(clippy::too_many_arguments)]
 fn equipe_ticket(title: String, body: String, kind: TicketKind, owner: Option<String>, project: Option<PathBuf>, status: TicketStatus, priority: crate::protocol::Priority, by: &str) -> Ticket {
-    Ticket {
+    Ticket { summary: None,
         id: 0,
         title,
         body,

@@ -2759,6 +2759,8 @@ impl Runtime {
             self.watch_qa_budget(*session);
         }
         if let Event::TurnEnded { session, .. } = &event {
+            // A run that ticked nothing while its items are open hears so with its next turn.
+            self.remind_ticks(*session);
             self.tool_repeats.remove(session);
             self.qa_budgets.remove(session);
             self.turn_budgets.remove(session);
@@ -11435,7 +11437,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 let owner = board::arg_str(&args, "owner").map(str::to_owned).or_else(|| just_do.then(|| member.clone()));
                 // A designer's ticket from the ticket it is on keeps where it came from (`follow_ups`).
                 let filing = if idea { None } else { self.follow_up_filing(&squad, id, &args)? };
-                let mut ticket = Ticket {
+                let mut ticket = Ticket { summary: None,
                     id: 0,
                     title: title.to_owned(),
                     body: body.to_owned(),
@@ -11728,6 +11730,13 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
             crate::flow::REVERT_LANDED => Err("Only the PM reverts landed work; tell the PM what is wrong.".into()),
             board::SUBMIT_FOR_REVIEW => {
                 let summary = board::arg_str(&args, "summary").ok_or("Summarize what you did.")?.to_owned();
+                // What it did for the person, in their words: shown to them first, so in their language or not at all.
+                let for_person = board::arg_str(&args, "for_person").map(str::trim).filter(|t| !t.is_empty()).map(|t| t.chars().take(600).collect::<String>());
+                if let (Some(text), Some(want)) = (&for_person, self.squad_language(&squad))
+                    && reply_guard::wrong_language(text, want)
+                {
+                    return Err(format!("Not handed in: `for_person` is read by the person, in {lang}. Write it in {lang} and hand in again.", lang = want.english_name()));
+                }
                 // Its pictures, found where it works; one that isn't there is said, to fix.
                 let (cwd, roots) = self.picture_places(&squad, id);
                 let shown = crate::visuals::resolve_all(&board::arg_strs(&args, "images"), &cwd, &roots, crate::visuals::HAND_IN)
@@ -11786,6 +11795,23 @@ or as its preview link. The person is told exactly what you write."
                 // Findings of its self-check it says aren't real: a designer judges them.
                 work.waive = board::arg_str(&args, "waive_findings").map(str::trim).filter(|w| !w.is_empty()).map(str::to_owned);
                 let red_note = self.handed_in_failing_on_main(&squad, ticket, &member, &failing_on_main);
+                let on = ticket;
+                // Handed in: what was left of the checklist for its holder is done, and the person's summary kept.
+                if let Some(found) = self.find_ticket(&squad, on) {
+                    let open = found.flow.as_deref().map(|f| crate::flow::open_for(f, &member)).unwrap_or_default();
+                    if !open.is_empty() {
+                        let _ = self.change_steps(&squad, on, &open, &[], Vec::new(), &member);
+                    }
+                    if let Some(text) = for_person
+                        && let Some(journal) = self.journal(&squad)
+                        && let Some(mut t) = journal.ticket(on).ok().flatten()
+                    {
+                        t.summary = Some(text);
+                        if journal.save_ticket(&t).is_ok() {
+                            self.publish(Event::TicketChanged { squad: squad.clone(), ticket: t });
+                        }
+                    }
+                }
                 let Some(work) = self.sessions.get_mut(&id).and_then(|s| s.work.as_mut()) else { return Err("You're not on a ticket — there is nothing to hand in.".into()) };
                 if let Some(gap) = &gap {
                     let n = gap.len();

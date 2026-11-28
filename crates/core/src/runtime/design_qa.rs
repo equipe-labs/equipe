@@ -884,7 +884,7 @@ truncation with the whole text available), hand in again with `waive_findings` s
 
     /// A design QA ticket for `ticket`, which `engineer` handed in, not yet on the board.
     fn design_qa_ticket(&self, ticket: &Ticket, engineer: &str) -> Ticket {
-        Ticket {
+        Ticket { summary: None,
             id: 0,
             title: say!(self, "ticket.design_qa_title", id = ticket.id, title = ticket.title),
             body: say!(self, "ticket.design_qa_body", id = ticket.id, name = engineer),
@@ -1453,7 +1453,7 @@ mod tests {
 
     #[test]
     fn a_designer_with_a_precheck_report_starts_from_it_instead_of_shooting_everything() {
-        let checked = Ticket {
+        let checked = Ticket { summary: None,
             id: 4,
             title: "Add a pricing page".into(),
             body: "Build the pricing page from the mockup.".into(),
