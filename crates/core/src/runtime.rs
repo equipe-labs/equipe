@@ -11530,7 +11530,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 let by = if is_pm { crate::telemetry::Maker::Pm } else { crate::telemetry::Maker::Member };
                 self.tell(&squad, crate::telemetry::Happened::TicketCreated { kind, by });
-                let made = Ticket { id: new_id, ..ticket };
+                let mut made = Ticket { id: new_id, ..ticket };
+                // A first version goes out public at once: a hold asked on a product never live is let go.
+                if crate::flow::held_for_person(&made.body) && !self.was_live(&squad, &made) {
+                    made.body = crate::flow::with_hold(&made.body, false);
+                    if let Some(journal) = self.journal(&squad) {
+                        let _ = journal.save_ticket(&made);
+                    }
+                }
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: made.clone() });
                 self.board_touched(id, new_id);
                 // The person's request it serves: theirs to follow without asking.
@@ -12607,12 +12614,26 @@ check what is already done in your worktree first."
         memos
     }
 
+    /// Whether `ticket`'s product went live before: a deploy of its project is on record. A product
+    /// that never did gets its first version out on its public address at once (the owner, 2026-11-28).
+    pub(super) fn was_live(&mut self, squad: &str, ticket: &Ticket) -> bool {
+        let Some(project) = ticket.project.as_ref() else { return false };
+        self.journal(squad).is_some_and(|j| j.deploys().iter().any(|d| d.path == *project))
+    }
+
     /// Hold `ticket` for the person's yes before it lands and goes live, or let it go (`flow::HOLD_LINE`).
     pub(super) fn hold_for_person(&mut self, squad: &str, by: &str, ticket: TicketId, hold: bool) -> Result<String, String> {
+        let live = self.find_ticket(squad, ticket).is_some_and(|t| self.was_live(squad, &t));
         let journal = self.journal(squad).ok_or("The board can't be opened.")?;
         let mut found = journal.ticket(ticket).ok().flatten().ok_or_else(|| format!("There is no T-{ticket}."))?;
         if found.status.is_closed() {
             return Err(format!("T-{ticket} is closed already."));
+        }
+        if hold && !live {
+            return Err(format!(
+                "T-{ticket} isn't held: its product has never been live, and a first version goes out on its public address as soon as it \
+works — no private preview first and no yes needed. Hold only a change to a product that is already live."
+            ));
         }
         if crate::flow::held_for_person(&found.body) == hold {
             return Ok(format!("T-{ticket} {} already.", if hold { "waits for the person's yes" } else { "isn't held" }));
