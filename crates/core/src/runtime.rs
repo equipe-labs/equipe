@@ -6089,6 +6089,7 @@ runbooks and reports live there, and work across the projects or on running them
             return;
         }
         self.pm_turn_seen(id, &body);
+        self.reply_turn_starts(id);
         if let Some(session) = self.sessions.get_mut(&id) {
             session.answers_person = false;
             session.turn_began = Some(now_secs());

@@ -21,7 +21,9 @@ impl Runtime {
         if let Some(lang) = self.squad_language(squad) {
             routine.title = crate::i18n::core(lang).get("routine.retro.title").to_owned();
         }
-        let for_the_person = self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full;
+        // A hosted team's person is never shown the team's own numbers either: its codes and tokens
+        // reached two customers' recaps (better-i4c2, namaneul, 2026-11-27).
+        let for_the_person = self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full || crate::autonomy::sandbox_machine();
         if for_the_person {
             routine.prompt = rules::FOR_THE_PERSON.to_owned();
         }

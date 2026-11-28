@@ -1049,5 +1049,15 @@
   "guard.cost_words": "費用|かかり|見込み|約|程度|ほど",
   "guard.purchase_words": "ドメイン|広告費",
   "guard.apply_words": "反映|適用|公開|本番",
-  "guard.promise_confirm": "確認していただけたら|確認いただけたら|ご確認いただけたら|選んでいただけたら|選んでいただいたら|お選びいただいたら"
+  "guard.promise_confirm": "確認していただけたら|確認いただけたら|ご確認いただけたら|選んでいただけたら|選んでいただいたら|お選びいただいたら",
+  "role_name.designer": "デザイナー",
+  "role_name.engineer": "エンジニア",
+  "role_name.frontend": "フロントエンドエンジニア",
+  "role_name.backend": "バックエンドエンジニア",
+  "role_name.mobile": "モバイルエンジニア",
+  "role_name.qa": "QA担当",
+  "role_name.security": "セキュリティ担当",
+  "role_name.data": "データアナリスト",
+  "role_name.marketing": "マーケター",
+  "role_name.pm": "PM"
 }

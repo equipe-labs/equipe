@@ -1049,5 +1049,15 @@
   "guard.cost_words": "예상 비용|예상돼|예상해요|예상됩니다|비용은 약|비용이 약|비용은 대략|들어요|들 거|들 것|소요돼|소요될|쓰게 돼|쓸 거|정도 들|정도 써",
   "guard.purchase_words": "도메인|멤버십|구독|요금제|요금|광고비|광고 예산",
   "guard.apply_words": "반영|적용|입히|입힐|라이브|사이트에 올|실제 사이트|실제 주소|배포",
-  "guard.promise_confirm": "확인해 주시면|확인해주시면|확인하시면|확인해 주신 뒤|고르시면|골라 주시면|골라주시면|고르신 뒤|고르신 후|선택하시면|선택해 주시면|정해 주시면|정하시면|보시고 괜찮으시면"
+  "guard.promise_confirm": "확인해 주시면|확인해주시면|확인하시면|확인해 주신 뒤|고르시면|골라 주시면|골라주시면|고르신 뒤|고르신 후|선택하시면|선택해 주시면|정해 주시면|정하시면|보시고 괜찮으시면",
+  "role_name.designer": "디자이너",
+  "role_name.engineer": "엔지니어",
+  "role_name.frontend": "프론트엔드 엔지니어",
+  "role_name.backend": "백엔드 엔지니어",
+  "role_name.mobile": "모바일 엔지니어",
+  "role_name.qa": "QA 담당",
+  "role_name.security": "보안 담당",
+  "role_name.data": "데이터 분석가",
+  "role_name.marketing": "마케터",
+  "role_name.pm": "PM"
 }

@@ -1061,5 +1061,15 @@
   "guard.cost_words": "cost|costs|estimate|estimated|about|around|roughly|approximately|will use|would use|would take",
   "guard.purchase_words": "domain|registrar|membership|subscription|ad budget|ad spend|per year from|plan from",
   "guard.apply_words": "apply|go live|goes live|put it live|put it on the site|publish|ship it|roll it out",
-  "guard.promise_confirm": "once you confirm|after you confirm|when you confirm|once you've confirmed|once you pick|after you pick|once you choose|after you choose|once you've picked|when you've picked|before it goes live|wait for your pick|wait for your ok|wait for your go-ahead"
+  "guard.promise_confirm": "once you confirm|after you confirm|when you confirm|once you've confirmed|once you pick|after you pick|once you choose|after you choose|once you've picked|when you've picked|before it goes live|wait for your pick|wait for your ok|wait for your go-ahead",
+  "role_name.designer": "designer",
+  "role_name.engineer": "engineer",
+  "role_name.frontend": "frontend engineer",
+  "role_name.backend": "backend engineer",
+  "role_name.mobile": "mobile engineer",
+  "role_name.qa": "QA engineer",
+  "role_name.security": "security engineer",
+  "role_name.data": "data analyst",
+  "role_name.marketing": "marketer",
+  "role_name.pm": "PM"
 }
