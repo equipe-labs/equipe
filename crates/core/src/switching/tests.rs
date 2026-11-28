@@ -530,9 +530,7 @@ fn the_setup_puts_writers_on_claude_and_reviewers_on_codex_once_both_are_signed_
     // Already on its model: nothing for it.
     let mut on_models = team(Engine::Claude);
     for m in &mut on_models {
-        m.model = Some(match m.role.as_str() {
-            _ => "claude-opus-5-5".into(),
-        });
+        m.model = Some("claude-opus-5-5".into());
     }
     let moves = setup(&on_models, &reach());
     assert_eq!(moves.iter().map(|m| m.member.as_str()).collect::<Vec<_>>(), ["data", "qa"]);

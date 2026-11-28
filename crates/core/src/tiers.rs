@@ -241,7 +241,7 @@ fn hosted(w: &Work<'_>, text: &str, risk: &[RiskTag]) -> Option<(ModelTier, Tier
         return None;
     }
     // Work a cheaper tier does as well: copying what exists, or the server side of a known stack.
-    let standard = settled || (code && !foundation(text) && (faithful_copy(text) || (server_side(&w.role, text) && !on_screen(text))));
+    let standard = settled || (code && !foundation(text) && (faithful_copy(text) || (server_side(w.role, text) && !on_screen(text))));
     if release_only {
         // A new screen shipped live keeps the table's deep tier: on strong or standard the first versions came out plainer.
         return standard.then_some((ModelTier::Standard, TierReason::Risk));

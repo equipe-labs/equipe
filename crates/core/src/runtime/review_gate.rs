@@ -84,7 +84,8 @@ impl Runtime {
             .collect();
         let mut made = Vec::new();
         for reviewer in who {
-            let mut body = review_gate::brief(*reviewer, builder.id, &builder.title, &builder.body, &engineer, worktree.as_deref(), builder.branch.as_deref(), round, platform);
+            let change = review_gate::Change { ticket: builder.id, title: &builder.title, body: &builder.body, builder: &engineer, worktree: worktree.as_deref(), branch: builder.branch.as_deref() };
+            let mut body = review_gate::brief(*reviewer, &change, round, platform);
             if round > 1 && !previous.is_empty() {
                 body.push_str(&format!("\n\nWhat the last round sent back (check these, and the flows they touch — not everything again):\n{}", previous.join("\n---\n")));
             }

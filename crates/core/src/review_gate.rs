@@ -302,7 +302,18 @@ pub fn read(args: &Value, reviewer: Reviewer, own_pictures: usize, screens: bool
 
 /// What the reviewer is given to do: the change, where it is, what it must
 /// do, and how to finish — in English, for the member.
-pub fn brief(reviewer: Reviewer, ticket: crate::protocol::TicketId, title: &str, body: &str, builder: &str, worktree: Option<&str>, branch: Option<&str>, round: u32, platform: bool) -> String {
+/// The change a review is of: its ticket, who built it, and where its work is.
+pub struct Change<'a> {
+    pub ticket: crate::protocol::TicketId,
+    pub title: &'a str,
+    pub body: &'a str,
+    pub builder: &'a str,
+    pub worktree: Option<&'a str>,
+    pub branch: Option<&'a str>,
+}
+
+pub fn brief(reviewer: Reviewer, change: &Change<'_>, round: u32, platform: bool) -> String {
+    let Change { ticket, title, body, builder, worktree, branch } = *change;
     let place = match (worktree, branch) {
         (Some(w), Some(b)) => format!("Its work is on branch `{b}`, checked out at `{w}`: read the diff there (`git -C {w} diff main...HEAD`) and the code around it."),
         (Some(w), None) => format!("Its work is checked out at `{w}`: read the diff there (`git -C {w} diff main...HEAD`)."),
@@ -409,8 +420,9 @@ mod tests {
 
     #[test]
     fn the_reviewer_is_told_where_the_change_is_and_that_it_changes_nothing() {
-        let b = brief(Reviewer::Qa, 49, "First version of Settle", "Accept: no past dates.", "engineer", Some("/w/t49"), Some("equipe/engineer-t49"), 2, true);
+        let change = Change { ticket: 49, title: "First version of Settle", body: "Accept: no past dates.", builder: "engineer", worktree: Some("/w/t49"), branch: Some("equipe/engineer-t49") };
+        let b = brief(Reviewer::Qa, &change, 2, true);
         assert!(b.contains("git -C /w/t49 diff main...HEAD") && b.contains("round 2") && b.contains("qa_check") && b.contains("You don't change any file") && b.contains("no past dates"));
-        assert!(!brief(Reviewer::Security, 1, "t", "b", "e", None, None, 1, false).contains("qa_check"));
+        assert!(!brief(Reviewer::Security, &Change { ticket: 1, title: "t", body: "b", builder: "e", worktree: None, branch: None }, 1, false).contains("qa_check"));
     }
 }
