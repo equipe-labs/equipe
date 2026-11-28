@@ -4467,7 +4467,7 @@ async fn a_members_model_changes_between_turns_and_its_conversation_carries_on()
     let cwd = scratch("model");
     let (claude, recorded) = recording_claude(&answering("ok"));
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
-    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    add(&handle, &mut events, 1, member(&cwd, "data")).await;
     handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     handle.send(Command::SetModel { session: 1, model: "opus".into() });
@@ -4485,7 +4485,7 @@ async fn an_alias_stays_what_is_asked_for_while_the_screens_hear_what_it_ran_as(
     let cwd = scratch("alias");
     let (claude, recorded) = recording_claude(&answering("ok"));
     let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
-    add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
+    add(&handle, &mut events, 1, member(&cwd, "data")).await;
     handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
     let seen = until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
     // The engine named what `sonnet` is on this machine; the member is still set to `sonnet`.
@@ -4507,7 +4507,8 @@ async fn a_new_member_starts_with_the_model_and_effort_the_person_set_for_its_ro
     let default = RoleModel { role: "frontend".into(), engine: Engine::Claude, model: Some("claude-opus-5-5".into()), effort: Some("max".into()) };
     handle.send(Command::SetRoleModel { squad: "acme".into(), default: default.clone() });
     until(&mut events, |e| matches!(e, Event::RoleModelsChanged { defaults, .. } if defaults.len() == 1)).await;
-    assert_eq!(handle.snapshot("acme").await.role_models, [default]);
+    // A frontend's default is the software engineer's.
+    assert_eq!(handle.snapshot("acme").await.role_models, [RoleModel { role: "engineer".into(), ..default }]);
     add(&handle, &mut events, 1, member(&cwd, "frontend")).await;
     handle.send(Command::Submit { session: 1, text: "one".into(), about: None });
     until(&mut events, |e| matches!(e, Event::TurnEnded { .. })).await;
@@ -4537,8 +4538,8 @@ async fn a_role_set_to_a_providers_model_starts_its_new_members_on_it_on_codexs_
     let seen = until(&mut events, started(1)).await;
     let Some(Event::SessionStarted { engine: Engine::Codex, model: Some(on), .. }) = seen.last() else { panic!("{seen:#?}") };
     assert_eq!(on, &model);
-    // Another role keeps Claude Code.
-    handle.send(Command::Start { session: 2, spec: member(&cwd, "backend") });
+    // Another role keeps Claude Code (a backend would be the same engineer).
+    handle.send(Command::Start { session: 2, spec: member(&cwd, "designer") });
     let seen = until(&mut events, started(2)).await;
     assert!(matches!(seen.last(), Some(Event::SessionStarted { engine: Engine::Claude, .. })), "{seen:#?}");
 }

@@ -222,7 +222,7 @@ async fn approval_prioritizes_ready_unblocks_for_several_new_members_then_uses_b
     let (home, project) = squad_home();
     let (handle, mut events) = pm_squad(&home, &project).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Old frontend work", "body": "-", "owner": "frontend" })).await;
-    tool(&handle, "pm", "create_ticket", json!({ "title": "Wrong role", "body": "-", "owner": "backend" })).await;
+    tool(&handle, "pm", "create_ticket", json!({ "title": "Wrong role", "body": "-", "owner": "data" })).await;
     tool(&handle, "pm", "create_ticket", json!({ "title": "Explicit unblock", "body": "-", "owner": "frontend" })).await;
     tool(&handle, "pm", "propose_team_change", json!({
         "change": "add", "role": "frontend", "count": 2, "reason": "two tickets wait", "unblocks": [2, 3], "asked": true
@@ -251,7 +251,7 @@ async fn approval_prioritizes_ready_unblocks_for_several_new_members_then_uses_b
     for id in [1, 3] {
         let ticket = snapshot.tickets.iter().find(|ticket| ticket.id == id).unwrap();
         assert_eq!(ticket.status, equipe_core::protocol::TicketStatus::InProgress);
-        assert!(ticket.assignee.as_deref().is_some_and(|name| name.starts_with("frontend")));
+        assert!(ticket.assignee.as_deref().is_some_and(|name| name.starts_with("engineer")), "an added frontend joins as the software engineer");
         assert!(ticket.branch.is_some());
     }
     assert_eq!(snapshot.tickets.iter().find(|ticket| ticket.id == 2).unwrap().status, equipe_core::protocol::TicketStatus::Todo);
@@ -305,7 +305,7 @@ async fn declined_nothing_changes_and_the_pm_hears_of_it() {
     handle.send(Command::DeclineTeamChange { squad: "acme".into(), id: change.id });
     let seen = until(&mut events, |e| matches!(e, Event::Notice { session: 1, .. })).await;
     assert!(seen.iter().any(|e| matches!(e, Event::TeamChangeClosed { id, approved: false, members, .. } if *id == change.id && members.is_empty())), "{seen:#?}");
-    assert!(matches!(seen.last(), Some(Event::Notice { text, .. }) if text == "팀 변경 제안을 거절했어요 · frontend 2명 추가"), "{seen:#?}");
+    assert!(matches!(seen.last(), Some(Event::Notice { text, .. }) if text == "팀 변경 제안을 거절했어요 · engineer 2명 추가"), "{seen:#?}");
     assert!(!seen.iter().any(|e| matches!(e, Event::SessionStarted { .. })), "{seen:#?}");
     assert_eq!(names(&handle).await, ["pm", "qa"]);
     assert!(handle.snapshot("acme").await.team_changes.is_empty());

@@ -559,13 +559,13 @@ async fn an_approved_add_hands_its_roles_stalled_ticket_to_the_new_member_but_ne
     let joined = seen
         .iter()
         .find_map(|e| match e {
-            Event::SessionStarted { session, member: Some(m), .. } if m.name == "frontend-3" => Some(*session),
+            Event::SessionStarted { session, member: Some(m), .. } if m.name == "engineer" => Some(*session),
             _ => None,
         })
-        .expect("frontend-3 joined");
+        .expect("the new engineer joined");
     assert!(seen.iter().any(|e| matches!(e, Event::WorkStarted { of: Some(session), ticket: 1, .. } if *session == joined)), "it takes T-1 at once: {seen:#?}");
     let handed = ticket(&handle, 1).await;
-    assert_eq!((handed.owner.as_deref(), handed.assignee.as_deref()), (Some("frontend-3"), Some("frontend-3")));
+    assert_eq!((handed.owner.as_deref(), handed.assignee.as_deref()), (Some("engineer"), Some("engineer")));
     assert_eq!((handed.branch.clone(), handed.worktree.clone()), (stalled.branch.clone(), stalled.worktree.clone()), "the same branch and worktree");
     assert_eq!((execution(&handed).state, execution(&handed).generation), (ExecutionState::Active, 2));
     assert_eq!(checkout(&worktree), disk);
@@ -761,12 +761,12 @@ async fn closing_a_numbered_member_hands_what_still_names_it_to_its_role() {
 
     handle.send(Command::Close { session: 3 });
     let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
-    assert!(told(&seen, "frontend-2 left: T-1, T-2, T-3, T-4 went to frontend"), "{seen:#?}");
+    assert!(told(&seen, "frontend-2 left: T-1, T-2, T-3, T-4 went to engineer"), "{seen:#?}");
 
     // In progress in its hands: requeued for frontend, nothing lost.
     let taken = ticket(&handle, 1).await;
     let run = execution(&taken);
-    assert_eq!((taken.status, taken.owner.as_deref(), taken.assignee.as_deref()), (TicketStatus::InProgress, Some("frontend"), Some("frontend")));
+    assert_eq!((taken.status, taken.owner.as_deref(), taken.assignee.as_deref()), (TicketStatus::InProgress, Some("engineer"), Some("frontend")));
     assert_eq!((taken.branch.clone(), taken.worktree.clone()), (stalled.branch.clone(), stalled.worktree.clone()), "the same branch and worktree");
     assert!(run.operation.starts_with("member-left:frontend-2:1:"), "{run:?}");
     assert_eq!(run.generation, execution(&stalled).generation + 1);
@@ -777,12 +777,12 @@ async fn closing_a_numbered_member_hands_what_still_names_it_to_its_role() {
 
     // In review: still in review, the role's — accepted or sent back by it.
     let in_review = ticket(&handle, review).await;
-    assert_eq!((in_review.status, in_review.owner.as_deref(), in_review.assignee.as_deref()), (TicketStatus::Review, Some("frontend"), None));
+    assert_eq!((in_review.status, in_review.owner.as_deref(), in_review.assignee.as_deref()), (TicketStatus::Review, Some("engineer"), None));
     // Waiting, and to do: the name gone, the state kept.
     let w = ticket(&handle, waiting).await;
     assert_eq!((w.status, w.owner.as_deref(), w.assignee.as_deref()), (TicketStatus::Waiting, Some("frontend"), None));
     let t = ticket(&handle, todo).await;
-    assert_eq!((t.status, t.owner.as_deref(), t.assignee.as_deref()), (TicketStatus::Todo, Some("frontend"), None));
+    assert_eq!((t.status, t.owner.as_deref(), t.assignee.as_deref()), (TicketStatus::Todo, Some("engineer"), None));
     // Finished work, and someone else's, untouched.
     let d = ticket(&handle, done).await;
     assert_eq!((d.status, d.owner.as_deref(), d.assignee.as_deref()), (TicketStatus::Done, Some("frontend-2"), Some("frontend-2")));
@@ -790,7 +790,7 @@ async fn closing_a_numbered_member_hands_what_still_names_it_to_its_role() {
 
     // A send-back from review reaches a member still on the team.
     let back = tool(&handle, "pm", "comment", json!({ "id": review, "text": "The footer overlaps at 760px.", "review": "changes" })).await;
-    assert!(!back.is_error && back.text.contains(&format!("Sent T-{review} back to frontend ")), "{back:?}");
+    assert!(!back.is_error && back.text.contains(&format!("Sent T-{review} back to engineer ")), "{back:?}");
     handle.shutdown().await;
 }
 
@@ -817,13 +817,13 @@ async fn at_start_work_still_naming_a_member_that_left_goes_to_its_role_once() {
 
     let (handle, mut events) = runtime::start(config(&engine.bin, &home));
     let seen = until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket, .. } if *ticket == held)).await;
-    assert!(told(&seen, "frontend-2 left: T-2, T-1, T-3, T-4 went to frontend"), "{seen:#?}");
+    assert!(told(&seen, "frontend-2 left: T-2, T-1, T-3, T-4 went to engineer"), "{seen:#?}");
     let h = ticket(&handle, held).await;
-    assert_eq!((h.status, h.owner.as_deref(), h.assignee.as_deref()), (TicketStatus::InProgress, Some("frontend"), Some("frontend")));
+    assert_eq!((h.status, h.owner.as_deref(), h.assignee.as_deref()), (TicketStatus::InProgress, Some("engineer"), Some("frontend")));
     let r = ticket(&handle, review).await;
-    assert_eq!((r.status, r.owner.as_deref(), r.assignee.as_deref()), (TicketStatus::Review, Some("frontend"), None));
+    assert_eq!((r.status, r.owner.as_deref(), r.assignee.as_deref()), (TicketStatus::Review, Some("engineer"), None));
     let t = ticket(&handle, todo).await;
-    assert_eq!((t.status, t.owner.as_deref(), t.assignee.as_deref()), (TicketStatus::Todo, Some("frontend"), None));
+    assert_eq!((t.status, t.owner.as_deref(), t.assignee.as_deref()), (TicketStatus::Todo, Some("engineer"), None));
     let w = ticket(&handle, waiting).await;
     assert_eq!((w.status, w.owner.as_deref(), w.assignee.as_deref()), (TicketStatus::Waiting, Some("frontend"), None));
     handle.shutdown().await;
@@ -860,8 +860,8 @@ async fn nothing_moves_when_no_member_of_the_role_is_left() {
     let before = [ticket(&handle, review).await, ticket(&handle, todo).await];
 
     handle.send(Command::Close { session: 3 });
-    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("no frontend is left"))).await;
-    assert!(told(&seen, "frontend-2 left and no frontend is left on the team: T-1, T-2 wait for one"), "{seen:#?}");
+    let seen = until(&mut events, |e| matches!(e, Event::Notice { text, .. } if text.contains("no engineer is left"))).await;
+    assert!(told(&seen, "frontend-2 left and no engineer is left on the team: T-1, T-2 wait for one"), "{seen:#?}");
     assert!(!seen.iter().any(|e| matches!(e, Event::TicketChanged { .. })), "{seen:#?}");
     assert_eq!([ticket(&handle, review).await, ticket(&handle, todo).await], before);
     handle.shutdown().await;
@@ -889,7 +889,7 @@ async fn a_member_closed_at_work_leaves_its_worktree_to_the_next_member() {
     handle.send(Command::Close { session: 3 });
     until(&mut events, |e| matches!(e, Event::WorkStarted { of: Some(2), ticket: 1, .. })).await;
     let taken = ticket(&handle, 1).await;
-    assert_eq!((taken.owner.as_deref(), taken.assignee.as_deref()), (Some("frontend"), Some("frontend")));
+    assert_eq!((taken.owner.as_deref(), taken.assignee.as_deref()), (Some("engineer"), Some("frontend")), "owned by the role now, taken by its member");
     assert_eq!((taken.branch.clone(), taken.worktree.clone()), (first.branch.clone(), first.worktree.clone()), "the same branch and worktree");
     assert_eq!(std::fs::read_to_string(worktree.join("hero.txt")).unwrap(), "half a hero\n");
     assert!(git(&repo, &["log", "--format=%s", first.branch.as_deref().unwrap()]).contains("T-1 Hero"), "what it did is committed on its branch");

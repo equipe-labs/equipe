@@ -113,10 +113,10 @@ async fn the_pm_shows_references_as_one_note_and_the_persons_reactions_reach_tas
     std::fs::write(folder.join("pricing.png"), png()).unwrap();
     let (handle, mut events) = runtime::start(config(&claude, &home));
     add(&handle, &mut events, 1, member(&project, "pm")).await;
-    add(&handle, &mut events, 2, member(&project, "backend")).await;
+    add(&handle, &mut events, 2, member(&project, "qa")).await;
 
     // Only the PM, a designer or frontend shows references; a wrong call is said at once.
-    let refused = tool(&handle, "backend", json!({ "items": [{ "picture": "pricing.png", "title": "A", "link": "https://a.example.com" }] })).await;
+    let refused = tool(&handle, "qa", json!({ "items": [{ "picture": "pricing.png", "title": "A", "link": "https://a.example.com" }] })).await;
     assert!(refused.is_error && refused.text.contains("Only the PM"), "{}", refused.text);
     let wrong = tool(&handle, "pm", json!({ "items": [{ "picture": "https://user:pw@cdn.example.com/a.png", "title": "A", "link": "https://a.example.com" }] })).await;
     assert!(wrong.is_error && wrong.text.contains("picture"), "{}", wrong.text);

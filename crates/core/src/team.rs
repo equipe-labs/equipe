@@ -235,7 +235,7 @@ pub fn check(args: &Value, team: &[Mate<'_>], tickets: &[Ticket], waiting: &[Tea
 pub fn new_member_takes(ticket: &Ticket, role: &str, team: &[Mate<'_>]) -> bool {
     match ticket.owner.as_deref() {
         None => true,
-        Some(owner) if owner == role => true,
+        Some(owner) if roles::canonical(owner) == roles::canonical(role) && (owner == role || roles::MERGED_INTO_ENGINEER.contains(&owner)) => true,
         Some(owner) if team.iter().any(|m| m.name == owner || m.role == owner) => false,
         Some(owner) => board::role_of(owner) == role,
     }
@@ -246,7 +246,8 @@ pub fn new_member_takes(ticket: &Ticket, role: &str, team: &[Mate<'_>]) -> bool 
 /// role's first member) stands for the role, as on the board.
 pub fn owned_by_name<'t>(ticket: &'t Ticket, team: &[Mate<'_>]) -> Option<&'t str> {
     let owner = ticket.owner.as_deref()?;
-    (team.iter().any(|m| m.name == owner) && !team.iter().any(|m| m.role == owner)).then_some(owner)
+    // `frontend` or `backend` stands for the software engineer's role, as on the board.
+    (team.iter().any(|m| m.name == owner) && !team.iter().any(|m| m.role == owner) && !roles::MERGED_INTO_ENGINEER.contains(&owner)).then_some(owner)
 }
 
 /// What becomes of a ticket that still names a member who left the squad
