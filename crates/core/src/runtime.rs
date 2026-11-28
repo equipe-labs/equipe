@@ -6504,7 +6504,10 @@ runbooks and reports live there, and work across the projects or on running them
         } else {
             None
         };
-        let writable: Vec<String> = builds.iter().chain(scratch.iter()).map(|d| d.to_string_lossy().into_owned()).collect();
+        // A reviewer on its review also writes its own copy of the change it checks (`review_gate`).
+        let review_copy = squad.as_deref().and_then(|s| self.review_copy_of(s, id));
+        let writable: Vec<String> = builds.iter().chain(scratch.iter()).chain(review_copy.iter()).map(|d| d.to_string_lossy().into_owned()).collect();
+        let reviewer = session.member.as_ref().is_some_and(|m| matches!(roles::canonical(&m.role), "qa" | roles::SECURITY));
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
         // squad's home is read at all. Where the guard is asked, it keeps the
@@ -6996,6 +6999,12 @@ runbooks and reports live there, and work across the projects or on running them
                 // A window that holds the turn until it is closed: the guard says why first.
                 if member_rules {
                     blocked.extend(guard::deny_rules(self.config.equipe_binary.as_deref()));
+                }
+                // A reviewer verifies — tests, builds, the browser, qa_check, the product's pages — and never
+                // publishes, pushes, commits or touches secrets (`review_gate::reviewer_blocked`).
+                if reviewer {
+                    allowed.extend(crate::review_gate::REVIEWER_FETCH.iter().map(|r| (*r).to_owned()));
+                    blocked.extend(crate::review_gate::reviewer_blocked(MCP_SERVER));
                 }
                 // On credits every call is paid: tools a member never uses are left out of its prompt.
                 if member_rules && cost_levers::credits_profile() {

@@ -8313,3 +8313,28 @@ async fn on_full_autonomy_a_members_business_fact_goes_to_the_pm_instead_of_bloc
     assert!(pm.text.starts_with("Asked"), "{}", pm.text);
     handle.shutdown().await;
 }
+
+/// A reviewer verifies and never publishes: QA and the security reviewer may fetch the product's own pages
+/// without asking, and never deploy, roll back, push, commit or touch the squad's secrets — whatever the mode.
+#[tokio::test]
+async fn a_reviewer_fetches_the_products_pages_and_never_deploys_pushes_or_reads_secrets() {
+    let cwd = scratch("reviewer");
+    let (claude, recorded) = recording_claude(&answering("ok"));
+    let (handle, mut events) = runtime::start(with_tools(&claude, &squad_home(&[&cwd])));
+    add(&handle, &mut events, 1, member(&cwd, "qa")).await;
+    add(&handle, &mut events, 2, member(&cwd, "designer")).await;
+    for session in [1, 2] {
+        handle.send(Command::Submit { session, text: "look".into(), about: None });
+        until(&mut events, |e| matches!(e, Event::TurnEnded { session: s, .. } if *s == session)).await;
+    }
+    let all = calls(&recorded);
+    let joined = |i: usize| all[i].join(" ");
+    let qa = (0..all.len()).find(|i| joined(*i).contains("QA evaluator")).expect("the QA turn");
+    let other = (0..all.len()).find(|i| *i != qa).unwrap();
+    for rule in ["mcp__equipe-platform__deploy_site", "mcp__equipe-platform__rollback_site", "Bash(git push:*)", "Bash(git commit:*)", "mcp__equipe__secret_write"] {
+        assert!(joined(qa).contains(rule), "{rule} is refused to QA");
+        assert!(!joined(other).contains(rule) || rule.starts_with("Bash(git push"), "{rule} is only a reviewer's refusal");
+    }
+    assert!(joined(qa).contains("WebFetch(domain:equipe.page)"), "QA fetches the product's own pages");
+    assert!(!joined(other).contains("WebFetch(domain:equipe.page)"));
+}

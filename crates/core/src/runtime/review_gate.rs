@@ -86,6 +86,10 @@ impl Runtime {
         for reviewer in who {
             let change = review_gate::Change { ticket: builder.id, title: &builder.title, body: &builder.body, builder: &engineer, worktree: worktree.as_deref(), branch: builder.branch.as_deref() };
             let mut body = review_gate::brief(*reviewer, &change, round, platform);
+            // Built from the person's own design: its signature features are checked on the deployed copy.
+            if *reviewer == Reviewer::Qa && builder.worktree.as_ref().is_some_and(|w| w.join("design/reference/signature.json").exists()) {
+                body.push_str("\n\nThis product is built from the person's own design: check each signature item in design/reference/signature.json works on the deployed copy; a missing one is S1.");
+            }
             if round > 1 && !previous.is_empty() {
                 body.push_str(&format!("\n\nWhat the last round sent back (check these, and the flows they touch — not everything again):\n{}", previous.join("\n---\n")));
             }
@@ -126,8 +130,32 @@ impl Runtime {
                 priority: builder.priority,
                 rank: 0,
             };
+            let squad_dir = crate::journal::squad_dir(&self.config.home, squad);
             let Some(journal) = self.journal(squad) else { return false };
             let Ok(id) = journal.create_ticket(&review) else { continue };
+            // Its own copy of the change, made off the loop: the reviewer builds, tests and runs the product there,
+            // and a change to the copy never reaches the product. Told in its ticket.
+            if let Some(source) = builder.worktree.clone().filter(|w| w.exists()) {
+                let at = review_gate::copy_dir(&squad_dir, id);
+                if let Some(mut made) = journal.ticket(id).ok().flatten() {
+                    made.body.push_str(&format!(
+                        "\n\nYour own copy of the change, to build, test and run it in (its tests, a dev server, the browser): `{}`. Run anything there: what you change in it never reaches the product, and the product's own folder stays read only. If it isn't there, make it yourself: `git clone --shared {} {}`, then install its dependencies. Write your notes and pictures in your own folder.",
+                        at.display(),
+                        source.display(),
+                        at.display()
+                    ));
+                    let _ = journal.save_ticket(&made);
+                }
+                let squad_name = squad.to_owned();
+                tokio::task::spawn_blocking(move || {
+                    if let Some(parent) = at.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if let Err(why) = crate::check_copy::prepare(&source, &at) {
+                        crate::daemon_log!("equipe: {squad_name}: no review copy of {} ({why})", source.display());
+                    }
+                });
+            }
             let _ = journal.start_independent_review(id, builder.id, reviewer.code(), round);
             let _ = journal.ticket_event(id, "equipe", "created", &format!("{} of T-{}, round {round}", reviewer.what(), builder.id));
             let _ = journal.ticket_event(builder.id, "equipe", "review asked", &format!("{} on T-{id}, round {round}", reviewer.what()));
@@ -146,6 +174,13 @@ impl Runtime {
         );
         self.brief_pm(squad, line, None);
         true
+    }
+
+    /// The copy of the change session `id`'s review ticket checks, when it is on one.
+    pub(super) fn review_copy_of(&self, squad: &str, id: SessionId) -> Option<PathBuf> {
+        let ticket = self.sessions.get(&id)?.work.as_ref()?.ticket;
+        self.journals.get(squad)?.independent_review(ticket)?;
+        Some(review_gate::copy_dir(&crate::journal::squad_dir(&self.config.home, squad), ticket))
     }
 
     /// `review_verdict`: a reviewer's word on the change its review ticket checks.

@@ -349,6 +349,31 @@ worst first, each with where and how to fix it; no style preferences. Its engine
     )
 }
 
+/// Where a review's own copy of the change it checks is made: beside the
+/// squad's journal, one per review ticket. The reviewer builds, tests and
+/// runs the product there; a change to the copy never reaches the product.
+pub fn copy_dir(squad_dir: &std::path::Path, review: crate::protocol::TicketId) -> std::path::PathBuf {
+    squad_dir.join("review-copies").join(format!("T-{review}"))
+}
+
+/// What a reviewer is never let do, whatever the mode: publish or roll back
+/// the product, push, or touch the squad's secrets. Read-only means it
+/// can't change the product; it still verifies — runs tests, builds, the
+/// browser and `qa_check`, fetches the product's pages, and writes its
+/// copy, its notes and its pictures.
+pub fn reviewer_blocked(engine_server: &str) -> Vec<String> {
+    let platform = |t: &str| format!("mcp__{}__{t}", crate::build_ahead::PLATFORM_SERVER);
+    let mut out: Vec<String> = crate::stops::GOES_LIVE.iter().map(|t| platform(t)).collect();
+    out.push(platform("rollback_site"));
+    out.extend(["Bash(git push:*)", "Bash(git commit:*)"].map(str::to_owned));
+    out.extend([crate::squad_secrets::SAVE, crate::squad_secrets::USE, crate::squad_secrets::WRITE, crate::secrets::ASK_SECRET].map(|t| format!("mcp__{engine_server}__{t}")));
+    out
+}
+
+/// What a reviewer may do without asking: fetch the product's own pages —
+/// its preview and live addresses on the platform, and a local build.
+pub const REVIEWER_FETCH: [&str; 5] = ["WebFetch(domain:equipe.page)", "WebFetch(domain:*.equipe.page)", "WebFetch(domain:*.workers.dev)", "WebFetch(domain:localhost)", "WebFetch(domain:127.0.0.1)"];
+
 /// The note its builder reads when a review sends the work back.
 pub fn sent_back_note(reviewer: Reviewer, by: &str, findings: &str) -> String {
     format!("Sent back by {by}'s {}: fix each finding, then hand in again.\n{findings}", reviewer.what())
@@ -416,6 +441,17 @@ mod tests {
         assert!(ok.passed && ok.findings.contains("Ran: booking flow") && ok.findings.contains("Criteria: past dates refused"));
         let changes = read(&json!({ "verdict": "changes", "findings": "POST /api/meetings takes a date in the past.", "ran": ["read the diff"] }), Reviewer::Security, 0, false, true, None).unwrap();
         assert!(!changes.passed, "a send-back needs no pictures or checklist");
+    }
+
+    #[test]
+    fn a_reviewer_verifies_but_never_publishes_pushes_commits_or_touches_secrets() {
+        let blocked = reviewer_blocked("equipe");
+        for rule in ["mcp__equipe-platform__deploy_site", "mcp__equipe-platform__promote_version", "mcp__equipe-platform__rollback_site", "Bash(git push:*)", "Bash(git commit:*)", "mcp__equipe__secret_write", "mcp__equipe__secret_save", "mcp__equipe__ask_secret"] {
+            assert!(blocked.iter().any(|b| b == rule), "{rule}: {blocked:?}");
+        }
+        assert!(!blocked.iter().any(|b| b.starts_with("Bash(npm") || b == "Bash" || b.starts_with("WebFetch") || b.contains("qa_check")), "tests, builds, fetches and qa_check stay open: {blocked:?}");
+        assert!(REVIEWER_FETCH.iter().all(|r| r.starts_with("WebFetch(domain:")));
+        assert_eq!(copy_dir(std::path::Path::new("/h/squads/acme"), 12), std::path::PathBuf::from("/h/squads/acme/review-copies/T-12"));
     }
 
     #[test]
