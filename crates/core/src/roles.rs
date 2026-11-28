@@ -733,9 +733,9 @@ pub fn charter(role: &Role, name: &str, ctx: &Context<'_>) -> String {
     }
     // Where the squad runs on its own: internal matters are the team's, and what only the person can give never stops the work (`build_ahead`).
     if role.id == PM {
-        format!("{base}\n\n{HANDS_OFF_PM}\n\n{} {}", crate::build_ahead::RULE, crate::build_ahead::RULE_PM)
+        format!("{base}\n\n{HANDS_OFF_PM}\n\n{} {}\n\n{}", crate::build_ahead::RULE, crate::build_ahead::RULE_PM, crate::build_ahead::GOOGLE_PM)
     } else {
-        format!("{base}\n\n{HANDS_OFF}\n\n{}", crate::build_ahead::RULE)
+        format!("{base}\n\n{HANDS_OFF}\n\n{}\n\n{}", crate::build_ahead::RULE, crate::build_ahead::GOOGLE)
     }
 }
 

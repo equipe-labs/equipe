@@ -51,6 +51,28 @@ pub const RULE_PM: &str = "Never write a ticket that waits for the person (\"wai
 ready, hand it back\"): write it to build the whole thing now, the missing piece behind its switch or a marked placeholder. \
 When the person answers a fact card, hand each member on placeholders what they said, at once, so they swap them.";
 
+/// Google sign-in and calendars for the product, built as the product's own
+/// app in the person's own Google account by the platform's `google_setup`
+/// (equipe-cloud docs/managed-google.md, 2026-11-28). The person sees at most
+/// one Connect card, one sign-in and the line that it is live.
+pub const GOOGLE: &str = "Google sign-in or Google Calendar for the product (signing in with Google, visitors' calendars, \
+sending invites), where you have `google_setup`: run `google_setup` {app, features} and do exactly what its answer says, \
+calling it again after each step until it says `live`. `needs_grant`: one `ask_to_connect` card, key \"google_build\", then \
+wait for the note that it is connected. `needs_domain`: one plain line offering one domain with its price. `waiting`: call it \
+again in a few minutes. `browser`: `show_my_browser` once at its sign-in address for the person to sign in, then every console \
+click is yours, the secret only through DOWNLOAD JSON and `set_auth_client` {from_downloads: true}, then `google_setup` \
+{submitted: true}. `live`: tell the person \"Google sign-in is live on <domain>\" with a screenshot of its consent screen. For \
+visitors' calendars, `calendar` {app, enable: true} as well. Never hand-roll OAuth, keep tokens, type a password or read a \
+secret. Never ask the person for a Cloud project, a client id, a secret, scopes or a domain proof, and don't bring up Google's \
+review or \"unverified\" unless they ask; then: \"Google is reviewing your app; until then visitors see one extra step and up to \
+100 people can connect calendars. It goes away by itself.\"";
+
+/// …and the PM, who routes it.
+pub const GOOGLE_PM: &str = "Google sign-in, Google Calendar, calendar sync or invites, where the squad has `google_setup`: \
+hand it straight to the member who builds the product, with no question to the person and no ticket about setting Google up \
+— the member runs `google_setup` to the end. Never ask the person for a Cloud project, a client id, a secret, scopes or a \
+domain proof, and don't bring up Google's review or \"unverified\" unless they ask.";
+
 /// The squad MCP server of equipe's platform tools on a hosted team's machine, which carries `ask_to_connect`.
 pub const PLATFORM_SERVER: &str = "equipe-platform";
 
@@ -73,6 +95,15 @@ fn account_in(text: &str) -> Option<&'static str> {
 /// to go on instead. `None` when nothing in them names such an account.
 pub fn account_ask(needs: &[String], ask: Option<&str>) -> Option<String> {
     let found = needs.iter().map(String::as_str).chain(ask).find_map(account_in)?;
+    // Google is built in the person's own account by the platform, not connected by hand.
+    if found == "google calendar" {
+        return Some(
+            "Google Calendar (and Google sign-in) doesn't put the work down, and the person isn't asked for it: run `google_setup` \
+{app, features: [\"signin\", \"calendar\"]} and follow its answer, calling it again after each step until it says `live` — at \
+most one Connect card and one sign-in for the person. Build everything else now and hand in what you built."
+                .to_owned(),
+        );
+    }
     let name = found.split(' ').map(|w| { let mut c = w.chars(); c.next().map(|f| f.to_uppercase().chain(c).collect::<String>()).unwrap_or_default() }).collect::<Vec<_>>().join(" ");
     Some(format!(
         "Connecting {name} doesn't put the work down. Call `ask_to_connect` (key from `connections_hub`, with one plain line of \
@@ -143,6 +174,11 @@ mod tests {
 
     #[test]
     fn connecting_an_outside_account_is_refused_with_build_ahead_guidance() {
+        let google = account_ask(&["Connect Google Calendar so bookings sync".into()], None).unwrap();
+        assert!(google.contains("google_setup") && !google.contains("ask_to_connect"), "{google}");
+        for rule in [GOOGLE, GOOGLE_PM] {
+            assert!(rule.contains("google_setup") && rule.contains("client id") && rule.contains("unverified"), "{rule}");
+        }
         let said = account_ask(&["Connect your Stripe account in Growth > Payments so customers can pay".into()], None).unwrap();
         assert!(said.contains("Connecting Stripe") && said.contains("ask_to_connect") && said.contains("enable_payments") && said.contains("opens soon"), "{said}");
         assert!(account_ask(&[], Some("Connect PayPal")).unwrap().contains("Connecting Paypal"));
