@@ -6508,6 +6508,13 @@ runbooks and reports live there, and work across the projects or on running them
         let review_copy = squad.as_deref().and_then(|s| self.review_copy_of(s, id));
         let writable: Vec<String> = builds.iter().chain(scratch.iter()).chain(review_copy.iter()).map(|d| d.to_string_lossy().into_owned()).collect();
         let reviewer = session.member.as_ref().is_some_and(|m| matches!(roles::canonical(&m.role), "qa" | roles::SECURITY));
+        // A ticket's worktree its member writes: whatever ends the turn — done, failed, stopped, a credit or
+        // spending stop — what it made so far is committed on its branch (`wip:`), so a resume starts from it.
+        let checkpoint = session
+            .work
+            .as_ref()
+            .filter(|w| !w.kind.in_home() && access != claude_code::Access::ReadOnly)
+            .and_then(|w| w.sandbox.clone().map(|sb| (sb, w.ticket)));
         let fenced = member_rules && access == claude_code::Access::EditFiles && mode == Mode::Auto;
         // Directories added for reading stay read-only in every mode, and no other
         // squad's home is read at all. Where the guard is asked, it keeps the
@@ -7118,6 +7125,10 @@ runbooks and reports live there, and work across the projects or on running them
                         None => claude_failure(err),
                     });
                     let lost = on_provider.is_none() && !on_gateway && matches!(&result, Err((_, next)) if crate::engine_auth::lost_by(*next) == Some(Engine::Claude));
+                    if let Some((sandbox, ticket)) = checkpoint {
+                        let how = if result.is_ok() { "turn ended" } else { "turn stopped" };
+                        let _ = tokio::task::spawn_blocking(move || checkpoint_commit(&sandbox, ticket, how)).await;
+                    }
                     let reply = finish_turn(&emit, id, result, streamed);
                     // After the error is told: the screens hear what it was, then why.
                     if lost {
@@ -14018,6 +14029,17 @@ fn suggestion_context(member: &str, entries: &[Entry]) -> Option<String> {
     Some(lines.join("\n\n"))
 }
 
+/// What a member made on ticket `ticket` so far, committed on its branch
+/// when a turn ends (`how`): a stop mid-turn — credits, a spending limit, a
+/// failure — never leaves it only in the worktree. Nothing to commit: nothing.
+fn checkpoint_commit(sandbox: &Sandbox, ticket: TicketId, how: &str) {
+    match sandbox.commit_all(&format!("wip: T-{ticket} checkpoint ({how})")) {
+        Ok(Some(sha)) => crate::daemon_log!("equipe: T-{ticket}: work so far checkpointed at {sha} ({how})"),
+        Ok(None) => {}
+        Err(err) => crate::daemon_log!("equipe: T-{ticket}: no checkpoint ({err})"),
+    }
+}
+
 fn finish_turn(
     emit: &impl Fn(Event),
     id: SessionId,
@@ -14610,6 +14632,35 @@ fn now_secs() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A turn that ends — done, failed or stopped mid-way by a credit or spending stop — leaves what its member
+    /// made committed on the ticket's branch, so a resume starts from it and nothing is paid for twice.
+    #[test]
+    fn a_turn_that_stops_leaves_its_work_committed_on_the_branch() {
+        let dir = std::env::temp_dir().join(format!("equipe-checkpoint-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (repo, home) = (dir.join("repo"), dir.join("home"));
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&repo).args(args).status().unwrap().success());
+        git(&["init", "-q", "-b", "main"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        std::fs::write(repo.join("README.md"), "hello\n").unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-q", "-m", "init"]);
+        let sandbox = worktree::create(&repo, &home, "cp1", "t7").unwrap();
+        std::fs::write(sandbox.path.join("index.html"), "<h1>first screen</h1>\n").unwrap();
+        checkpoint_commit(&sandbox, 7, "turn stopped");
+        let log = std::process::Command::new("git").arg("-C").arg(&sandbox.path).args(["log", "--format=%s", "-1"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "wip: T-7 checkpoint (turn stopped)");
+        let dirty = std::process::Command::new("git").arg("-C").arg(&sandbox.path).args(["status", "--porcelain"]).output().unwrap();
+        assert!(dirty.stdout.is_empty(), "nothing left only in the worktree");
+        // Nothing new: no empty commit.
+        checkpoint_commit(&sandbox, 7, "turn ended");
+        let count = std::process::Command::new("git").arg("-C").arg(&sandbox.path).args(["rev-list", "--count", "HEAD"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn a_refused_codex_model_falls_back_to_a_cheaper_one_never_a_dearer_one() {
