@@ -75,6 +75,10 @@ pub mod turn_ending {
 /// stopped, and a run on a ticket reminded once how to finish.
 pub(super) const SILENT_AFTER: std::time::Duration = std::time::Duration::from_secs(45 * 60);
 
+/// The context window a conversation that overflowed is taken to have had,
+/// when its engine never said (Claude's standard window).
+pub(super) const OVERFLOW_WINDOW: u64 = 200_000;
+
 /// A failure within this many seconds, with nothing done, is a fast one.
 pub(super) const FAST_SECS: u64 = 20;
 /// How long a run waits before going again after its engine failed, by the
@@ -378,6 +382,25 @@ pub(super) fn lost_conversation(text: &str) -> bool {
     lower.contains("no conversation found") || lower.contains("conversation not found")
 }
 
+/// Whether what an engine said means the conversation outgrew its model's
+/// context window (Claude Code: "Prompt is too long"; the API's
+/// `prompt_too_long`; OpenAI's `context_length_exceeded`). Like a lost
+/// conversation it is equipe's to recover: the turn is asked again at once in
+/// a fresh conversation opened with the end of the last, and the person never
+/// reads the engine's line (inhwadoen, 2026-11-28: the PM's conversation grew
+/// to 195k tokens and "Prompt is too long" showed in the team chat).
+pub(super) fn context_overflow(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    ["prompt is too long", "prompt_too_long", "context_length_exceeded", "maximum context length", "input is too long", "exceeds the context window", "context window exceeded"]
+        .iter()
+        .any(|w| lower.contains(w))
+}
+
+/// Whether a turn's failure is a conversation equipe starts afresh rather than retries as it was.
+pub(super) fn needs_fresh_conversation(text: &str) -> bool {
+    lost_conversation(text) || context_overflow(text)
+}
+
 fn clip_chars(text: &str, most: usize) -> String {
     if text.chars().count() <= most {
         return text.to_owned();
@@ -483,11 +506,22 @@ don't tell the person this work is failing or stopped for it."
             // Only a conversation it was asked to resume: a fresh one can't be lost again.
             && s.claude_session.is_some()
             && ending.outcome == TurnOutcome::Failed
-            && ending.error.as_ref().is_some_and(|(m, _)| lost_conversation(m))
+            && ending.error.as_ref().is_some_and(|(m, _)| needs_fresh_conversation(m))
             && let Some(prompt) = ending.prompt.clone()
         {
+            let overflow = ending.error.as_ref().is_some_and(|(m, _)| context_overflow(m));
             if let Some(s) = self.sessions.get_mut(&id) {
                 s.refresh = Some(true);
+                // Outgrown: the hand-off says so, whatever equipe last read of its size.
+                if overflow {
+                    let window = s.desk_context.map_or(OVERFLOW_WINDOW, |(_, w)| w.max(1));
+                    s.desk_context = Some((window, window));
+                }
+            }
+            if overflow
+                && let Some(squad) = self.sessions.get(&id).and_then(|s| s.squad.clone())
+            {
+                crate::daemon_log!("equipe: {squad}: session {id}'s conversation outgrew its context; asked again in a fresh one");
             }
             self.start_turn(id, prompt);
             return true;
@@ -705,7 +739,7 @@ already done — look at where you are, then end the turn in one of the ways abo
         // after a move): the next try starts a fresh one at once. That is
         // equipe's own bookkeeping, not an engine failing, so it never counts
         // toward the squad's breaker nor waits out a backoff.
-        let lost = ending.error.as_ref().is_some_and(|(m, _)| lost_conversation(m));
+        let lost = ending.error.as_ref().is_some_and(|(m, _)| needs_fresh_conversation(m));
         let fast = ending.fast() && !lost;
         let cause = ending.cause();
         let key = (squad.to_owned(), ticket);
@@ -1469,6 +1503,16 @@ with what to do next in `body`, cancel it, or ask the person.",
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_conversation_that_outgrew_its_context_is_started_afresh_like_a_lost_one() {
+        for said in ["Prompt is too long", "API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long: 201234 tokens > 200000 maximum\"}}", "context_length_exceeded"] {
+            assert!(context_overflow(said) && needs_fresh_conversation(said), "{said}");
+        }
+        assert!(needs_fresh_conversation("No conversation found with session ID: abc"));
+        assert!(!context_overflow("No conversation found with session ID: abc"));
+        assert!(!needs_fresh_conversation("You've hit your usage limit") && !needs_fresh_conversation("Connection reset by peer"));
+    }
 
     #[test]
     fn a_failed_turn_on_an_engine_out_of_its_limit_is_limited_not_a_fast_failure() {

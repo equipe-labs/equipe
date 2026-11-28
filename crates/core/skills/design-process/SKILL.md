@@ -27,6 +27,11 @@ step by step; hand off a spec an engineer can build without guessing (token name
 after the engineer builds it, equipe opens its design QA — never open one yourself. Build the chosen option to the
 `ui-*` skill of each part it has.
 
+The first round of options is cheap on purpose: still renders only — no motion, animation, video, walkthrough
+recording or clickable prototype — unless the person asked to see motion or the choice is about behaviour (then the
+live prototypes below). Motion, recordings and every state come after they pick, for the option they picked. Nothing of
+an option touches the live product before the person picks it.
+
 Show design options as they would live: each applied to the product's real screens — the UI map's pictures
 (`design/flows/`) shot again or mocked up with that option's tokens, or `equipe design specimen --tokens <file> --png`
 when no screen exists yet — never as swatches alone. When the project deploys previews (a Vercel or Netlify preview

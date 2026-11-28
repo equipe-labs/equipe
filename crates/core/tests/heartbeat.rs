@@ -371,6 +371,8 @@ async fn a_pm_brings_a_weekly_retro_from_the_weeks_facts_and_only_confirmed_less
     let at = now();
     journal.record_turn(&equipe_core::retro::Turn { member: "backend".into(), role: "backend".into(), ticket: Some(7), began: at - 4000, ended: at - 3600, outcome: "failed".into(), tokens: 12_000 }).unwrap();
     journal.record_wait(&equipe_core::retro::Wait { kind: "permission".into(), member: "backend".into(), ticket: Some(7), what: "git push origin equipe/t-7".into(), asked: at - 7200, answered: Some(at - 3600), outcome: "allowed".into() }).unwrap();
+    // A team that has worked a week: a younger one has no retro yet.
+    journal.set_born(at - 8 * DAY).unwrap();
     drop(journal);
 
     let (handle, mut events) = runtime::start(config(&busy_claude(), &home));
@@ -426,5 +428,19 @@ async fn a_pm_brings_a_weekly_retro_from_the_weeks_facts_and_only_confirmed_less
     assert_eq!(Journal::for_squad(&home, "acme").unwrap().retro_routine(), None);
     start(&handle, &mut events, 3, "pm", &project).await;
     assert_eq!(handle.snapshot("acme").await.routines.len(), 1);
+    handle.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_team_younger_than_a_week_gets_no_retro_until_it_has_a_week() {
+    // inhwadoen, 2026-11-28: a team sixteen hours old was handed "Weekly retro (11/20 – 11/27)".
+    let (home, project) = squad_home();
+    let (handle, mut events) = runtime::start(config(&busy_claude(), &home));
+    start(&handle, &mut events, 1, "pm", &project).await;
+    handle.send(Command::RunRoutine { squad: "acme".into(), id: 2 });
+    let seen = until(&mut events, |e| matches!(e, Event::RoutinesChanged { .. })).await;
+    assert_eq!(said_to(&seen, 1), None, "nothing handed to the PM");
+    let retro = handle.snapshot("acme").await.routines.into_iter().find(|r| r.id == 2).expect("the retro stays");
+    assert!(retro.last_run.is_none() && retro.next_run.is_some_and(|at| at > now()), "it waits for the next week: {retro:?}");
     handle.shutdown().await;
 }

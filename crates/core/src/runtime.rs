@@ -901,6 +901,7 @@ pub fn start(config: Config) -> (Handle, UnboundedReceiver<Event>) {
         codex_kind: None,
         codex_refused: HashMap::new(),
         model_refused_turns: HashSet::new(),
+        count_checked: HashSet::new(),
         engine_pages: HashMap::new(),
         tool_repeats: HashMap::new(),
         qa_budgets: HashMap::new(),
@@ -1711,6 +1712,8 @@ struct Runtime {
     /// Runs whose last turn failed on a refused model, with nothing to fall
     /// back on: never an engine's limit.
     model_refused_turns: HashSet<SessionId>,
+    /// Hand-ins told once that their summary claims more than they show (`visuals::claimed_count`).
+    count_checked: HashSet<(String, TicketId)>,
     /// Each engine's sign-in page under way, as its tool handed it back.
     engine_pages: HashMap<Engine, String>,
     /// For each run, its latest tool call and how many times in a row it
@@ -2738,6 +2741,15 @@ impl Runtime {
         }
         // How the turn goes, for how it ends: a turn its engine's limit ended is kept as limited.
         let limited = self.watch_turn(&event);
+        // A conversation that outgrew its context is started afresh and asked again (`turn_end`):
+        // the engine's "Prompt is too long" is equipe's to handle, never a line on the person's screen.
+        if let Event::Error { session: Some(sid), message, .. } = &event
+            && turn_end::context_overflow(message)
+            && self.sessions.get(sid).is_some_and(|s| s.work.is_some() || s.claude_session.is_some())
+        {
+            crate::daemon_log!("equipe: session {sid}: its engine said the conversation outgrew its context; recovered in a fresh one, not shown");
+            return;
+        }
         // A run making the same call over and over: its ticket's next lane goes up a tier.
         if let Event::ToolUse { session, tool, target: Some(target), .. } = &event {
             self.watch_loop(*session, tool, target);
@@ -4541,6 +4553,15 @@ runbooks and reports live there, and work across the projects or on running them
                 crate::daemon_log!("equipe: {squad}: the weekly retro is the sprint review's while the sprint loop runs");
                 if let Some(r) = all.iter_mut().find(|r| r.id == id) {
                     r.last_run = Some(now);
+                    r.next_run = Some(routines::next_run(r.when, now, &routines::Local));
+                }
+                self.keep_routines(squad, all);
+                return true;
+            }
+            // A team younger than about a week has no week to look back on: its first retro waits for one.
+            if retro && !crate::retro::old_enough(self.journal(squad).and_then(Journal::born), now) {
+                crate::daemon_log!("equipe: {squad}: the weekly retro waits until the team is a week old");
+                if let Some(r) = all.iter_mut().find(|r| r.id == id) {
                     r.next_run = Some(routines::next_run(r.when, now, &routines::Local));
                 }
                 self.keep_routines(squad, all);
@@ -9891,6 +9912,16 @@ there, end your turn, and carry on when they say they're done."
             self.audit(&call.squad, ticket, "equipe", "refused (paused)", &action);
             return;
         }
+        // Work the person was promised to see first: on its preview only, never live, until their yes.
+        if crate::stops::GOES_LIVE.iter().any(|t| tool == format!("mcp__equipe-platform__{t}"))
+            && let Some(t) = ticket
+            && self.find_ticket(&call.squad, t).is_some_and(|found| crate::flow::held_for_person(&found.body))
+        {
+            let why = "Not deployed: the person was told they would see this first and say yes. Show it on its preview, with pictures, and hand it in; it goes live once they said yes.";
+            let _ = reply.send(verdict(Decision::Deny, &input, why));
+            self.audit(&call.squad, ticket, "equipe", "refused (waits for the person's yes)", &action);
+            return;
+        }
         if let Some(why) = self.off_limits(id, &call.squad, &tool, &action, &input) {
             let _ = reply.send(verdict(Decision::Deny, &input, why));
             let text = say!(self, "notice.refused", why = why, action = action);
@@ -10106,6 +10137,18 @@ there, end your turn, and carry on when they say they're done."
             let _ = reply.send(ToolResult { text: "Say what you'll do in `action`.".into(), is_error: true, image: None });
             return;
         };
+        // A card tells what will be done, never what the team's work will cost: only a purchase (`kind: money`) says its real price.
+        let card = format!("{action}\n{}", call.arguments.get("summary").map(Value::to_string).unwrap_or_default());
+        if text("kind") != "money"
+            && let Some(said) = reply_guard::quotes_cost(&card)
+        {
+            let _ = reply.send(ToolResult {
+                text: format!("Not asked: the card gives the person a cost estimate for the team's work (“{said}”). Say what will be done, with no amount in money or credits, and ask again."),
+                is_error: true,
+                image: None,
+            });
+            return;
+        }
         let ticket = self.sessions.get(&id).and_then(|s| s.work.as_ref().map(|w| w.ticket));
         // What the squad's autonomy policy makes of it: its kind (the floor
         // read in its words whatever it says it is), its plain words, and the
@@ -11301,7 +11344,9 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 let written = self.squad_language(&squad);
                 glance::check_title_call(written, board::CREATE_TICKET, title, &args)?;
                 let label = glance::label_arg(&args)?;
-                let body = board::arg_str(&args, "body").unwrap_or_default();
+                // Waits for the person's yes before it lands and goes live (`flow::HOLD_LINE`).
+                let held_body = args.get("wait_for_person").and_then(Value::as_bool).unwrap_or(false).then(|| crate::flow::with_hold(board::arg_str(&args, "body").unwrap_or_default(), true));
+                let body = held_body.as_deref().unwrap_or_else(|| board::arg_str(&args, "body").unwrap_or_default());
                 let kind = kind_arg(&args)?;
                 let named = match board::arg_str(&args, "project") {
                     Some(arg) => Some(board::resolve_project(arg, &projects).ok_or_else(|| no_project(arg))?),
@@ -11478,6 +11523,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 self.tell(&squad, crate::telemetry::Happened::TicketCreated { kind, by });
                 let made = Ticket { id: new_id, ..ticket };
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket: made.clone() });
+                self.board_touched(id, new_id);
                 // The person's request it serves: theirs to follow without asking.
                 let serves = if idea { None } else { self.ticket_made(&squad, new_id, serving) };
                 // The ticket answering the person drives their request: its driver and checklist (`flow`).
@@ -11545,6 +11591,14 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 if !steps.is_empty() {
                     let said = self.change_steps(&squad, ticket_id, &[], &[], steps, &member)?;
                     let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "steps"));
+                    if !other {
+                        return Ok(said);
+                    }
+                }
+                // Held for the person's yes, or let go, at any status still open.
+                if let Some(hold) = args.get("wait_for_person").and_then(Value::as_bool) {
+                    let said = self.hold_for_person(&squad, &member, ticket_id, hold)?;
+                    let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "wait_for_person"));
                     if !other {
                         return Ok(said);
                     }
@@ -11635,6 +11689,7 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 }
                 journal.save_ticket(&ticket).map_err(|e| e.to_string())?;
                 let _ = journal.ticket_event(ticket_id, &member, "updated", &args.to_string());
+                self.board_touched(id, ticket_id);
                 let pitched = was_idea && ticket.status == TicketStatus::Proposed;
                 self.publish(Event::TicketChanged { squad: squad.clone(), ticket });
                 // A new plan: what its member asked the person for under the old one is taken away.
@@ -11679,6 +11734,30 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                     .map_err(|e| design_qa::pictures_refused(board::SUBMIT_FOR_REVIEW, &args, &cwd, &roots, &e))?;
                 // Their thumbnails made now, off the loop: the hand-in's card shows them at once.
                 crate::visuals::thumbs::warm(&self.config.home, shown.clone());
+                // A count it claims ("five drafts") is checked against what it shows, once.
+                if let Some((claimed, noun)) = crate::visuals::claimed_count(&summary)
+                    && let Some(ticket) = self.sessions.get(&id).and_then(|s| s.work.as_ref()).map(|w| w.ticket)
+                    && !self.count_checked.contains(&(squad.clone(), ticket))
+                {
+                    let changed: Vec<String> = self
+                        .sessions
+                        .get(&id)
+                        .and_then(|s| s.work.as_ref())
+                        .and_then(|w| w.sandbox.as_ref())
+                        .map(|sb| sb.changed_files().unwrap_or_default().into_iter().filter(|f| crate::visuals::is_image_name(f)).collect())
+                        .unwrap_or_default();
+                    let pictures: Vec<String> = shown.iter().cloned().chain(changed).collect();
+                    let seen = crate::visuals::shown_count(&pictures, &summary);
+                    if seen < claimed {
+                        self.count_checked.insert((squad.clone(), ticket));
+                        crate::daemon_log!("equipe: {squad}: T-{ticket}'s hand-in claims {claimed} {noun} and shows {seen}: asked to check");
+                        return Err(format!(
+                            "Not handed in yet: your summary says {claimed} {noun}, but the hand-in shows {seen} (pictures named or changed on your \
+branch, and preview links in the summary). Make the rest, or say how many there really are — then hand in again, each one in `images` \
+or as its preview link. The person is told exactly what you write."
+                        ));
+                    }
+                }
                 let screens = self.screens_handed_in(&squad, id, &args, shown.len())?;
                 // A designer's screen change says what changed and why it is better, under its summary.
                 let summary = match self.designer_change_note(id, &args)? {
@@ -12474,6 +12553,27 @@ check what is already done in your worktree first."
         memos
     }
 
+    /// Hold `ticket` for the person's yes before it lands and goes live, or let it go (`flow::HOLD_LINE`).
+    pub(super) fn hold_for_person(&mut self, squad: &str, by: &str, ticket: TicketId, hold: bool) -> Result<String, String> {
+        let journal = self.journal(squad).ok_or("The board can't be opened.")?;
+        let mut found = journal.ticket(ticket).ok().flatten().ok_or_else(|| format!("There is no T-{ticket}."))?;
+        if found.status.is_closed() {
+            return Err(format!("T-{ticket} is closed already."));
+        }
+        if crate::flow::held_for_person(&found.body) == hold {
+            return Ok(format!("T-{ticket} {} already.", if hold { "waits for the person's yes" } else { "isn't held" }));
+        }
+        found.body = crate::flow::with_hold(&found.body, hold);
+        journal.save_ticket(&found).map_err(|e| e.to_string())?;
+        let _ = journal.ticket_event(ticket, by, if hold { "held for the person's yes" } else { "hold lifted" }, "");
+        self.publish(Event::TicketChanged { squad: squad.to_owned(), ticket: found });
+        Ok(if hold {
+            format!("T-{ticket} waits for the person's yes: it stays on its branch and preview until you accept it with their words in `confirmed`.")
+        } else {
+            format!("T-{ticket} is no longer held: it lands as any work does.")
+        })
+    }
+
     /// A member's desk conversation (Claude Code) starts afresh when asked, when
     /// it has filled most of its context window, or when it has gone cold —
     /// unused past the prompt cache's hour, where carrying it on would make the
@@ -13216,6 +13316,7 @@ fn asked_for(prompt: &str) -> String {
 
 /// A desk conversation this full of its context window starts afresh.
 const REFRESH_FULL_PERCENT: u64 = 60;
+
 /// One this big, unused this long, starts afresh rather than being processed
 /// again whole once the prompt cache has expired.
 const REFRESH_COLD_TOKENS: u64 = 60_000;

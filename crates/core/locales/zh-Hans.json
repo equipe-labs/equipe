@@ -562,6 +562,8 @@
   "match.blocked_words": "密码|双重认证|安全设置|隐私与安全性|删除账户|注销账户|支付|付款|结账|立即购买|提交订单|转账",
   "match.outward_words": "发送|分享|共享|邀请|接受|加入|发布|提交|通话|上传|附件|转发",
   "match.visual_words": "图标|标志|配色|字体|布局|版面",
+  "match.draft_words": "方案|草稿|版本|设计稿",
+  "match.stop_others": "其他工作|其他的工作|别的工作|其余的|其他任务",
   "match.privacy_settings_words": "系统设置|系统偏好设置|隐私与安全性|安全性与隐私",
   "match.privacy_screen_words": "屏幕录制|屏幕与系统音频录制|屏幕录像|屏幕截图",
   "match.privacy_accessibility_words": "辅助功能",
@@ -1036,5 +1038,10 @@
   "guard.claim_nothing_waiting": "没有需要您|没有等您|无需您|不需要您处理",
   "guard.claim_credits_out": "额度用完|积分用完|点数用完|余额不足|请充值",
   "guard.claim_live": "已上线|已经上线|已发布到正式|已部署上线",
-  "guard.promise": "下次|之后再修|稍后修复|下次修改时"
+  "guard.promise": "下次|之后再修|稍后修复|下次修改时",
+  "guard.money_units": "积分|美元",
+  "guard.cost_words": "费用|花费|预计|大约|左右",
+  "guard.purchase_words": "域名|广告费",
+  "guard.apply_words": "应用到|上线|发布|生效",
+  "guard.promise_confirm": "您确认后|等您确认|确认之后再|您选好后|等您选好"
 }

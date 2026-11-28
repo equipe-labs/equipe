@@ -7782,10 +7782,11 @@ async fn members_run_on_the_standard_window_unless_the_squad_or_the_ticket_asks_
     let (handle, mut events) = runtime::start(Config { persist: true, ..with_tools(&claude, &home) });
     add(&handle, &mut events, 1, member(&repo, "pm")).await;
 
-    // The standard window: Claude Code is told to leave its 1M variants out, so its own compaction comes early.
+    // The standard window: Claude Code is told to leave its 1M variants out, and the desk compacts with room to spare
+    // for one big step (a PM at 195k failed with "Prompt is too long", 2026-11-28).
     say_to(&handle, &mut events, 1, "first").await;
     assert_eq!(window_notes(&notes), ["[1]"]);
-    assert!(!calls(&recorded).pop().unwrap().iter().any(|a| a == "--autocompact"), "nothing to say about a window it doesn't have");
+    assert_eq!(arg(&calls(&recorded).pop().unwrap(), "--autocompact"), Some("160000"));
 
     // The squad allows the large window: not left out, and Claude Code's own compaction asked for at the desk's budget.
     let journal = Journal::for_squad(&home, "acme").unwrap();

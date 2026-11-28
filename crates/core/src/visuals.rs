@@ -999,6 +999,51 @@ pub fn hand_in(named: &[String], changed: &[String], worktree: &Path, roots: &[P
     out
 }
 
+/// The count a hand-in's summary claims of the things it made to look at —
+/// "5 drafts", "three options", the same in any language — and the word it counted: the
+/// biggest such claim, from 2 up. One said "five drafts made" with one
+/// there, and the PM told the person so (inhwadoen, 2026-11-28).
+pub fn claimed_count(summary: &str) -> Option<(usize, String)> {
+    const NUMBERS: [&str; 11] = ["", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten"];
+    let nouns = crate::i18n::every("match.draft_words");
+    let words: Vec<String> = summary.split_whitespace().map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()).collect();
+    let noun = |w: &str| nouns.iter().find(|n| !n.is_empty() && w.contains(&n.to_lowercase())).map(|n| (*n).to_owned());
+    let mut best: Option<(usize, String)> = None;
+    for (i, w) in words.iter().enumerate() {
+        let digits: String = w.chars().take_while(char::is_ascii_digit).collect();
+        let (n, rest) = match digits.parse::<usize>() {
+            Ok(n) => (n, &w[digits.len()..]),
+            Err(_) => match NUMBERS.iter().position(|x| !x.is_empty() && x == w) {
+                Some(n) => (n, ""),
+                None => continue,
+            },
+        };
+        if !(2..=20).contains(&n) {
+            continue;
+        }
+        let near = [Some(rest), words.get(i + 1).map(String::as_str), words.get(i + 2).map(String::as_str), i.checked_sub(1).and_then(|j| words.get(j)).map(String::as_str)];
+        if let Some(found) = near.into_iter().flatten().find_map(noun)
+            && best.as_ref().is_none_or(|(b, _)| n > *b)
+        {
+            best = Some((n, found));
+        }
+    }
+    best
+}
+
+/// What shows the things a hand-in made: its distinct pictures (named and
+/// changed, a picture in several sizes once) and the distinct links its
+/// summary gives (a live preview each).
+pub fn shown_count(pictures: &[String], summary: &str) -> usize {
+    let mut keys: Vec<String> = pictures.iter().map(|p| variant(p).0).collect();
+    keys.sort();
+    keys.dedup();
+    let mut links: Vec<&str> = summary.split_whitespace().filter(|w| w.contains("://")).map(|w| w.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '/')).collect();
+    links.sort_unstable();
+    links.dedup();
+    keys.len() + links.len()
+}
+
 /// Pictures that were in `from` (a worktree whose work landed in `to`, the
 /// squad's folder), where they are now.
 pub fn moved(images: &[String], from: &Path, to: &Path) -> Vec<String> {
@@ -1038,6 +1083,19 @@ each option first (PNG, JPG, WebP, GIF or SVG, in your worktree or the squad's f
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_count_a_hand_in_claims_is_read_and_set_beside_what_it_shows() {
+        // inhwadoen, 2026-11-28: "5 drafts made", with one there.
+        assert_eq!(claimed_count("옛 사진관 시안 5개를 만들었어요.").map(|c| c.0), Some(5));
+        assert_eq!(claimed_count("Made 5 drafts of the old photo studio look.").map(|c| c.0), Some(5));
+        assert_eq!(claimed_count("Three options for the hero, side by side.").map(|c| c.0), Some(3));
+        assert_eq!(claimed_count("Fixed 2 bugs in the upload form and tested on 3 phones."), None, "no drafts claimed");
+        assert_eq!(claimed_count("One draft, refined."), None, "one is no count to check");
+        let one = vec!["/w/design/directions/t13-retro/mock-a-1440.png".to_owned(), "/w/design/directions/t13-retro/mock-a-390.png".to_owned()];
+        assert_eq!(shown_count(&one, "5 drafts"), 1, "one draft at two widths");
+        assert_eq!(shown_count(&one, "Drafts: https://x.equipe.page/?look=a https://x.equipe.page/?look=b https://x.equipe.page/?look=a"), 3);
+    }
     use crate::protocol::decide::Choice;
 
     /// The daemon's own temp folders hold every test's files: none here.

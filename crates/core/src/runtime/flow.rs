@@ -219,11 +219,15 @@ with your note — no new ticket, no wait for the PM.{back_line} End your turn n
                 let _ = self.internal.send(Internal::SelfLand { squad: squad.to_owned(), ticket });
             }
             rules::Landing::Pm(held) => {
-                if !pm_accepts || pms_own {
+                if !pm_accepts || (pms_own && held != rules::Held::PersonConfirms) {
                     return;
                 }
                 let Some(pm) = self.pm_of(squad) else { return };
                 let why = match held {
+                    rules::Held::PersonConfirms => " It isn't landed: you told the person they would see it and say yes first. Show them now \
+its preview link and its pictures (phone and computer), in plain words, and ask; it stays on its branch and preview — nothing of it \
+lands or goes live — until they say yes. Then `accept_work` it with their words in `confirmed`."
+                        .to_owned(),
                     rules::Held::Gated(why) => format!(" It isn't landed by its member: it touches what needs a yes ({}).", crate::i18n::core(crate::i18n::Lang::En).get(why.key())),
                     _ => String::new(),
                 };

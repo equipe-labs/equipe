@@ -75,9 +75,53 @@ pub fn routine(lang: Lang, id: u32) -> Routine {
 }
 
 /// Where the week starts: the last retro, when it ran within two weeks,
-/// else a week before `now`.
-pub fn since(last_run: Option<u64>, now: u64) -> u64 {
-    last_run.filter(|at| *at < now && now - at <= 2 * WEEK).unwrap_or(now.saturating_sub(WEEK))
+/// else a week before `now` — never before the squad began (`born`): a team
+/// a day old was handed "11/20 – 11/27" (inhwadoen, 2026-11-28).
+pub fn since(last_run: Option<u64>, now: u64, born: Option<u64>) -> u64 {
+    let from = last_run.filter(|at| *at < now && now - at <= 2 * WEEK).unwrap_or(now.saturating_sub(WEEK));
+    born.map_or(from, |born| from.max(born.min(now)))
+}
+
+/// How old a squad is before its first retro: about a week (a little under,
+/// so a team made on a Friday afternoon has its first on the next Friday).
+/// A younger team has no week to look back on, and a retro of its first
+/// hours only reads as the team talking about itself.
+pub const FIRST_AFTER: u64 = WEEK - 12 * 60 * 60;
+
+/// Whether a squad that began at `born` is old enough at `now` for a retro.
+pub fn old_enough(born: Option<u64>, now: u64) -> bool {
+    born.is_none_or(|born| now.saturating_sub(born) >= FIRST_AFTER)
+}
+
+/// What the PM of a squad whose person is not a developer (autonomy full) is
+/// asked for, in place of the routine's own words: a short recap of what they
+/// can see, no internal numbers, and nothing asked about how the team works —
+/// that is the team's own to decide. Its decision card of process changes
+/// went to a non-developer the day their team began (inhwadoen, 2026-11-28).
+pub const FOR_THE_PERSON: &str = "Weekly recap. Below, under [Retro facts · …], equipe has gathered this week's facts from the squad's journal: write from them and invent nothing. The person is not a developer. Bring it to them in ONE short message in their language, headed in their language (a plain \"This week\" title, no dates unless the facts give them): what got done that they can see or use, named by what it does for them; what didn't go as planned, in a line, and what the team does about it; and what comes next. Plain words only: no ticket numbers, no counts of turns, wakes or calls, no hours or minutes members spent, no tokens, credits, costs, limits or budgets, no branches, merges, deploys, checks or reviews — none of the facts' numbers about the team itself. Don't ask them anything about how the team works, and put no card to them for it: lessons and changes to how the team works are yours — keep each lesson in the squad's memory yourself (`remember`, fact \"lessons\"), and change how the team works with your own tools. Ask them only what only they know about their business, if anything.";
+
+/// The facts a non-developer's recap is written from: what shipped and
+/// what went wrong, without the team's own numbers (time by member,
+/// friction, waits) that leaked into one as "PM 39 times".
+pub fn facts_for_the_person(facts: &Facts, clock: &impl Clock) -> String {
+    let lean = Facts { waits: Vec::new(), time: Vec::new(), friction: Vec::new(), ..facts.clone() };
+    let text = facts_text(&lean, clock);
+    // The sections left empty say nothing worth reading: kept out.
+    let mut out = Vec::new();
+    let mut skip = false;
+    for line in text.lines() {
+        if line.starts_with("Waits on the person (") || line.starts_with("Time by member") || line.starts_with("Friction by member") {
+            skip = true;
+            continue;
+        }
+        if line.is_empty() {
+            skip = false;
+        }
+        if !skip {
+            out.push(line);
+        }
+    }
+    out.join("\n").trim_end().to_owned()
 }
 
 // ── what the journal keeps ──
@@ -740,9 +784,38 @@ mod tests {
         assert_eq!(next_run(r.when, MON, &Utc), FRI_5);
         assert_eq!(next_run(r.when, FRI_5, &Utc), FRI_5 + WEEK);
         // The week looks back to the last retro, or a week.
-        assert_eq!(since(None, FRI_5), FRI_5 - WEEK);
-        assert_eq!(since(Some(FRI_5 - 5 * DAY), FRI_5), FRI_5 - 5 * DAY, "moved to Sunday, then back");
-        assert_eq!(since(Some(FRI_5 - 30 * DAY), FRI_5), FRI_5 - WEEK, "off for a month: a week");
+        assert_eq!(since(None, FRI_5, None), FRI_5 - WEEK);
+        assert_eq!(since(Some(FRI_5 - 5 * DAY), FRI_5, None), FRI_5 - 5 * DAY, "moved to Sunday, then back");
+        assert_eq!(since(Some(FRI_5 - 30 * DAY), FRI_5, None), FRI_5 - WEEK, "off for a month: a week");
+    }
+
+    #[test]
+    fn a_team_younger_than_a_week_has_no_retro_and_its_week_starts_when_it_began() {
+        // inhwadoen, 2026-11-28: a team 16 hours old was handed "11/20 – 11/27".
+        let born = FRI_5 - 16 * 60 * 60;
+        assert!(!old_enough(Some(born), FRI_5), "16 hours old");
+        assert!(!old_enough(Some(FRI_5 - 5 * DAY), FRI_5));
+        assert!(old_enough(Some(FRI_5 - WEEK + 60 * 60), FRI_5), "made a Friday afternoon: its first retro the next Friday");
+        assert!(old_enough(None, FRI_5), "a squad from before the journal kept when it began");
+        assert_eq!(since(None, FRI_5, Some(born)), born, "never before the team began");
+        assert_eq!(since(None, FRI_5, Some(FRI_5 - 30 * DAY)), FRI_5 - WEEK);
+    }
+
+    #[test]
+    fn a_non_developers_recap_has_no_numbers_about_the_team_and_asks_nothing_about_it() {
+        let facts = week_facts();
+        let full = facts_text(&facts, &Utc);
+        let lean = facts_for_the_person(&facts, &Utc);
+        assert!(full.contains("Time by member") && full.contains("Waits on the person ("), "{full}");
+        for gone in ["Time by member", "Friction by member", "Waits on the person (", " turns · "] {
+            assert!(!lean.contains(gone), "{gone} in {lean}");
+        }
+        assert!(lean.starts_with(FACTS_HEAD) && lean.contains(SHIPPED_HEAD) && lean.contains(TROUBLES_HEAD), "{lean}");
+        assert_eq!(week_of(&lean), week_of(&full));
+        for must in ["not a developer", "no ticket numbers", "no counts of turns", "Don't ask them anything about how the team works", "`remember`"] {
+            assert!(FOR_THE_PERSON.contains(must), "{must}");
+        }
+        assert!(!FOR_THE_PERSON.contains("ask_decision"));
     }
 
     #[test]

@@ -1154,6 +1154,20 @@ impl Journal {
         self.set_meta("not_live_told", &serde_json::to_string(&ids).unwrap_or_default())
     }
 
+    /// When the squad began: as set ([`Journal::set_born`]), else its first conversation (unix seconds);
+    /// `None` for a squad with none yet.
+    pub fn born(&self) -> Option<u64> {
+        if let Some(at) = self.meta("born").and_then(|v| v.parse::<u64>().ok()) {
+            return Some(at);
+        }
+        self.conn.query_row("SELECT MIN(created_at) FROM sessions", [], |r| r.get::<_, Option<i64>>(0)).ok().flatten().map(|at| at.max(0) as u64)
+    }
+
+    /// When the squad began, where its first conversation doesn't say it (a squad moved to a new machine, a test's week).
+    pub fn set_born(&self, at: u64) -> Result<()> {
+        self.set_meta("born", &at.to_string())
+    }
+
     fn meta(&self, key: &str) -> Option<String> {
         self.conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
     }

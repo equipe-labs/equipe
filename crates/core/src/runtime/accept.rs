@@ -217,6 +217,19 @@ If its landing stopped (you were told so), `accept_work` lands it.",
         });
     }
 
+    /// What the person said lately to the PM, their own words, newest last.
+    fn persons_latest(&self, squad: &str) -> Vec<String> {
+        let Some(s) = self.pm_of(squad).and_then(|pm| self.sessions.get(&pm)) else { return Vec::new() };
+        let said: Vec<String> = s
+            .transcript
+            .entries()
+            .iter()
+            .filter_map(|e| if let Entry::User { text, .. } = e { Some(crate::language::persons_words(text)) } else { None })
+            .filter(|t| !t.trim().is_empty())
+            .collect();
+        said[said.len().saturating_sub(12)..].to_vec()
+    }
+
     /// What `accept_work` asks, checked against the board: what the PM said
     /// it checked, whether main is pushed, and each ticket named, in order —
     /// left out and why, or to be looked at off the loop. The tickets to look
@@ -289,6 +302,17 @@ If its landing stopped (you were told so), `accept_work` lands it.",
             if !t.ready_for_review() {
                 plan.push(Plan::Left(format!("T-{ticket} waits for its design QA")));
                 continue;
+            }
+            // Promised to the person first: it lands on their yes, never before.
+            if crate::flow::held_for_person(&t.body) {
+                let confirmed = board::arg_str(args, "confirmed").unwrap_or_default();
+                if self_land || !crate::flow::yes_heard(confirmed, &self.persons_latest(squad)) {
+                    plan.push(Plan::Left(format!(
+                        "T-{ticket} waits for the person's yes: they were told they would see it first. Show them its preview and pictures and \
+ask; once they say yes, accept it with their words, as they wrote them, in `confirmed`"
+                    )));
+                    continue;
+                }
             }
             if self.gating(squad, ticket) {
                 plan.push(Plan::Left(format!("T-{ticket}'s checks are running already: you hear how they went")));

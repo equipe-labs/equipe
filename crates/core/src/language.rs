@@ -64,6 +64,17 @@ pub fn detect(text: &str) -> Option<&'static str> {
     latin(text, (info.confidence() >= 0.5).then(|| info.lang().eng_name()))
 }
 
+/// The Latin-script language `text` is a sentence of by its little words
+/// alone, no statistics: one of the languages they are listed for, and only
+/// when they clearly lead. For a line inside a reply, where a name, a list
+/// of fonts or a product's English words must never read as a sentence.
+pub fn sentence_language(text: &str) -> Option<&'static str> {
+    if text.split_whitespace().count() < 4 {
+        return None;
+    }
+    latin(text, None)
+}
+
 /// The little words of the Latin-script languages people write to a squad in
 /// most: words a sentence of that language can hardly do without and the
 /// others don't use (no "a", "on", "in", "de", "que": shared by several).
