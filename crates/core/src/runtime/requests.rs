@@ -623,6 +623,10 @@ impl Runtime {
             {
                 note.push_str(&warning);
             }
+            // Server work held behind a screen's look: only attaching it waits.
+            if let Some(split) = rules::split_suggestion(ticket, &format!("{title} {text}"), why, &d) {
+                note.push_str(&split);
+            }
         }
         Ok(note)
     }

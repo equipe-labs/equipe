@@ -790,6 +790,40 @@ pub fn overlap_warning(text: &str, dep: &Ticket) -> Option<String> {
     })
 }
 
+/// Words that say a ticket has server or data work: sign-in, an API, a
+/// database, a calendar or payment integration.
+const SERVER_WORK: [&str; 18] = [
+    "sign-in", "sign in", "login", "log in", "oauth", "auth", "api", "endpoint", "server", "database", "webhook", "calendar", "payment",
+    "stripe", "email", "sync", "integration", "backend",
+];
+/// Words that say a ticket is about how screens look: a design, a restore, a redesign.
+const SCREEN_WORK: [&str; 10] = ["design", "look", "restore", "redesign", "screen", "screens", "style", "visual", "layout", "theme"];
+
+fn says_any(text: &str, words: &[&str]) -> bool {
+    let lower = text.to_lowercase();
+    words.iter().any(|w| lower.match_indices(w).any(|(at, _)| at == 0 || !lower[..at].chars().next_back().is_some_and(char::is_alphanumeric)))
+}
+
+/// When a ticket with server or data work is made to wait on a ticket about
+/// how screens look, the wait holds only the part that puts it on screen:
+/// the server part can start now (Team Aman, 2026-11-28: Google sign-in and
+/// Calendar waited 126 minutes behind a design restore, for "the buttons go
+/// into the restored screens"). What the PM is told; `None` when it doesn't apply.
+pub fn split_suggestion(ticket: Option<TicketId>, text: &str, why: Option<&str>, dep: &Ticket) -> Option<String> {
+    let dep_text = format!("{} {}", dep.title, dep.body);
+    let screens = says_any(&dep.title, &SCREEN_WORK) || why.is_some_and(|w| says_any(w, &["screen", "screens", "button", "buttons", "ui", "look", "design", "page"]));
+    if !says_any(text, &SERVER_WORK) || says_any(&dep_text, &SERVER_WORK) && !says_any(&dep.title, &SCREEN_WORK) || !screens {
+        return None;
+    }
+    let this = ticket.map_or_else(|| "this ticket".to_owned(), |t| format!("T-{t}"));
+    Some(format!(
+        " Note: {this} has server or data work (sign-in, an API, data) that doesn't need T-{} — only putting it on the screens does. \
+Start that part now as a ticket of its own, with its interface (endpoints, data shapes) written first, and leave only attaching it to \
+the screens waiting on T-{}: the two run at once.",
+        dep.id, dep.id
+    ))
+}
+
 // ── where requests are kept ──
 
 /// A request as kept, before its status is worked out.
@@ -1726,4 +1760,16 @@ mod tests {
         store.link(id, 9, Some(5), Link::FollowUp, 602).unwrap();
         assert_eq!(store.serving(), [5, 6, 7], "what the person asked for goes first; checks and follow-ups don't");
     }
+
+    #[test]
+    fn server_work_held_behind_a_screens_look_is_told_to_start_its_server_part_now() {
+        let restore = Ticket { body: "Rebuild the screens in the person's design.".into(), ..ticket(65, "Bring back the look of your own asap design", TicketStatus::Todo) };
+        let said = split_suggestion(Some(63), "Google sign-in and Google Calendar for asap. Sign in with Google and fill times from Google Calendar.", Some("The calendar buttons go into the restored screens"), &restore).unwrap();
+        assert!(said.contains("T-63") && said.contains("T-65") && said.contains("Start that part now"), "{said}");
+        // Screen work waiting on screen work, or server work on server work: nothing to split.
+        assert!(split_suggestion(Some(2), "Polish the pricing page", None, &restore).is_none());
+        let api = Ticket { body: "Endpoints and the database table.".into(), ..ticket(9, "Add the bookings API", TicketStatus::Todo) };
+        assert!(split_suggestion(Some(3), "Send booking emails from the API", Some("needs the table"), &api).is_none());
+    }
+
 }

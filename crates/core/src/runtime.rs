@@ -8028,7 +8028,22 @@ runbooks and reports live there, and work across the projects or on running them
         // handoff note in place of the one before; branch and worktree stay.
         let mut handoff = None;
         if let Some(choice) = self.choose_model(&squad, id, &ticket) {
-            if choice.fresh {
+            // On Claude Code a stronger model carries on in the same conversation: the 11/26 A/B saw a
+            // resumed conversation beat a fresh one with a handoff note 4 times of 4 (and the fresh one
+            // paid to read everything again). Elsewhere, or with no conversation kept, it starts fresh.
+            // Only when it was raised for running out (its budget, or turns that ended without an end): work sent
+            // back as wrong, or a tier the person changed, still starts fresh.
+            let ran_out = self.journal(&squad).and_then(|j| j.ticket_history(ticket_id).ok()).is_some_and(|h| {
+                h.iter().rev().find(|(_, kind, _)| kind == "model raised").is_some_and(|(_, _, text)| raised_for_running_out(text))
+            });
+            let resumes = choice.fresh && ran_out && saved.engine_session.is_some() && self.sessions.get(&id).is_some_and(|s| s.engine == Engine::Claude);
+            if resumes {
+                handoff = Some(
+                    "This ticket now runs on a stronger model, in the same conversation: carry on from where you left off — what is \
+built is on its branch — and finish it; don't start over or read everything again."
+                        .to_owned(),
+                );
+            } else if choice.fresh {
                 saved.engine_session = None;
                 handoff = Some(self.latest_handoff(&squad, ticket_id).unwrap_or_else(|| {
                     "This ticket's model changed, so you start in a fresh conversation: read its record, the work so far on its branch \
@@ -14029,6 +14044,13 @@ fn suggestion_context(member: &str, entries: &[Entry]) -> Option<String> {
     Some(lines.join("\n\n"))
 }
 
+/// Whether a ticket's model was raised because its turns ran out — its
+/// member handed it back as beyond it (a budget stop does), or its turns
+/// ended without an end — rather than because its work came back wrong.
+fn raised_for_running_out(text: &str) -> bool {
+    text.starts_with("its member handed it back as beyond it") || text.starts_with("its member's turns ended twice without a hand-in")
+}
+
 /// What a member made on ticket `ticket` so far, committed on its branch
 /// when a turn ends (`how`): a stop mid-turn — credits, a spending limit, a
 /// failure — never leaves it only in the worktree. Nothing to commit: nothing.
@@ -14635,6 +14657,14 @@ mod tests {
 
     /// A turn that ends — done, failed or stopped mid-way by a credit or spending stop — leaves what its member
     /// made committed on the ticket's branch, so a resume starts from it and nothing is paid for twice.
+    #[test]
+    fn a_ticket_raised_for_running_out_carries_on_and_one_sent_back_as_wrong_starts_fresh() {
+        // The texts `escalate` writes on the record (runtime::turn_end and the send-back path).
+        assert!(raised_for_running_out("its member handed it back as beyond it: its next lane starts on deep, in a fresh conversation with a handoff note."));
+        assert!(raised_for_running_out("its member's turns ended twice without a hand-in: its next lane starts on deep, in a fresh conversation with a handoff note."));
+        assert!(!raised_for_running_out("sent back for correctness: its next lane starts on deep, in a fresh conversation with a handoff note."));
+    }
+
     #[test]
     fn a_turn_that_stops_leaves_its_work_committed_on_the_branch() {
         let dir = std::env::temp_dir().join(format!("equipe-checkpoint-{}", std::process::id()));
