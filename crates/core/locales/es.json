@@ -1061,5 +1061,15 @@
   "guard.cost_words": "costo|coste|costará|costaría|aproximadamente|unos|estim",
   "guard.purchase_words": "dominio|presupuesto de anuncios",
   "guard.apply_words": "aplicar|aplicaré|publicar|poner en línea",
-  "guard.promise_confirm": "cuando lo confirmes|una vez que confirmes|cuando confirmes|cuando elijas|después de que elijas|en cuanto elijas"
+  "guard.promise_confirm": "cuando lo confirmes|una vez que confirmes|cuando confirmes|cuando elijas|después de que elijas|en cuanto elijas",
+  "role_name.designer": "diseñador",
+  "role_name.engineer": "ingeniero",
+  "role_name.frontend": "ingeniero de frontend",
+  "role_name.backend": "ingeniero de backend",
+  "role_name.mobile": "ingeniero móvil",
+  "role_name.qa": "QA",
+  "role_name.security": "experto en seguridad",
+  "role_name.data": "analista de datos",
+  "role_name.marketing": "marketing",
+  "role_name.pm": "PM"
 }

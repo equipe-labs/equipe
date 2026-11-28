@@ -1049,5 +1049,15 @@
   "guard.cost_words": "費用|花費|預計|大約|左右",
   "guard.purchase_words": "網域|域名|廣告費",
   "guard.apply_words": "套用|上線|發布|生效",
-  "guard.promise_confirm": "您確認後|等您確認|確認之後再|您選好後|等您選好"
+  "guard.promise_confirm": "您確認後|等您確認|確認之後再|您選好後|等您選好",
+  "role_name.designer": "設計師",
+  "role_name.engineer": "工程師",
+  "role_name.frontend": "前端工程師",
+  "role_name.backend": "後端工程師",
+  "role_name.mobile": "行動端工程師",
+  "role_name.qa": "QA",
+  "role_name.security": "資安工程師",
+  "role_name.data": "資料分析師",
+  "role_name.marketing": "行銷",
+  "role_name.pm": "PM"
 }

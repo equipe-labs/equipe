@@ -23,6 +23,16 @@
 //! promise with no board change in the same turn has the PM put it on the
 //! board. All of it is plain code: the phrases are each language's in its
 //! locale (`guard.*`), the facts the runtime's and the platform's own.
+//!
+//! A health sweep of the customer teams (2026-11-28) found more of it:
+//! replies to equipe's own notes ("The S-2 target is a known loop… I'm leaving
+//! this wake alone.", "I didn't plan a sprint: nothing has been built yet"),
+//! the team's work codes (T-12, S-1) in what the person reads, and English
+//! role names inside Korean ("Designer가 조사 중이에요"). So a turn equipe
+//! started — a wake, a monitor's note, a sprint's planning — tells the person
+//! nothing unless it put something to them (a card, a question, a sign-in);
+//! a message naming a work code is asked again, and a role's English name in
+//! a Chinese, Japanese or Korean reply is said in that language.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -43,6 +53,8 @@ const TOLD_FOR: u64 = 30 * 60;
 #[derive(Default)]
 pub(super) struct Guard {
     held: HashMap<SessionId, Held>,
+    /// Conversations whose turn now is equipe's, not the person's: a wake, a note, a sprint's planning.
+    equipes: HashSet<SessionId>,
     /// Sessions whose last reply was held back and asked again: their next is told whatever it says.
     asked_again: HashSet<SessionId>,
     /// Paragraphs told lately, per conversation: when, and their plain form.
@@ -62,6 +74,198 @@ struct Held {
     /// The last short line taken for narration: the turn's message after all
     /// when nothing follows it ("Starting on it now." and then a ticket).
     narrated: Option<String>,
+    /// The turn put something to the person: a card, a question, a sign-in, a word.
+    to_person: bool,
+    /// What an equipe turn said before its tool calls, kept for its end.
+    kept: String,
+}
+
+/// Board tools that put something to the person, by name or by prefix (`propose_`).
+const TO_PERSON: [&str; 12] = [
+    "ask_decision",
+    "ask_person",
+    "block_on_person",
+    "tell_person",
+    "sign_in",
+    "show_my_browser",
+    "show_references",
+    "request_secret",
+    "enable_payments",
+    "plan_sprint",
+    "propose_",
+    "connect_",
+];
+
+/// Whether `tool` (`mcp__equipe__ask_decision`, or its bare name) puts something to the person.
+pub(super) fn puts_to_person(tool: &str) -> bool {
+    let name = tool.rsplit("__").next().unwrap_or(tool);
+    TO_PERSON.iter().any(|t| if t.ends_with('_') { name.starts_with(t) } else { name == *t })
+}
+
+/// Whether the turn about to run in a conversation with `entries` is
+/// equipe's: a note of equipe's there (a monitor, a wake, a sprint's
+/// planning) and nothing the person said since the last reply. A correction
+/// equipe asks of a reply ("show that picture again") leaves no note and
+/// follows what the person asked; the person's own routine (`[Routine · …]`,
+/// the weekly recap among them) is theirs.
+pub(super) fn equipes_turn(entries: &[Entry]) -> bool {
+    let mut noted = false;
+    for entry in entries.iter().rev() {
+        match entry {
+            Entry::Reply { .. } => break,
+            Entry::User { .. } => return false,
+            Entry::System { text } if text.trim_start().starts_with("[Routine ·") => return false,
+            Entry::System { .. } => noted = true,
+            _ => {}
+        }
+    }
+    noted
+}
+
+/// Where the team's work codes start: tickets, sprints, design QA batches.
+const CODE_LETTERS: [char; 3] = ['T', 'S', 'B'];
+
+/// The byte ranges of the team's work codes in `text` (T-12, S-1, B-43): a
+/// letter, a dash and digits, standing alone ("S-1을" too; "TP-3", "T-shirt"
+/// and "COVID-19" are not).
+fn code_ranges(text: &str) -> Vec<(usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        let before_ok = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || matches!(bytes[i - 1], b'-' | b'/' | b'_' | b'.'));
+        if before_ok && CODE_LETTERS.contains(&(bytes[i] as char)) && bytes[i + 1] == b'-' && bytes[i + 2].is_ascii_digit() {
+            let mut end = i + 2;
+            while end < bytes.len() && bytes[end].is_ascii_digit() {
+                end += 1;
+            }
+            if end == bytes.len() || !(bytes[end].is_ascii_alphanumeric() || matches!(bytes[end], b'-' | b'_')) {
+                out.push((i, end));
+                i = end;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// The team's work codes `text` names in its prose (not in links, paths or code).
+pub(super) fn work_codes(text: &str) -> Vec<String> {
+    let prose = prose(text);
+    code_ranges(&prose).into_iter().map(|(a, b)| prose[a..b].to_owned()).collect()
+}
+
+/// `text` with the work codes taken out: the last resort when a message asked
+/// again still names them. "(T-12)" goes whole; "T-12 Pricing page" keeps
+/// "Pricing page".
+pub(super) fn without_work_codes(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut last = 0;
+    for (a, b) in code_ranges(text) {
+        let (mut a, mut b) = (a, b);
+        if text[..a].ends_with('(') && text[b..].starts_with(')') {
+            a -= 1;
+            b += 1;
+        }
+        if a < last {
+            continue;
+        }
+        out.push_str(&text[last..a]);
+        if text[b..].starts_with(' ') {
+            b += 1;
+        } else if out.ends_with(' ') && text[b..].chars().next().is_none_or(|c| c.is_ascii_punctuation()) {
+            out.pop();
+        }
+        last = b;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// The roles' English names a reply may use, longest first where one holds another, with the role each is.
+const ROLE_WORDS: [(&str, &str); 19] = [
+    ("product designer", "designer"),
+    ("frontend engineer", "frontend"),
+    ("frontend developer", "frontend"),
+    ("backend engineer", "backend"),
+    ("backend developer", "backend"),
+    ("mobile engineer", "mobile"),
+    ("software engineer", "engineer"),
+    ("security engineer", "security"),
+    ("product marketer", "marketing"),
+    ("product manager", "pm"),
+    ("data analyst", "data"),
+    ("qa engineer", "qa"),
+    ("designer", "designer"),
+    ("frontend", "frontend"),
+    ("backend", "backend"),
+    ("engineer", "engineer"),
+    ("marketer", "marketing"),
+    ("developer", "engineer"),
+    ("analyst", "data"),
+];
+
+/// `text` with the roles' English names said in `lang`, for a language
+/// written in its own script — "Designer가" to a Korean founder is
+/// "디자이너가". Never inside code, a link's address or a path. In a
+/// Latin-script language the English word may be that language's too
+/// ("le designer"): left as it is.
+pub(super) fn with_roles_in(text: &str, lang: Lang) -> String {
+    if !matches!(lang, Lang::Ko | Lang::Ja | Lang::ZhHans | Lang::ZhHant) {
+        return text.to_owned();
+    }
+    let words = crate::i18n::core(lang);
+    let lower = text.to_ascii_lowercase();
+    let bytes = text.as_bytes();
+    // What is never rewritten: code in backticks, a link's address, a word with a path or a scheme in it.
+    let mut fixed = vec![false; bytes.len()];
+    let mut code = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            code = !code;
+        }
+        if bytes[i..].starts_with(b"](") {
+            let end = text[i..].find(')').map_or(bytes.len(), |e| i + e + 1);
+            fixed[i..end].iter_mut().for_each(|f| *f = true);
+            i = end;
+            continue;
+        }
+        fixed[i] = code;
+        i += 1;
+    }
+    let mut start = 0;
+    for (at, c) in text.char_indices().chain([(text.len(), ' ')]) {
+        if c.is_whitespace() {
+            if text[start..at].contains("://") || text[start..at].contains('/') {
+                fixed[start..at].iter_mut().for_each(|f| *f = true);
+            }
+            start = at + c.len_utf8();
+        }
+    }
+    let free = |at: usize| at >= bytes.len() || !(bytes[at].is_ascii_alphanumeric() || bytes[at] == b'-' || bytes[at] == b'_');
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    'scan: while i < bytes.len() {
+        if !fixed[i] && (i == 0 || free(i - 1)) {
+            for (english, role) in ROLE_WORDS {
+                let end = i + english.len();
+                if lower[i..].starts_with(english) && free(end) && !fixed[i..end].iter().any(|f| *f) {
+                    let key = format!("role_name.{role}");
+                    if let Some(said) = words.own(&key) {
+                        out.push_str(said);
+                        i = end;
+                        continue 'scan;
+                    }
+                }
+            }
+        }
+        let c = text[i..].chars().next().unwrap_or(' ');
+        out.push(c);
+        i += c.len_utf8();
+    }
+    out
 }
 
 /// What a message's checks found.
@@ -84,6 +288,8 @@ pub(super) struct Facts {
     pub paused: Option<bool>,
     /// Projects whose deploy is under way or failed: name and how it stands.
     pub not_live: Vec<(String, String)>,
+    /// The person never sees the board (a hosted team, a non-developer): the team's work codes mean nothing to them.
+    pub codes_hidden: bool,
 }
 
 /// Whether text before a tool call is narration on the way: short, one line.
@@ -271,6 +477,17 @@ pub(super) fn check(text: &str, told: &[String], facts: &Facts) -> Checked {
         let how: Vec<String> = facts.not_live.iter().map(|(p, how)| format!("{p}: {how}")).collect();
         failed.push(format!("it says it is live, but not all of it is yet ({})", how.join("; ")));
     }
+    let codes = if facts.codes_hidden { work_codes(&text) } else { Vec::new() };
+    if !codes.is_empty() {
+        failed.push(format!(
+            "it names the team's own work codes ({}): the person never sees those — name the work by what it does for them",
+            codes.join(", ")
+        ));
+    }
+    let text = match facts.language {
+        Some(lang) => with_roles_in(&text, lang),
+        None => text,
+    };
     if let Some(said) = quotes_cost(&text) {
         failed.push(format!(
             "it tells the person what the team's work will cost (“{said}”): say what will be done and ask for their OK, with no amount \
@@ -350,6 +567,21 @@ person about this; if it promised nothing, do nothing.]"
 }
 
 impl Runtime {
+    /// A turn of `id` starts. Whose turn it is — the person's or equipe's —
+    /// decides whether its words reach the person. A message asked again
+    /// keeps its first turn's say.
+    pub(super) fn reply_turn_starts(&mut self, id: SessionId) {
+        if !self.reply_guarded(id) || self.reply_guard.asked_again.contains(&id) {
+            return;
+        }
+        let equipes = self.sessions.get(&id).is_some_and(|s| equipes_turn(s.transcript.entries()));
+        if equipes {
+            self.reply_guard.equipes.insert(id);
+        } else {
+            self.reply_guard.equipes.remove(&id);
+        }
+    }
+
     /// The PM's turn in `id` made or changed `ticket` on the board.
     pub(super) fn board_touched(&mut self, id: SessionId, ticket: TicketId) {
         if self.reply_guarded(id) {
@@ -398,7 +630,8 @@ impl Runtime {
             })
             .collect();
         not_live.extend(never_live);
-        Facts { language, waiting, paused, not_live }
+        let codes_hidden = crate::autonomy::sandbox_machine() || self.autonomy_mode(squad) == equipe_protocol::autonomy::Autonomy::Full;
+        Facts { language, waiting, paused, not_live, codes_hidden }
     }
 
     /// The plain paragraphs told lately in `id`.
@@ -434,6 +667,9 @@ impl Runtime {
                 if ["create_ticket", "update_ticket", "revise_ticket"].iter().any(|t| tool.ends_with(t)) {
                     held.board = true;
                 }
+                if puts_to_person(&tool) {
+                    held.to_person = true;
+                }
                 let text = std::mem::take(&mut held.text);
                 let tool_use = |label| Event::ToolUse { session, tool: tool.clone(), target: target.clone(), label, background };
                 if text.trim().is_empty() {
@@ -448,6 +684,14 @@ impl Runtime {
                     return vec![tool_use(label)];
                 }
                 held.narrated = None;
+                // equipe's turn: whether anything reaches the person is known at its end.
+                if self.reply_guard.equipes.contains(&id) {
+                    if !held.kept.is_empty() {
+                        held.kept.push_str("\n\n");
+                    }
+                    held.kept.push_str(text.trim());
+                    return vec![tool_use(label)];
+                }
                 let squad = self.sessions.get(&id).and_then(|s| s.squad.clone()).unwrap_or_default();
                 let (told, facts) = (self.told_lately(id), self.reply_facts(id, &squad));
                 let checked = check(&text, &told, &facts);
@@ -468,11 +712,22 @@ impl Runtime {
                 let held = self.reply_guard.held.remove(&id).unwrap_or_default();
                 let ended = Event::TurnEnded { session, outcome, usage };
                 let squad = self.sessions.get(&id).and_then(|s| s.squad.clone()).unwrap_or_default();
+                // equipe's turn that put nothing to the person: what it said was for the team, not them
+                // ("I'm leaving this wake alone", "nothing to plan yet") — kept off the chat.
+                if self.reply_guard.equipes.contains(&id) && !held.to_person {
+                    self.reply_guard.asked_again.remove(&id);
+                    let said = format!("{}{}", held.kept, held.text);
+                    if !said.trim().is_empty() {
+                        crate::daemon_log!("equipe: {squad}: the PM's reply to equipe's own note kept from the person ({} chars)", said.trim().chars().count());
+                    }
+                    return vec![ended];
+                }
                 // A turn that failed or was stopped: what it said goes out as it was.
                 if outcome != TurnOutcome::Completed {
                     let mut out = Vec::new();
-                    if !held.text.trim().is_empty() {
-                        out.push(Event::TextDelta { session, text: held.text });
+                    let text = if held.kept.is_empty() { held.text } else { format!("{}\n\n{}", held.kept, held.text) };
+                    if !text.trim().is_empty() {
+                        out.push(Event::TextDelta { session, text });
                     }
                     out.push(ended);
                     return out;
@@ -481,7 +736,11 @@ impl Runtime {
                 let (told, facts) = (self.told_lately(id), self.reply_facts(id, &squad));
                 // Nothing said after its last short line: that line was its message — in the person's language only
                 // (narration in the engine's own English stays off the chat).
-                let mut text = held.text;
+                let mut text = match (held.kept.is_empty(), held.text.trim().is_empty()) {
+                    (true, _) => held.text,
+                    (false, true) => held.kept,
+                    (false, false) => format!("{}\n\n{}", held.kept, held.text),
+                };
                 if text.trim().is_empty()
                     && let Some(line) = held.narrated
                     && facts.language.is_none_or(|want| !wrong_language(&line, want))
@@ -494,15 +753,20 @@ impl Runtime {
                 if !failed.is_empty() && !again {
                     crate::daemon_log!("equipe: {squad}: the PM's reply held back and asked again: {}", failed.join("; "));
                     self.reply_guard.asked_again.insert(id);
-                    // What this turn put on the board goes with the message written again.
-                    if !held.tickets.is_empty() {
-                        self.reply_guard.held.insert(id, Held { tickets: held.tickets, ..Held::default() });
+                    // What this turn put on the board, and to the person, goes with the message written again.
+                    if !held.tickets.is_empty() || held.to_person {
+                        self.reply_guard.held.insert(id, Held { tickets: held.tickets, to_person: held.to_person, ..Held::default() });
                     }
                     let _ = self.internal.send(Internal::Wake { session: id, prompt: ask_again(&failed, facts.language) });
                     return vec![ended];
                 }
                 if checked.text.len() < text.trim().len() {
                     crate::daemon_log!("equipe: {squad}: a repeated paragraph left out of the PM's reply");
+                }
+                // Asked again and still naming work codes: they come out here.
+                let mut checked = checked;
+                if again && facts.codes_hidden && !work_codes(&checked.text).is_empty() {
+                    checked.text = without_work_codes(&checked.text);
                 }
                 self.keep_told(id, &checked.text);
                 // Promised to wait for their pick or yes: what the turn put on the board waits for it too.
@@ -533,9 +797,15 @@ impl Runtime {
                 out.push(ended);
                 out
             }
+            // The person speaking into the turn makes it theirs: its answer is for them.
+            Event::Steered { .. } | Event::UserMessage { .. } => {
+                self.reply_guard.equipes.remove(&id);
+                vec![event]
+            }
             Event::SessionClosed { session } => {
                 self.reply_guard.told.remove(&id);
                 self.reply_guard.asked_again.remove(&id);
+                self.reply_guard.equipes.remove(&id);
                 let held = self.reply_guard.held.remove(&id).unwrap_or_default();
                 let mut out = Vec::new();
                 if !held.text.trim().is_empty() {
@@ -555,6 +825,79 @@ mod tests {
 
     fn facts() -> Facts {
         Facts { language: Some(Lang::Ko), ..Facts::default() }
+    }
+
+    /// What customer teams were shown, from the health sweep of 2026-11-28 (squad_issues).
+    #[test]
+    fn the_teams_work_codes_are_caught_and_taken_out_when_asked_again() {
+        let seen = [
+            ("고뢰자 님, 다음 스프린트가 이루려는 숫자를 정했어요. 그래서 S-1을 시작하면 전화하기와 문의가 세어져요.", vec!["S-1"]),
+            ("The S-2 target is a known loop and was already set four times. Per my note, I'm leaving this wake alone.", vec!["S-2"]),
+            ("**Weekly retro** 1. **Shipped:** T-12 Pricing page and T-13 Login (B-43 checked).", vec!["T-12", "T-13", "B-43"]),
+        ];
+        let hidden = Facts { codes_hidden: true, ..Facts::default() };
+        for (text, codes) in seen {
+            assert_eq!(work_codes(text), codes, "{text}");
+            let checked = check(text, &[], &hidden);
+            assert!(checked.failed.iter().any(|f| f.contains("work codes")), "{text}");
+            // A developer at their own board talks in its codes.
+            assert!(check(text, &[], &Facts::default()).failed.iter().all(|f| !f.contains("work codes")), "{text}");
+        }
+        // Not codes: a test plan's case, a T-shirt, a date, a model name, a link or a path.
+        for text in ["TP-3 passes on phone width.", "The T-shirt page is live.", "COVID-19 rules", "GPT-4 and S-Class", "See https://x.equipe.page/T-12 and `outputs/T-17/report.md`."] {
+            assert!(work_codes(text).is_empty(), "{text}");
+        }
+        assert_eq!(without_work_codes("T-12 Pricing page is live (T-13)."), "Pricing page is live.");
+        assert_eq!(without_work_codes("Shipped: T-12."), "Shipped:.");
+        assert_eq!(without_work_codes("가격 페이지(T-12)가 올라갔어요."), "가격 페이지가 올라갔어요.");
+    }
+
+    #[test]
+    fn a_roles_english_name_is_said_in_the_persons_script_and_left_in_a_latin_language() {
+        // ironact, 2026-11-27.
+        let said = "Designer가 막 회사 조사를 시작했고, 아직 끝난 단계는 없어요. Frontend engineer가 이어서 만들어요.";
+        assert_eq!(with_roles_in(said, Lang::Ko), "디자이너가 막 회사 조사를 시작했고, 아직 끝난 단계는 없어요. 프론트엔드 엔지니어가 이어서 만들어요.");
+        assert_eq!(with_roles_in("designerの調査が終わりました。", Lang::Ja), "デザイナーの調査が終わりました。");
+        // Never in code, a link's address or a path; never part of another word.
+        let kept = "`designer` 역할은 [Designer 안내](https://x.com/designer)에, docs/designer/notes.md에 있어요. Designers와 redesigner도.";
+        assert_eq!(with_roles_in(kept, Lang::Ko), "`designer` 역할은 [디자이너 안내](https://x.com/designer)에, docs/designer/notes.md에 있어요. Designers와 redesigner도.");
+        // ai-based-0k09, 2026-11-27: French to an English founder is held and asked again in English.
+        let french = Facts { language: Some(Lang::En), ..Facts::default() };
+        let checked = check("La première version de CasePrep AI est en ligne : la page d'accueil présente les trois parcours.", &[], &french);
+        assert!(checked.failed.iter().any(|f| f.contains("English")), "{:?}", checked.failed);
+        assert_eq!(crate::language::detect("Please set up our brand kit: logo files, colours, type and voice."), Some("English"));
+        // In French the word is French too.
+        assert_eq!(with_roles_in("Le designer commencera le kit de marque.", Lang::Fr), "Le designer commencera le kit de marque.");
+        // The check gives the reply in the person's words.
+        let checked = check("Designer가 로고를 다시 그렸어요. 휴대폰에서도 잘 보여요.", &[], &facts());
+        assert_eq!(checked.text, "디자이너가 로고를 다시 그렸어요. 휴대폰에서도 잘 보여요.");
+        assert!(checked.failed.is_empty(), "{:?}", checked.failed);
+    }
+
+    #[test]
+    fn a_turn_equipe_started_is_told_only_when_it_puts_something_to_the_person() {
+        let user = |t: &str| Entry::User { text: t.into(), kept: Vec::new() };
+        let system = |t: &str| Entry::System { text: t.into() };
+        let reply = |t: &str| Entry::Reply { text: t.into() };
+        // A sprint's planning, a monitor's or a wake's note after the PM's last reply: equipe's.
+        assert!(equipes_turn(&[reply("done"), system("[Sprint planning · week 2] Plan the next sprint")]));
+        assert!(equipes_turn(&[system("[Idle · 24h]\n\nThe board is empty")]));
+        assert!(equipes_turn(&[user("make it blue"), reply("done"), system("[equipe self-watch] S-2 has been set four times")]));
+        // A note whose answer was kept from the person left no reply: the next turn is still equipe's.
+        assert!(equipes_turn(&[reply("done"), system("[equipe self-watch] a"), system("[Waiting on the person · 3h+] b")]));
+        // The person's words since the last reply, their own routine (the weekly recap), or a correction
+        // equipe asks of a reply to them (no note): theirs.
+        assert!(!equipes_turn(&[reply("done"), system("[equipe self-watch] a"), user("and the logo?")]));
+        assert!(!equipes_turn(&[reply("done"), system("[Routine · This week]\n\nWeekly recap")]));
+        assert!(!equipes_turn(&[user("Can I see the logo?"), reply("Here it is: ![Logo](/gone.png)")]));
+        assert!(!equipes_turn(&[user("hi")]));
+        // What reaches the person from such a turn: a card, a question, a sign-in, a word.
+        for tool in ["mcp__equipe__ask_decision", "mcp__equipe__block_on_person", "mcp__equipe__propose_goal", "mcp__equipe__plan_sprint", "mcp__equipe-platform__connect_domain", "sign_in"] {
+            assert!(puts_to_person(tool), "{tool}");
+        }
+        for tool in ["mcp__equipe__create_ticket", "mcp__equipe__remember", "mcp__equipe__board", "Bash", "Read"] {
+            assert!(!puts_to_person(tool), "{tool}");
+        }
     }
 
     #[test]

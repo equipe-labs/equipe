@@ -1061,5 +1061,15 @@
   "guard.cost_words": "kosten|kostet|etwa|ungefähr|schätz|rund",
   "guard.purchase_words": "domain|werbebudget",
   "guard.apply_words": "übernehmen|anwenden|live stellen|veröffentlichen",
-  "guard.promise_confirm": "sobald du bestätigst|wenn du bestätigst|nach deiner bestätigung|sobald du gewählt hast|sobald du dich entschieden hast|sobald sie bestätigen"
+  "guard.promise_confirm": "sobald du bestätigst|wenn du bestätigst|nach deiner bestätigung|sobald du gewählt hast|sobald du dich entschieden hast|sobald sie bestätigen",
+  "role_name.designer": "Designer",
+  "role_name.engineer": "Entwickler",
+  "role_name.frontend": "Frontend-Entwickler",
+  "role_name.backend": "Backend-Entwickler",
+  "role_name.mobile": "Mobile-Entwickler",
+  "role_name.qa": "QA",
+  "role_name.security": "Sicherheitsexperte",
+  "role_name.data": "Datenanalyst",
+  "role_name.marketing": "Marketing",
+  "role_name.pm": "PM"
 }

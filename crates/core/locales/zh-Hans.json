@@ -1049,5 +1049,15 @@
   "guard.cost_words": "费用|花费|预计|大约|左右",
   "guard.purchase_words": "域名|广告费",
   "guard.apply_words": "应用到|上线|发布|生效",
-  "guard.promise_confirm": "您确认后|等您确认|确认之后再|您选好后|等您选好"
+  "guard.promise_confirm": "您确认后|等您确认|确认之后再|您选好后|等您选好",
+  "role_name.designer": "设计师",
+  "role_name.engineer": "工程师",
+  "role_name.frontend": "前端工程师",
+  "role_name.backend": "后端工程师",
+  "role_name.mobile": "移动端工程师",
+  "role_name.qa": "QA",
+  "role_name.security": "安全工程师",
+  "role_name.data": "数据分析师",
+  "role_name.marketing": "市场营销",
+  "role_name.pm": "PM"
 }
