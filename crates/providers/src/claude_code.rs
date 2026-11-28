@@ -1153,6 +1153,26 @@ pub async fn run_turn(
     run_turn_with(binary, cwd, request, Controls { steering, ..Controls::default() }, on_activity).await
 }
 
+/// The other spelling of each folder the turn works in, when a link sits on its
+/// path: Claude Code keeps its working directory as the real path, but the
+/// prompt names files as equipe spells them — on a hosted team's machine
+/// `~/.equipe` links onto the volume — and a read-only turn (`dontAsk`) refuses
+/// any file outside its folders as spelled. So the working directory goes in as
+/// given too, and each added directory as its real path too.
+fn link_spellings(cwd: &Path, add_dirs: &[std::path::PathBuf]) -> Vec<String> {
+    let mut extra = Vec::new();
+    let mut push = |dir: &Path| extra.extend(["--add-dir".to_owned(), dir.to_string_lossy().into_owned()]);
+    if cwd.canonicalize().is_ok_and(|real| real != cwd) {
+        push(cwd);
+    }
+    for dir in add_dirs {
+        if let Some(real) = dir.canonicalize().ok().filter(|real| real != dir) {
+            push(&real);
+        }
+    }
+    extra
+}
+
 /// [`run_turn`], with [`Controls`] beyond it.
 ///
 /// A turn that is over by its stream but whose process doesn't end it —
@@ -1173,6 +1193,7 @@ pub async fn run_turn_with(binary: &str, cwd: &Path, request: TurnRequest<'_>, c
     command.envs(request.env.iter().map(|(k, v)| (k, v)));
     let mut child = command
         .args(turn_args(&request))
+        .args(link_spellings(cwd, request.add_dirs))
         .current_dir(cwd)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1936,6 +1957,25 @@ mod tests {
         assert!(at(Some(300_000)).windows(2).any(|w| w[0] == "--autocompact" && w[1] == "300000"));
         assert!(at(Some(5)).windows(2).any(|w| w[0] == "--autocompact" && w[1] == "100000"));
         assert!(at(Some(9_000_000)).windows(2).any(|w| w[0] == "--autocompact" && w[1] == "1000000"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_reached_through_a_link_is_readable_as_either_spelling() {
+        let root = std::env::temp_dir().join(format!("equipe-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let real = root.canonicalize().unwrap();
+        std::fs::create_dir_all(real.join("data/qa")).unwrap();
+        std::fs::create_dir_all(real.join("data/api")).unwrap();
+        std::os::unix::fs::symlink(real.join("data"), real.join("home")).unwrap();
+        // The working directory as equipe spells it: Claude Code sees the real path, so the spelled one is added.
+        let linked = real.join("home/qa");
+        let api = real.join("home/api");
+        let args = link_spellings(&linked, std::slice::from_ref(&api));
+        assert_eq!(args, ["--add-dir", &linked.to_string_lossy(), "--add-dir", &real.join("data/api").to_string_lossy()]);
+        // No link on the path: nothing more.
+        assert!(link_spellings(&real.join("data/qa"), &[real.join("data/api")]).is_empty());
+        let _ = std::fs::remove_dir_all(&real);
     }
 
     #[test]
