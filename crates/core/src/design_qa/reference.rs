@@ -121,7 +121,10 @@ Render the reference at the same widths and in the same states as the build (`eq
 open it in your browser for states that need a click), put each pair side by side (`equipe design diff <reference.png> <built.png> --out \
 handin-shots/<screen>-side.png`), and judge with both pictures, not the diff number. Screens to compare: {screens}. For each, give \
 `side_by_side` an entry {{\"screen\": \"…\", \"same_feel\": true|false, \"why\": \"…\"}}; a pass needs every one true. A screen that no \
-longer feels like the reference (its structure, motion, mood or signature element replaced by a generic look) is a blocker.{items}",
+longer feels like the reference (its structure, motion, mood or signature element replaced by a generic look or a kit component) is a blocker. \
+Check the other half too: every equipe ui piece used for what the reference does not have (new screens, menus, selects, inputs, dialogs, \
+toasts) restyled to the reference's tokens and at the quality bar: accessible, its states (hover, focus, empty, error, loading), no native \
+select or date input.{items}",
             src = if self.source.is_empty() { "prototype/index.html" } else { self.source.as_str() },
         )
     }
