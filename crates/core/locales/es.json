@@ -379,6 +379,7 @@
   "flow.step.precheck": "Pantallas construidas comprobadas con el prototipo",
   "flow.step.change": "Hacer el cambio",
   "flow.step.tests": "Pruebas y comprobaciones pasan",
+  "flow.live_words": "en vivo|producción|publicar|publícalo|lanzar",
   "ticket.design_backlog_body": "Pulido (S3/S4) encontrado al hacer seguimientos de T-{id}, guardado para ti: nada lo inicia. Inícialo cuando quieras que se haga.",
   "news.design_backlog": "{name} guardó el pulido de T-{id} en el backlog de diseño T-{backlog}: inícialo cuando quieras.",
   "news.helper_left": "{name} se fue con su trabajo hecho: su rol continúa",

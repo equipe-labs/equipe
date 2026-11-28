@@ -376,6 +376,7 @@
   "flow.step.precheck": "對照原型檢查實作的畫面",
   "flow.step.change": "完成改動",
   "flow.step.tests": "測試和檢查通過",
+  "flow.live_words": "上線|發布|正式環境",
   "ticket.design_backlog_body": "在跟進 T-{id} 時發現的打磨點（S3/S4），為你留存：不會自動開始。需要時再開始。",
   "news.design_backlog": "{name} 把 T-{id} 的打磨點放進了設計待辦 T-{backlog}：需要時再開始。",
   "news.helper_left": "{name} 完成工作後離開了：它的角色繼續保留",

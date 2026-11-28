@@ -376,6 +376,7 @@
   "flow.step.precheck": "구현한 화면을 시안과 비교해 확인",
   "flow.step.change": "변경하기",
   "flow.step.tests": "테스트와 검사 통과",
+  "flow.live_words": "라이브|공개|출시|실제 사이트|실제 주소",
   "ticket.design_backlog_body": "T-{id}의 후속 작업 중 찾은 다듬을 점(S3/S4)을 모아 뒀어요. 저절로 시작되지 않으니 원하실 때 시작해 주세요.",
   "news.design_backlog": "{name}이(가) T-{id}의 다듬을 점을 디자인 백로그 T-{backlog}에 모았어요. 원하실 때 시작하세요.",
   "news.helper_left": "{name}이(가) 일을 마치고 나갔어요. 역할은 그대로 이어져요",

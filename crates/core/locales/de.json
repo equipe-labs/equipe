@@ -379,6 +379,7 @@
   "flow.step.precheck": "Gebaute Screens gegen den Prototyp geprüft",
   "flow.step.change": "Die Änderung umsetzen",
   "flow.step.tests": "Tests und Prüfungen bestehen",
+  "flow.live_words": "live|produktion|veröffentlichen|veröffentlicht",
   "ticket.design_backlog_body": "Feinschliff (S3/S4), gefunden bei Folgeaufgaben zu T-{id}, für dich aufbewahrt: nichts startet ihn von selbst. Starte ihn, wenn du ihn erledigt haben willst.",
   "news.design_backlog": "{name} hat Feinschliff von T-{id} im Design-Backlog T-{backlog} gesammelt: starte ihn, wenn du willst.",
   "news.helper_left": "{name} ist gegangen, die Arbeit erledigt: die Rolle bleibt",

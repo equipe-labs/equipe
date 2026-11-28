@@ -379,6 +379,7 @@
   "flow.step.precheck": "Écrans construits vérifiés par rapport au prototype",
   "flow.step.change": "Faire le changement",
   "flow.step.tests": "Tests et vérifications passent",
+  "flow.live_words": "en ligne|production|publier|mettre en ligne",
   "ticket.design_backlog_body": "Finitions (S3/S4) trouvées en faisant les suites de T-{id}, gardées pour toi : rien ne les lance. Lance-les quand tu veux qu'elles soient faites.",
   "news.design_backlog": "{name} a gardé des finitions de T-{id} dans le backlog design T-{backlog} : lance-le quand tu veux.",
   "news.helper_left": "{name} est parti, son travail fini : son rôle continue",
