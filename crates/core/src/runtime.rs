@@ -2631,6 +2631,7 @@ impl Runtime {
             Event::TicketChanged { squad, ticket } if ticket.status.is_closed() => Some((squad.clone(), ticket.id)),
             _ => None,
         };
+        let cancelled = matches!(&event, Event::TicketChanged { ticket, .. } if ticket.status == TicketStatus::Cancelled);
         let asked = match &event {
             Event::QuestionsAsked { squad, questions } => questions.ticket.map(|t| (squad.clone(), t)),
             _ => None,
@@ -2676,6 +2677,11 @@ impl Runtime {
         // Settled: what was asked about it no longer waits on the person.
         if let Some((squad, ticket)) = closed {
             self.withdraw_settled_questions(&squad, ticket);
+            // A design QA ticket cancelled, however it was (the PM's update_ticket, equipe's own close, the person):
+            // the change it held goes on. Team Aman's T-60 sat 35 minutes "waiting for its design QA" after the PM cancelled T-62.
+            if cancelled {
+                self.design_qa_closed(&squad, ticket);
+            }
         }
         if let Some((squad, ticket)) = asked {
             self.request_question_changed(&squad, ticket);
@@ -6373,6 +6379,17 @@ runbooks and reports live there, and work across the projects or on running them
                 };
                 // A design QA ticket's precheck report and pictures, kept beside the squad's journal.
                 read.extend(squad.as_deref().map(|s| design_qa::precheck_dir(&self.config.home, s, work.ticket)).filter(|d| d.is_dir() && *d != work.cwd));
+                // A designer on a design QA ticket reads the squad's whole design QA folder: the shots and crops it is
+                // shown may sit under the change's folder, or be written after the turn began (Team Aman's T-61 and
+                // T-62: "Read was denied on the shots and crops").
+                let checks_one = |s: &str| self.journals.get(s).is_some_and(|j| j.tickets().unwrap_or_default().iter().any(|t| t.design_qa == Some(work.ticket) && t.id != work.ticket));
+                if let Some(s) = squad.as_deref().filter(|s| checks_one(s)) {
+                    let all = crate::journal::squad_dir(&self.config.home, s).join("design-qa");
+                    if std::fs::create_dir_all(&all).is_ok() && !read.contains(&all) && all != work.cwd {
+                        read.retain(|d| !d.starts_with(&all));
+                        read.push(all);
+                    }
+                }
                 let writes = (edits_code || work.kind.in_home()) && work.sandbox.is_some();
                 (work.cwd.clone(), access_for(mode, writes), work.claude_session.clone(), work.history.clone(), Some(work.ticket), read)
             }
