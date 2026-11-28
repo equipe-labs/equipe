@@ -63,7 +63,8 @@ impl Runtime {
     pub(super) fn show_ui_result(&mut self, squad: &str, shown: &crate::ui_result::Shown) {
         let Some(pm) = self.pm_of(squad) else { return };
         let headline = say!(self, "news.ui_result", id = shown.ticket, title = shown.title);
-        let link = shown.link.as_ref().map(|url| say!(self, "news.ui_result_link", url = url));
+        // A preview address isn't the live site: it is never "see it live".
+        let link = shown.link.as_ref().map(|url| if crate::ui_result::is_preview(url) { say!(self, "news.ui_result_preview_link", url = url) } else { say!(self, "news.ui_result_link", url = url) });
         let text = shown.message(&headline, link.as_deref());
         crate::daemon_log!("equipe: {squad}: T-{}'s result shown to the person ({} files{})", shown.ticket, shown.tags.len(), if shown.link.is_some() { ", a link" } else { "" });
         self.show_news(pm, text);

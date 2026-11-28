@@ -812,6 +812,8 @@ pub struct Row {
     pub said: bool,
     /// When the PM was told no ticket covers it.
     pub surfaced_at: Option<u64>,
+    /// The plan's name as the PM last gave it ([`Request::plan_title`]).
+    pub plan_title: Option<String>,
     pub tickets: Vec<RequestTicket>,
 }
 
@@ -835,6 +837,7 @@ impl Row {
             tickets: self.tickets.clone(),
             status,
             closed_at: self.closed_at,
+            plan_title: self.plan_title.clone(),
         }
     }
 }
@@ -863,7 +866,7 @@ pub fn create_table(conn: &Connection) -> rusqlite::Result<()> {
          CREATE INDEX IF NOT EXISTS request_tickets_request ON request_tickets(request);",
     )?;
     // Kept since a journal made before them: added, once.
-    for column in ["closed_why TEXT", "said INTEGER NOT NULL DEFAULT 0", "surfaced_at INTEGER"] {
+    for column in ["closed_why TEXT", "said INTEGER NOT NULL DEFAULT 0", "surfaced_at INTEGER", "plan_title TEXT"] {
         let _ = conn.execute(&format!("ALTER TABLE requests ADD COLUMN {column}"), []);
     }
     Ok(())
@@ -994,7 +997,7 @@ impl Store<'_> {
     }
 
     fn rows(&self, filter: &str, args: impl rusqlite::Params) -> Vec<Row> {
-        let Ok(mut stmt) = self.0.prepare(&format!("SELECT id, title, words, session, member, asked_at, told, due_at, closed_at, closed_why, said, surfaced_at FROM requests {filter}")) else {
+        let Ok(mut stmt) = self.0.prepare(&format!("SELECT id, title, words, session, member, asked_at, told, due_at, closed_at, closed_why, said, surfaced_at, plan_title FROM requests {filter}")) else {
             return Vec::new();
         };
         let rows: Vec<Row> = stmt
@@ -1012,12 +1015,19 @@ impl Store<'_> {
                     closed_why: r.get(9)?,
                     said: r.get(10)?,
                     surfaced_at: r.get::<_, Option<i64>>(11)?.map(|s| s.max(0) as u64),
+                    plan_title: r.get(12)?,
                     tickets: Vec::new(),
                 })
             })
             .and_then(|rows| rows.collect())
             .unwrap_or_default();
         rows.into_iter().map(|row| Row { tickets: self.links(row.id), ..row }).collect()
+    }
+
+    /// Name request `request`'s plan anew (`None`: no name of its own).
+    pub fn set_plan_title(&self, request: RequestId, title: Option<&str>) -> rusqlite::Result<()> {
+        self.0.execute("UPDATE requests SET plan_title = ?2 WHERE id = ?1", rusqlite::params![request as i64, title])?;
+        Ok(())
     }
 
     pub fn get(&self, request: RequestId) -> Option<Row> {
@@ -1095,6 +1105,20 @@ pub fn app_name(name: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_revised_plan_carries_its_new_name_to_the_card() {
+        // Team Aman, 2026-11-28: the plan went from 6 to 8 steps and the card kept the old plan's name.
+        let conn = Connection::open_in_memory().unwrap();
+        create_table(&conn).unwrap();
+        let store = Store(&conn);
+        let id = store.create("Make the scheduler from the prototype", "words", Some(1), Some("pm"), 100, true).unwrap();
+        assert_eq!(store.get(id).unwrap().view(Status::default()).plan_title, None);
+        store.set_plan_title(id, Some("Settle: a working scheduler, in 8 steps")).unwrap();
+        assert_eq!(store.get(id).unwrap().view(Status::default()).plan_title.as_deref(), Some("Settle: a working scheduler, in 8 steps"));
+        store.set_plan_title(id, None).unwrap();
+        assert_eq!(store.get(id).unwrap().plan_title, None);
+    }
 
     #[test]
     fn a_reply_ending_with_a_question_hands_the_request_back_to_the_person() {
@@ -1392,7 +1416,7 @@ mod tests {
     #[test]
     fn a_member_is_told_each_open_request_with_its_tickets_and_line() {
         let (links, tickets) = morning();
-        let row = Row {
+        let row = Row { plan_title: None,
             id: 7,
             title: "새 입력창이랑 왼쪽 메뉴".into(),
             words: String::new(),
@@ -1421,7 +1445,7 @@ mod tests {
     #[test]
     fn a_question_about_a_request_finds_it_in_any_script() {
         let (links, tickets) = morning();
-        let base = Row {
+        let base = Row { plan_title: None,
             id: 3,
             title: "새 입력창 만들어 줘".into(),
             words: String::new(),
@@ -1468,7 +1492,7 @@ mod tests {
     }
 
     fn row(id: RequestId, asked_at: u64, tickets: Vec<RequestTicket>) -> Row {
-        Row {
+        Row { plan_title: None,
             id,
             title: format!("Request {id}"),
             words: format!("Request {id}, please"),

@@ -38,6 +38,12 @@ rules against each other and fix what contradicts. Then run `starter_brand` agai
 and logo. Nothing else: no component sheets, no UI map, no second logo round. The step runs on a small hard budget;
 when equipe says it is used up, hand in what you have.
 
+**The logo, by default** — one mark in the brand's palette, never a set of options nobody asked for. No logo step at all
+when the product came with a look or a mark of its own: an imported site, a Claude Design or other prototype, a logo
+file in what the person sent. Renaming a product never makes a new mark by itself: ask once, as a one-tap question,
+whether the mark should change with the name. Options to compare (the deep logo round's three) only when the person
+asks to see options.
+
 **Deep brand system** — only when the person chose it (the Brand page's card, which shows its cost) or said yes to the
 PM's one suggestion: a ticket a step, each under its own hard budget, in order: 1. `Deep brand system: brief` —
 `brand.md` in full, with the person; 2. `Deep brand system: logo round` — only if they want a new mark: one

@@ -340,9 +340,26 @@ fn ffmpeg() -> Option<PathBuf> {
     std::env::split_paths(&path).chain(["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"].map(PathBuf::from)).map(|d| d.join("ffmpeg")).find(|p| p.is_file())
 }
 
+/// Whether `url` is a preview of the work rather than its live address: a
+/// host whose first label starts `review--` or `preview--` (the platform's
+/// branch and review previews).
+pub fn is_preview(url: &str) -> bool {
+    let host = url.split("://").nth(1).unwrap_or(url).split(['/', ':', '?', '#']).next().unwrap_or_default().to_ascii_lowercase();
+    let first = host.split('.').next().unwrap_or_default();
+    first.starts_with("review--") || first.starts_with("preview--")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_preview_address_is_never_live() {
+        assert!(is_preview("https://review--t49-settle.equipe.page/book"));
+        assert!(is_preview("https://preview--when2meet.equipe.page"));
+        assert!(!is_preview("https://jungkyung-lab.equipe.page/develop"));
+        assert!(!is_preview("https://shop.example.com/review--x"));
+    }
     use crate::protocol::TicketStatus;
 
     fn scratch(tag: &str) -> PathBuf {

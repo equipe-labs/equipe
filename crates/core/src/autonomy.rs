@@ -404,6 +404,17 @@ mod tests {
     }
 
     #[test]
+    fn reading_the_teams_own_qa_report_is_no_sign_in() {
+        // Team Aman, 2026-11-28: Kai's Read of the team's design QA report came to the person as a sign-in card.
+        let mut areas = permissions::scratch_areas(std::path::Path::new("/home/tenki/.equipe"), "team");
+        let report = "/home/tenki/.equipe/squads/team/design-qa/T-49/report.md";
+        assert_eq!(engine_kind_in("Read", report, &areas), Kind::SignIn, "before: under .equipe, read as a key");
+        areas.push("/home/tenki/.equipe/squads/team/design-qa/".to_owned());
+        assert_eq!(engine_kind_in("Read", report, &areas), Kind::Other);
+        assert_eq!(engine_kind_in("Read", "/home/tenki/.equipe/squads/team/squad.db", &areas), Kind::SignIn, "its journal still is");
+    }
+
+    #[test]
     fn the_squads_scratch_is_not_credentials_for_lying_under_dot_equipe() {
         let scratch = permissions::scratch_areas(std::path::Path::new("/home/tenki/.equipe"), "team");
         let edit = "/home/tenki/.equipe/tmp/team/t1/shoot.mjs";

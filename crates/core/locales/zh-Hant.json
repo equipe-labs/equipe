@@ -310,6 +310,7 @@
   "news.design_qa_precheck_passed": "equipe 的預檢在沒有設計師的情況下通過了 T-{id} 的介面檢查：沒有介面變化，也沒有新問題，可以審查了 · {title}。",
   "news.ui_result": "T-{id} 已完成，現在的樣子是這樣 · {title}",
   "news.ui_result_link": "線上查看：{url}",
+  "news.ui_result_preview_link": "在預覽中查看：{url}",
   "news.design_qa_precheck_changes": "equipe 的預檢在沒有設計師的情況下把 T-{id} 退回給 {to}：發現了明確的介面或無障礙問題 · {title}。",
   "news.design_qa_refused": "equipe 的自我檢查未經設計師就把 T-{id} 退回給了 {to}：這次變更帶來了明確的介面或無障礙問題 · {title}。",
   "news.design_qa_batched": "依 equipe 的預檢，T-{id} 的介面風險低：現在不需要設計師檢查，將進入每日設計評審。可以評審了 · {title}。",

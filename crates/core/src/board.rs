@@ -1419,6 +1419,7 @@ Examples: accept a proposal — {\"id\": 12, \"status\": \"todo\"}; retitle — 
                     "request": { "type": "integer", "description": "Put it with the person's request R-n (give n), at any status: its progress is then told with that request's, and what came of it moves with it. 0: with none." },
                     "depends_why": { "type": "string", "description": "Why it must wait on what `depends_on` adds, when that isn't plain: a ticket of the person's request waits on work outside it only with a reason." },
                     "steps": STEPS_SCHEMA.clone(),
+                    "plan_title": { "type": "string", "description": "The name of the plan this ticket's request is, in the person's language, as their card shows it. Give it whenever you revise the plan (steps added, replaced or merged) so the card never keeps the old plan's words." },
                     "blocked_on": crate::blocked_on::schema(),
                     "wait_for_person": { "type": "boolean", "description": "At any open status: true when you told the person they will see it and say yes (or pick) before it is applied: it stays on its branch and preview — it never lands or goes live — until they say yes and you accept it with their words in `confirmed`. Never apply a look, a draft or an option to the live product before they picked it. false lets it go." },
                 },

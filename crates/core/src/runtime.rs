@@ -10014,7 +10014,14 @@ there, end your turn, and carry on when they say they're done."
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
             return;
         }
-        let kind = crate::autonomy::engine_kind_in(&tool, &action, &scratch);
+        // Reading the team's own records is no sign-in: its design QA reports and the files the person sent
+        // (Kai's Read of a QA report came to the person as a sign-in card, Team Aman, 2026-11-28).
+        let mut read_areas = scratch.clone();
+        if matches!(tool.as_str(), "Read" | "Glob" | "Grep" | "LS") {
+            read_areas.push(format!("{}/", crate::journal::squad_dir(&self.config.home, &call.squad).join("design-qa").display()));
+            read_areas.extend(permissions::uploads_area(&self.config.home));
+        }
+        let kind = crate::autonomy::engine_kind_in(&tool, &action, &read_areas);
         let mut ask = crate::protocol::autonomy::Ask { kind, plain: None, standing: None, later: false, op: None };
         if kind == crate::protocol::autonomy::Kind::Other && self.allowed_standing(&call.squad, id, &call.member, ticket, &ask, (&tool, &action)).is_some() {
             let _ = reply.send(verdict(Decision::Allow, &input, ""));
@@ -11628,10 +11635,31 @@ person's sign-ins — open the page you need and take a snapshot. Only if it ask
                 // Its checklist grows at any status still open (`flow`).
                 let steps = crate::flow::steps_arg(&args, "steps")?;
                 if !steps.is_empty() {
-                    let said = self.change_steps(&squad, ticket_id, &[], &[], steps, &member)?;
+                    let mut said = self.change_steps(&squad, ticket_id, &[], &[], steps, &member)?;
+                    if board::arg_str(&args, "plan_title").is_none() {
+                        said.push_str("\nIf the plan's name no longer says what it now does, rename it with `plan_title` — the person's card shows it.");
+                    }
                     let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "steps"));
                     if !other {
                         return Ok(said);
+                    }
+                }
+                // The plan's name, renamed with the plan: the person's card is drawn from it, at any status.
+                if let Some(name) = board::arg_str(&args, "plan_title").map(str::trim) {
+                    let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
+                    let request = journal.requests().of_ticket(ticket_id).ok_or_else(|| format!("T-{ticket_id} serves none of the person's requests: put it with one first (`request`)."))?;
+                    if let Some(want) = self.squad_language(&squad).filter(|_| !name.is_empty())
+                        && reply_guard::wrong_language(name, want)
+                    {
+                        return Err(format!("`plan_title` is read by the person, in {lang}: write it in {lang}.", lang = want.english_name()));
+                    }
+                    let name: String = name.chars().take(120).collect();
+                    let journal = self.journal(&squad).ok_or("The board can't be opened.")?;
+                    journal.requests().set_plan_title(request, Some(name.as_str()).filter(|n| !n.is_empty())).map_err(|e| e.to_string())?;
+                    self.request_ticket_changed(&squad, ticket_id);
+                    let other = args.as_object().is_some_and(|o| o.keys().any(|k| k != "id" && k != "plan_title"));
+                    if !other {
+                        return Ok(format!("R-{request}'s plan is now called “{name}”."));
                     }
                 }
                 // Held for the person's yes, or let go, at any status still open.
